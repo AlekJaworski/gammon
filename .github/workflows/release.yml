@@ -126,15 +126,4 @@ jobs:
           command: upload
           args: --non-interactive --skip-existing dist/*
 
-  publish-crates:
-    needs: [linux, macos, windows, sdist]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install system OpenBLAS
-        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev gfortran
-      - name: cargo publish
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --token "$CARGO_REGISTRY_TOKEN"
+  # crates.io publish deferred — wire up later. Tracked in TODO.
