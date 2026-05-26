@@ -53,8 +53,7 @@ fn load_fixture(name: &'static str) -> Fixture {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("../../tests/parity/fixtures");
     p.push(format!("{name}.json"));
-    let txt = std::fs::read_to_string(&p)
-        .unwrap_or_else(|e| panic!("missing fixture {name}: {e}"));
+    let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("missing fixture {name}: {e}"));
     let v: Value = serde_json::from_str(&txt).unwrap();
     let xs: Vec<f64> = v["inputs"]["x_train"]
         .as_array()

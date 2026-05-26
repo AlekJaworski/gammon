@@ -63,7 +63,12 @@ impl<A: Basis, B: Basis> TensorProductBasis<A, B> {
     /// see [`crate::design::additive::TermSpec::Tensor`] for the
     /// canonical fit-time wiring.
     pub fn new(margin_a: A, margin_b: B, col_a: usize, col_b: usize) -> Self {
-        Self { margin_a, margin_b, col_a, col_b }
+        Self {
+            margin_a,
+            margin_b,
+            col_a,
+            col_b,
+        }
     }
 
     /// Number of columns from margin A.
@@ -337,8 +342,7 @@ mod tests {
                     for k2 in 0..k_b {
                         let row = j_a * k_b + k1;
                         let col = l_a * k_b + k2;
-                        let expected =
-                            if k1 == k2 { s_a[[j_a, l_a]] } else { 0.0 };
+                        let expected = if k1 == k2 { s_a[[j_a, l_a]] } else { 0.0 };
                         let got = s_te_a[[row, col]];
                         assert!(
                             (got - expected).abs() < 1e-14,
@@ -357,8 +361,7 @@ mod tests {
                     for k2 in 0..k_b {
                         let row = j_a * k_b + k1;
                         let col = l_a * k_b + k2;
-                        let expected =
-                            if j_a == l_a { s_b[[k1, k2]] } else { 0.0 };
+                        let expected = if j_a == l_a { s_b[[k1, k2]] } else { 0.0 };
                         let got = s_te_b[[row, col]];
                         assert!(
                             (got - expected).abs() < 1e-14,
@@ -378,7 +381,9 @@ mod tests {
     fn tensor_d1_matches_finite_difference_axis_a() {
         let n = 20;
         let x_a: Array1<f64> = Array1::linspace(0.05, 0.95, n);
-        let x_b: Array1<f64> = (0..n).map(|i| 0.1 + 0.8 * (i as f64) / (n as f64 - 1.0)).collect();
+        let x_b: Array1<f64> = (0..n)
+            .map(|i| 0.1 + 0.8 * (i as f64) / (n as f64 - 1.0))
+            .collect();
         let marg_a = CrSpline::with_quantile_knots(x_a.view(), 5).unwrap();
         let marg_b = CrSpline::with_quantile_knots(x_b.view(), 4).unwrap();
         let te = TensorProductBasis::new(marg_a, marg_b, 0, 1);
@@ -412,7 +417,9 @@ mod tests {
     fn tensor_d1_matches_finite_difference_axis_b() {
         let n = 20;
         let x_a: Array1<f64> = Array1::linspace(0.05, 0.95, n);
-        let x_b: Array1<f64> = (0..n).map(|i| 0.1 + 0.8 * (i as f64) / (n as f64 - 1.0)).collect();
+        let x_b: Array1<f64> = (0..n)
+            .map(|i| 0.1 + 0.8 * (i as f64) / (n as f64 - 1.0))
+            .collect();
         let marg_a = CrSpline::with_quantile_knots(x_a.view(), 5).unwrap();
         let marg_b = CrSpline::with_quantile_knots(x_b.view(), 4).unwrap();
         let te = TensorProductBasis::new(marg_a, marg_b, 0, 1);

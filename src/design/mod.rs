@@ -52,11 +52,11 @@ pub use tensor::TensorPredictor;
 /// Serde representation (under the `persistence` feature) tags each
 /// variant by `"kind"` for forward-compatibility — adding a new variant
 /// only extends the tagged set.
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(
     feature = "persistence",
-    derive(serde::Serialize, serde::Deserialize)
+    serde(tag = "kind", rename_all = "snake_case")
 )]
-#[cfg_attr(feature = "persistence", serde(tag = "kind", rename_all = "snake_case"))]
 pub enum Predictor {
     /// CR spline + sum-to-zero centring + intercept column.
     Cr(CrPredictor),
@@ -225,7 +225,11 @@ pub(crate) fn rank_and_log_pseudo_det(s: ArrayView2<f64>) -> (usize, f64) {
 /// Assemble `S_total(ρ) = Σ_j exp(ρ_j) · s_list[j]`. The hot path inside
 /// every inner solver — single allocation, sequential add.
 pub fn combined_s(s_list: &[Array2<f64>], rho: &Array1<f64>) -> Array2<f64> {
-    debug_assert_eq!(s_list.len(), rho.len(), "combined_s: s_list and rho length mismatch");
+    debug_assert_eq!(
+        s_list.len(),
+        rho.len(),
+        "combined_s: s_list and rho length mismatch"
+    );
     let p = s_list[0].nrows();
     let mut s_total = Array2::<f64>::zeros((p, p));
     for (j, s_j) in s_list.iter().enumerate() {

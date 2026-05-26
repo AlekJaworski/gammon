@@ -22,8 +22,8 @@ use super::cr::{CrPredictor, CrStablePredictor};
 use super::re::RePredictor;
 use super::tensor::TensorTermFit;
 use super::{
-    prepend_intercept, prepend_zero_column, rank_and_log_pseudo_det, DesignStrategy,
-    PreparedDesign, Predictor,
+    prepend_intercept, prepend_zero_column, rank_and_log_pseudo_det, DesignStrategy, Predictor,
+    PreparedDesign,
 };
 
 /// Kind of marginal basis used inside a tensor product. Closed-set —
@@ -31,10 +31,7 @@ use super::{
 /// `Cr` (CR + sum-to-zero centring per margin); future variants would
 /// add `Bs` (B-spline) etc.
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(
-    feature = "persistence",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "persistence", serde(rename_all = "snake_case"))]
 pub enum MarginKind {
     /// CR spline + sum-to-zero centring on this margin's column.
@@ -98,10 +95,7 @@ impl TermSpec {
 /// the `(start, end)` column ranges in the combined design (so vcov /
 /// per-term slicing can find each term), and the original column indices
 /// each term reads from new x.
-#[cfg_attr(
-    feature = "persistence",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct AdditivePredictor {
     /// One sub-Predictor per term. Univariate sub-predictors are invoked
     /// on a single-column slice; tensor sub-predictors are invoked on the
@@ -163,21 +157,12 @@ impl AdditivePredictor {
         Ok(design)
     }
 
-    pub(crate) fn design_deriv(
-        &self,
-        x_new: ArrayView2<f64>,
-        axis: usize,
-    ) -> Result<Array2<f64>> {
+    pub(crate) fn design_deriv(&self, x_new: ArrayView2<f64>, axis: usize) -> Result<Array2<f64>> {
         // `axis` indexes into the columns of `x_new`. For each term, the
         // smooth's `∂design/∂x_axis` is nonzero only if the term reads
         // column `axis`; otherwise all entries are zero.
         let n = x_new.nrows();
-        let p = 1
-            + self
-                .term_col_ranges
-                .last()
-                .map(|(_, e)| e - 1)
-                .unwrap_or(0);
+        let p = 1 + self.term_col_ranges.last().map(|(_, e)| e - 1).unwrap_or(0);
         let mut d = Array2::<f64>::zeros((n, p));
         for (j, pred) in self.term_predictors.iter().enumerate() {
             let cols = &self.cols_used[j];
@@ -317,7 +302,14 @@ impl DesignStrategy for Additive {
                     per_term_predictor.push(Predictor::Re(RePredictor { levels: fit.levels }));
                     cols_used.push(vec![col]);
                 }
-                TermSpec::Tensor { col_a, col_b, k_a, k_b, bs_a, bs_b } => {
+                TermSpec::Tensor {
+                    col_a,
+                    col_b,
+                    k_a,
+                    k_b,
+                    bs_a,
+                    bs_b,
+                } => {
                     let fit = TensorTermFit::build(x, col_a, col_b, k_a, k_b, bs_a, bs_b)?;
                     per_term_dim.push(fit.design.ncols());
                     per_term_centred.push(fit.design);
@@ -422,10 +414,7 @@ mod tests {
         }
         let x = Array2::from_shape_vec((n, 2), x_vec).unwrap();
         let strategy = Additive {
-            terms: vec![
-                TermSpec::Cr { col: 0, k: 8 },
-                TermSpec::Cr { col: 1, k: 6 },
-            ],
+            terms: vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 6 }],
         };
         let prep = strategy.prepare(x.view()).unwrap();
         assert_eq!(prep.s_list.len(), 2, "one penalty block per term");
@@ -438,9 +427,15 @@ mod tests {
         // entirely zero and S_1's first non-intercept row is zero.
         let p = prep.x_design.ncols();
         let last_row_s0: f64 = (0..p).map(|c| prep.s_list[0][[p - 1, c]].abs()).sum();
-        assert!(last_row_s0 == 0.0, "S_0's last row should be zero (belongs to term 1)");
+        assert!(
+            last_row_s0 == 0.0,
+            "S_0's last row should be zero (belongs to term 1)"
+        );
         let first_row_s1: f64 = (0..p).map(|c| prep.s_list[1][[1, c]].abs()).sum();
-        assert!(first_row_s1 == 0.0, "S_1's first row should be zero (belongs to term 0)");
+        assert!(
+            first_row_s1 == 0.0,
+            "S_1's first row should be zero (belongs to term 0)"
+        );
 
         // Mp = p - Σ_j rank_j.
         let rank_total: usize = prep.rank_s_list.iter().sum();
@@ -483,9 +478,7 @@ mod tests {
         let p = prep_cr.x_design.ncols();
         for i in 0..p {
             for j in 0..p {
-                assert!(
-                    (prep_cr.s_list[0][[i, j]] - prep_add.s_list[0][[i, j]]).abs() < 1e-12,
-                );
+                assert!((prep_cr.s_list[0][[i, j]] - prep_add.s_list[0][[i, j]]).abs() < 1e-12,);
             }
         }
     }
@@ -503,10 +496,7 @@ mod tests {
         }
         let x = Array2::from_shape_vec((n, 2), x_vec.clone()).unwrap();
         let strategy = Additive {
-            terms: vec![
-                TermSpec::Cr { col: 0, k: 5 },
-                TermSpec::Cr { col: 1, k: 4 },
-            ],
+            terms: vec![TermSpec::Cr { col: 0, k: 5 }, TermSpec::Cr { col: 1, k: 4 }],
         };
         let prep = strategy.prepare(x.view()).unwrap();
         // Rebuild on the same x — should match the fit-time design.

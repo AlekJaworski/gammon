@@ -25,7 +25,10 @@ fn synth() -> (Array1<f64>, Array1<f64>, Vec<f64>) {
     let next_gauss = || {
         // Box-Muller from two LCG-uniform draws.
         let lcg = || {
-            let s = state.get().wrapping_mul(6364136223846793005).wrapping_add(1);
+            let s = state
+                .get()
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1);
             state.set(s);
             ((s >> 11) as f64) / (1u64 << 53) as f64
         };
@@ -79,7 +82,9 @@ fn re_basis_recovers_group_means() {
     // empirical y-mean for that group (with mild shrinkage from the
     // REML-selected λ — bound is loose to absorb shrinkage).
     let probe = Array1::from_vec(group_ids.clone());
-    let mu_hat = fit.predict(probe.view().insert_axis(Axis(1))).expect("predict failed");
+    let mu_hat = fit
+        .predict(probe.view().insert_axis(Axis(1)))
+        .expect("predict failed");
     for (i, &g) in group_ids.iter().enumerate() {
         let emp = group_mean(&y, &x, g);
         let pred = mu_hat[i];
@@ -110,7 +115,9 @@ fn re_unseen_level_returns_intercept() {
     // Level 99.0 was NOT in training. RE one-hot is all-zero for unseen
     // → prediction = intercept (β[0]).
     let unseen = Array1::from_vec(vec![99.0]);
-    let pred = fit.predict(unseen.view().insert_axis(Axis(1))).expect("predict failed");
+    let pred = fit
+        .predict(unseen.view().insert_axis(Axis(1)))
+        .expect("predict failed");
     let intercept = fit.beta[0];
     let diff = (pred[0] - intercept).abs();
     assert!(
@@ -138,7 +145,9 @@ fn re_predict_deriv_is_zero() {
     // The RE basis is a step function over a categorical predictor; the
     // derivative w.r.t. the grouping variable is identically zero.
     let probe = Array1::from_vec(group_ids);
-    let d = fit.predict_deriv(probe.view().insert_axis(Axis(1))).expect("predict_deriv failed");
+    let d = fit
+        .predict_deriv(probe.view().insert_axis(Axis(1)))
+        .expect("predict_deriv failed");
     for (i, &v) in d.iter().enumerate() {
         assert_eq!(v, 0.0, "predict_deriv[{i}] = {v} should be 0");
     }
@@ -160,7 +169,9 @@ fn re_predict_repeats_for_repeated_levels() {
     // Predicting at the same level twice produces the same μ̂ (sanity:
     // the basis is genuinely a one-hot lookup, not noisy).
     let probe = Array1::from_vec(vec![group_ids[0], group_ids[0], group_ids[1]]);
-    let pred = fit.predict(probe.view().insert_axis(Axis(1))).expect("predict failed");
+    let pred = fit
+        .predict(probe.view().insert_axis(Axis(1)))
+        .expect("predict failed");
     assert_eq!(
         pred[0], pred[1],
         "two predictions at the same level disagree: {} vs {}",

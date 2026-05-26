@@ -18,12 +18,12 @@ use ndarray::{Array1, ArrayView1, ArrayView2};
 use crate::design::PreparedDesign;
 use crate::error::{GammonError, Result};
 use crate::family::{
-    bernoulli_logit, gamma_log, inverse_gaussian_log, negbin_log, ocat_identity,
-    ocat_init_theta, poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity,
-    tweedie_log, Bernoulli, BinomialVariance, ConstantVariance, ElfLoss, ElfVariance, Family,
-    Gamma, GammaVariance, Gaussian, IdentityLink, InverseGaussian, InverseGaussianVariance,
-    LogLink, LogitLink, NegBin, NegBinVariance, OcatLoss, OcatVariance, Poisson,
-    PoissonVariance, QuasiBinomial, QuasiPoisson, TDist, TVariance, Tweedie, TweedieVariance,
+    bernoulli_logit, gamma_log, inverse_gaussian_log, negbin_log, ocat_identity, ocat_init_theta,
+    poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity, tweedie_log, Bernoulli,
+    BinomialVariance, ConstantVariance, ElfLoss, ElfVariance, Family, Gamma, GammaVariance,
+    Gaussian, IdentityLink, InverseGaussian, InverseGaussianVariance, LogLink, LogitLink, NegBin,
+    NegBinVariance, OcatLoss, OcatVariance, Poisson, PoissonVariance, QuasiBinomial, QuasiPoisson,
+    TDist, TVariance, Tweedie, TweedieVariance,
 };
 use crate::inner::{GaussianInnerFit, LinearSolver, PirlsOpts};
 use crate::outer::{NewtonOpts, NewtonWithHalving};
@@ -38,8 +38,8 @@ use super::driver::{fit_pirls_envelope, fit_shape_aware, make_pearson_scale_fn};
 use super::gaussian::fit_gaussian_from_prep;
 use super::quantile::fit_quantile_from_prep;
 use super::{
-    check_lengths, check_y_in_unit, check_y_nonneg, check_y_positive, compute_edf,
-    compute_vcov, FittedGam, LinkKind,
+    check_lengths, check_y_in_unit, check_y_nonneg, check_y_positive, compute_edf, compute_vcov,
+    FittedGam, LinkKind,
 };
 
 // --- Gaussian: identity link + constant variance, closed-form inner ---
@@ -209,9 +209,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, GammaVariance, S> for Gamma {
 }
 
 // --- InverseGaussian: log link + μ³ variance, profiled φ ---
-impl<S: LinearSolver> FamilyFitWithSolver<LogLink, InverseGaussianVariance, S>
-    for InverseGaussian
-{
+impl<S: LinearSolver> FamilyFitWithSolver<LogLink, InverseGaussianVariance, S> for InverseGaussian {
     fn fit_from_prep_canonical(
         _family: Family<Self, LogLink, InverseGaussianVariance>,
         prep: PreparedDesign,
@@ -474,19 +472,14 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             prep.s_list.clone(),
             PirlsOpts::default(),
         );
-        let final_fit: GaussianInnerFit<S> =
-            final_inner.fit(&Array1::from_vec(vec![rho_hat]))?;
+        let final_fit: GaussianInnerFit<S> = final_inner.fit(&Array1::from_vec(vec![rho_hat]))?;
 
         let edf = compute_edf(&prep.x_design, &final_fit.working_weights, &final_fit);
         let vcov = compute_vcov(&final_fit, 1.0);
         let rho_vec = Array1::from_vec(vec![rho_hat]);
         let lambda_vec = Array1::from_vec(vec![rho_hat.exp()]);
-        let edf_per_term = super::compute_edf_per_term(
-            &prep.s_list,
-            &rho_vec,
-            prep.x_design.ncols(),
-            &final_fit,
-        );
+        let edf_per_term =
+            super::compute_edf_per_term(&prep.s_list, &rho_vec, prep.x_design.ncols(), &final_fit);
 
         Ok(FittedGam {
             beta: final_fit.beta,

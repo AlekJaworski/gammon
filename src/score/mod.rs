@@ -42,6 +42,6 @@ pub mod shape_aware;
 pub use envelope::{EnvelopeScore, GaussianClosedFormScore};
 pub use profile::{FixedAtOneProfile, MgcvTwoSigmaProfile, OwnedByLossProfile, Profile};
 pub use shape_aware::{
-    OcatInnerBuilder, PirlsInnerBuilder, ShapeAwareEnvelopeScore,
-    ShapeAwareOcatScore, ShapeAwarePirlsScore, ShapeAwarePirlsScoreOwnedPhi, ShapeInnerBuilder,
+    OcatInnerBuilder, PirlsInnerBuilder, ShapeAwareEnvelopeScore, ShapeAwareOcatScore,
+    ShapeAwarePirlsScore, ShapeAwarePirlsScoreOwnedPhi, ShapeInnerBuilder,
 };

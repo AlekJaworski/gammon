@@ -31,9 +31,8 @@ use pyo3::Bound;
 use crate::design::{Additive, Cr, CrStable, DesignStrategy, MarginKind, Re, TermSpec};
 use crate::error::GammonError;
 use crate::family::{
-    bernoulli_logit, elf_identity, gamma_log, gaussian_identity, inverse_gaussian_log,
-    negbin_log, ocat_identity, poisson_log, quasibinomial_logit, quasipoisson_log,
-    tdist_identity, tweedie_log,
+    bernoulli_logit, elf_identity, gamma_log, gaussian_identity, inverse_gaussian_log, negbin_log,
+    ocat_identity, poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity, tweedie_log,
 };
 use crate::fit::{FamilyFit, FittedGam, PredictScale};
 
@@ -177,10 +176,7 @@ impl PyFittedGam {
                 )))
             }
         };
-        let (mean, lo, hi) = self
-            .inner
-            .predict_ci(x_view, level, s)
-            .map_err(map_err)?;
+        let (mean, lo, hi) = self.inner.predict_ci(x_view, level, s).map_err(map_err)?;
         Ok((
             mean.into_pyarray(py),
             lo.into_pyarray(py),
@@ -212,10 +208,7 @@ impl PyFittedGam {
     /// work transparently by routing through :meth:`serialize` /
     /// :meth:`deserialize`. Returns ``(_reconstruct, (bytes,))`` so the
     /// pickle stream is the same compact binary frame.
-    fn __reduce__<'py>(
-        &self,
-        py: Python<'py>,
-    ) -> PyResult<(Py<PyAny>, (Bound<'py, PyBytes>,))> {
+    fn __reduce__<'py>(&self, py: Python<'py>) -> PyResult<(Py<PyAny>, (Bound<'py, PyBytes>,))> {
         let bytes = self.inner.serialize().map_err(map_err)?;
         let cls = py.get_type::<PyFittedGam>();
         let reconstruct = cls.getattr("deserialize")?.unbind();
@@ -239,10 +232,7 @@ impl PyFittedGam {
     )> {
         let a: ArrayView2<f64> = x_a.as_array();
         let b: ArrayView2<f64> = x_b.as_array();
-        let (diff, lo, hi) = self
-            .inner
-            .predict_diff(a, b, level)
-            .map_err(map_err)?;
+        let (diff, lo, hi) = self.inner.predict_diff(a, b, level).map_err(map_err)?;
         Ok((
             diff.into_pyarray(py),
             lo.into_pyarray(py),
@@ -348,9 +338,7 @@ fn fit<'py>(
     let w_view: Option<ArrayView1<f64>> = w_owned.as_ref().map(|a| a.view());
 
     let fitted: FittedGam = match family_name {
-        "gaussian" => {
-            fit_dispatch_design(gaussian_identity(), x_view, y_view, w_view, design, k)?
-        }
+        "gaussian" => fit_dispatch_design(gaussian_identity(), x_view, y_view, w_view, design, k)?,
         "bernoulli" | "binomial" => {
             fit_dispatch_design(bernoulli_logit(), x_view, y_view, w_view, design, k)?
         }
@@ -362,14 +350,9 @@ fn fit<'py>(
             fit_dispatch_design(quasibinomial_logit(), x_view, y_view, w_view, design, k)?
         }
         "gamma" => fit_dispatch_design(gamma_log(), x_view, y_view, w_view, design, k)?,
-        "inverse_gaussian" | "inverse.gaussian" => fit_dispatch_design(
-            inverse_gaussian_log(),
-            x_view,
-            y_view,
-            w_view,
-            design,
-            k,
-        )?,
+        "inverse_gaussian" | "inverse.gaussian" => {
+            fit_dispatch_design(inverse_gaussian_log(), x_view, y_view, w_view, design, k)?
+        }
         "negbin" | "nb" => {
             let theta_val = theta.unwrap_or(2.0);
             if theta_val <= 0.0 {
@@ -377,14 +360,7 @@ fn fit<'py>(
                     "negbin theta must be > 0; got theta={theta_val}"
                 )));
             }
-            fit_dispatch_design(
-                negbin_log(theta_val),
-                x_view,
-                y_view,
-                w_view,
-                design,
-                k,
-            )?
+            fit_dispatch_design(negbin_log(theta_val), x_view, y_view, w_view, design, k)?
         }
         "tdist" | "scat" => {
             let nu_val = nu.unwrap_or(5.0);
@@ -484,9 +460,8 @@ fn fit<'py>(
 fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<TermSpec>> {
     let mut out: Vec<TermSpec> = Vec::with_capacity(terms.len());
     for (j, item) in terms.iter().enumerate() {
-        let tup: &Bound<'_, pyo3::types::PyTuple> = item
-            .downcast::<pyo3::types::PyTuple>()
-            .map_err(|_| {
+        let tup: &Bound<'_, pyo3::types::PyTuple> =
+            item.downcast::<pyo3::types::PyTuple>().map_err(|_| {
                 PyValueError::new_err(format!(
                     "fit_additive: term {j} must be a tuple; got {item:?}"
                 ))
@@ -630,7 +605,9 @@ fn fit_additive<'py>(
     let term_specs = build_term_specs(&terms)?;
 
     let fitted: FittedGam = match family_name {
-        "gaussian" => fit_additive_dispatch(gaussian_identity(), x_view, y_view, w_view, term_specs)?,
+        "gaussian" => {
+            fit_additive_dispatch(gaussian_identity(), x_view, y_view, w_view, term_specs)?
+        }
         "bernoulli" | "binomial" => {
             fit_additive_dispatch(bernoulli_logit(), x_view, y_view, w_view, term_specs)?
         }

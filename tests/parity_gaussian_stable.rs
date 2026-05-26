@@ -63,11 +63,7 @@ fn max_abs_err(pred: &[f64], target: &[f64]) -> f64 {
 /// Compare the stable path against (a) mgcv and (b) the unrotated CR
 /// path. Stable's rel-err to mgcv should be ≤ unrotated's; the two
 /// paths must agree to FP (basis invariance).
-fn fit_and_check_stable(
-    fixture_name: &str,
-    max_rel_pred: f64,
-    max_invariance_abs: f64,
-) {
+fn fit_and_check_stable(fixture_name: &str, max_rel_pred: f64, max_invariance_abs: f64) {
     let fx = load_fixture(fixture_name);
     let x_vec: Vec<f64> = fx.inputs.x_train.iter().map(|r| r[0]).collect();
     let n = x_vec.len();
@@ -91,9 +87,14 @@ fn fit_and_check_stable(
         .predict(x.view())
         .unwrap_or_else(|e| panic!("predict (stable) failed: {e}"));
 
-    let fit_unrot =
-        gammon::fit(gammon::family::gaussian_identity(), x.view(), y.view(), None, k)
-            .unwrap_or_else(|e| panic!("[{fixture_name}] unrot fit failed: {e}"));
+    let fit_unrot = gammon::fit(
+        gammon::family::gaussian_identity(),
+        x.view(),
+        y.view(),
+        None,
+        k,
+    )
+    .unwrap_or_else(|e| panic!("[{fixture_name}] unrot fit failed: {e}"));
     let pred_unrot = fit_unrot
         .predict(x.view())
         .unwrap_or_else(|e| panic!("predict (unrot) failed: {e}"));
@@ -110,8 +111,8 @@ fn fit_and_check_stable(
         pred_stable.as_slice().unwrap(),
         pred_unrot.as_slice().unwrap(),
     );
-    let scale_rel = (fit_stable.scale - fx.mgcv_output.scale).abs()
-        / fx.mgcv_output.scale.max(1e-12);
+    let scale_rel =
+        (fit_stable.scale - fx.mgcv_output.scale).abs() / fx.mgcv_output.scale.max(1e-12);
 
     println!(
         "[{fixture_name}] stable_vs_mgcv = {rel_stable_vs_mgcv:.3e}; \

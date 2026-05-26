@@ -120,7 +120,9 @@ impl CrSpline {
     fn build_coeffs(&self) -> CrCoeffs {
         let k = self.k;
         let num_int = k - 1;
-        let h: Vec<f64> = (0..num_int).map(|i| self.knots[i + 1] - self.knots[i]).collect();
+        let h: Vec<f64> = (0..num_int)
+            .map(|i| self.knots[i + 1] - self.knots[i])
+            .collect();
 
         let mut vals_at = vec![0.0; k * k];
         let mut b_co = vec![0.0; num_int * k];
@@ -141,8 +143,7 @@ impl CrSpline {
             }
             let c = self.solve_natural_tri(&h, &alpha);
             for i in 0..num_int {
-                let b_i =
-                    (values[i + 1] - values[i]) / h[i] - h[i] * (c[i + 1] + 2.0 * c[i]) / 3.0;
+                let b_i = (values[i + 1] - values[i]) / h[i] - h[i] * (c[i + 1] + 2.0 * c[i]) / 3.0;
                 let d_i = (c[i + 1] - c[i]) / (3.0 * h[i]);
                 vals_at[i * k + j] = values[i];
                 b_co[i * k + j] = b_i;

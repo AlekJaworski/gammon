@@ -86,13 +86,7 @@ pub trait Loss {
     ///
     /// `phi_init` is a warm-start hint (typically the previous outer
     /// iteration's φ̂).
-    fn profile_score_sigma2(
-        &self,
-        dp: f64,
-        _n_obs: usize,
-        n_minus_mp: f64,
-        _phi_init: f64,
-    ) -> f64 {
+    fn profile_score_sigma2(&self, dp: f64, _n_obs: usize, n_minus_mp: f64, _phi_init: f64) -> f64 {
         (dp / n_minus_mp.max(1.0)).max(1e-8)
     }
 

@@ -42,8 +42,7 @@ impl Loss for Tweedie {
         let twop = 2.0 - p;
         let onep = 1.0 - p;
         if y > 0.0 {
-            2.0 * (y.powf(twop) / (onep * twop) - y * mu.powf(onep) / onep
-                + mu.powf(twop) / twop)
+            2.0 * (y.powf(twop) / (onep * twop) - y * mu.powf(onep) / onep + mu.powf(twop) / twop)
         } else {
             2.0 * mu.powf(twop) / twop
         }
@@ -82,7 +81,7 @@ impl Loss for Tweedie {
         let phi = self.phi.max(1e-12);
         let onep = 1.0 - p; // < 0 for 1 < p < 2
         let twop = 2.0 - p; // > 0
-        // l_base = y^(2-p) / ((1-p)(2-p)·φ)
+                            // l_base = y^(2-p) / ((1-p)(2-p)·φ)
         let l_base = y.powf(twop) / (onep * twop * phi);
         let log_w = crate::special::tweedie_log_w(y, phi, p);
         l_base - y.ln() + log_w
@@ -114,7 +113,11 @@ impl Loss for Tweedie {
         2
     }
     fn set_shape_params(&mut self, params: &[f64]) {
-        debug_assert_eq!(params.len(), 2, "Tweedie expects 2 shape params [log φ, p_transform]");
+        debug_assert_eq!(
+            params.len(),
+            2,
+            "Tweedie expects 2 shape params [log φ, p_transform]"
+        );
         // φ floor — keep > 1e-6 so the series log-W stays well-conditioned.
         self.phi = params[0].exp().max(1e-6);
         // p = 1 + sigmoid(θ_p), then clamp to [1.05, 1.95] so the Dunn-
@@ -254,8 +257,7 @@ impl Loss for Tweedie {
         //     [-Σ log W]  → -Σ dlog_w_dp
         // dp/dp_trans = (p-1)·(2-p)
         let dp_dpt = (p - 1.0) * (2.0 - p);
-        let g_p_trans =
-            (sum_dd_dp / (2.0 * phi) - sum_dl_base_dp - sum_dlog_w_dp) * dp_dpt;
+        let g_p_trans = (sum_dd_dp / (2.0 * phi) - sum_dl_base_dp - sum_dlog_w_dp) * dp_dpt;
 
         Some(ndarray::Array1::from_vec(vec![g_log_phi, g_p_trans]))
     }

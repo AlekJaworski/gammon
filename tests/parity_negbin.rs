@@ -2,16 +2,25 @@
 //! + log. mgcv estimates θ via profile-likelihood; gammon does joint Newton
 //! on `[log λ, log θ]`. Compares μ predictions.
 
-use std::path::PathBuf;
 use ndarray::{Array1, Array2};
 use serde::Deserialize;
+use std::path::PathBuf;
 
 #[derive(Deserialize)]
-struct Fixture { inputs: Inputs, mgcv_output: MgcvOutput }
+struct Fixture {
+    inputs: Inputs,
+    mgcv_output: MgcvOutput,
+}
 #[derive(Deserialize)]
-struct Inputs { x_train: Vec<Vec<f64>>, y_train: Vec<f64>, k: Vec<usize> }
+struct Inputs {
+    x_train: Vec<Vec<f64>>,
+    y_train: Vec<f64>,
+    k: Vec<usize>,
+}
 #[derive(Deserialize)]
-struct MgcvOutput { predictions_train: Vec<f64> }
+struct MgcvOutput {
+    predictions_train: Vec<f64>,
+}
 
 fn load(name: &str) -> Fixture {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -21,11 +30,17 @@ fn load(name: &str) -> Fixture {
 }
 
 fn max_rel_err(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs() / (y.abs() + 1.0)).fold(0.0_f64, f64::max)
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs() / (y.abs() + 1.0))
+        .fold(0.0_f64, f64::max)
 }
 
 fn max_abs_err(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0_f64, f64::max)
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0_f64, f64::max)
 }
 
 #[test]

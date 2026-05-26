@@ -12,10 +12,10 @@ use ndarray::{Array1, ArrayView1, ArrayView2};
 
 use crate::design::PreparedDesign;
 use crate::error::Result;
+use crate::family::Gaussian;
 use crate::inner::{GaussianClosedFormInner, LinearSolver};
 use crate::outer::{NewtonOpts, NewtonWithHalving};
 use crate::score::{EnvelopeScore, MgcvTwoSigmaProfile};
-use crate::family::Gaussian;
 use crate::traits::{InnerSolver, OuterSolver};
 
 use super::{compute_edf, compute_edf_per_term, compute_vcov, FittedGam, LinkKind};
@@ -38,16 +38,17 @@ pub(crate) fn fit_gaussian_from_prep<S: LinearSolver>(
         weights.map(|w| w.to_owned()),
         prep.s_list.clone(),
     );
-    let score = EnvelopeScore::<Gaussian, GaussianClosedFormInner<S>, MgcvTwoSigmaProfile, S>::with_inner(
-        inner,
-        Gaussian,
-        MgcvTwoSigmaProfile,
-        y.to_owned(),
-        prep.s_list.clone(),
-        prep.rank_s_list.clone(),
-        prep.mp,
-        prep.log_pseudo_det_s_list.clone(),
-    );
+    let score =
+        EnvelopeScore::<Gaussian, GaussianClosedFormInner<S>, MgcvTwoSigmaProfile, S>::with_inner(
+            inner,
+            Gaussian,
+            MgcvTwoSigmaProfile,
+            y.to_owned(),
+            prep.s_list.clone(),
+            prep.rank_s_list.clone(),
+            prep.mp,
+            prep.log_pseudo_det_s_list.clone(),
+        );
     let outer_solver = NewtonWithHalving::new(NewtonOpts::default());
     let outer = outer_solver.minimize(&score, Array1::zeros(n_terms))?;
 
@@ -73,7 +74,11 @@ pub(crate) fn fit_gaussian_from_prep<S: LinearSolver>(
     }
     let dp = final_fit.rss + bsb_total;
     let n_minus_mp = (n as f64) - (prep.mp as f64);
-    let scale = if n_minus_mp > 0.0 { dp / n_minus_mp } else { f64::NAN };
+    let scale = if n_minus_mp > 0.0 {
+        dp / n_minus_mp
+    } else {
+        f64::NAN
+    };
 
     let vcov = compute_vcov(&final_fit, scale);
     Ok(FittedGam {

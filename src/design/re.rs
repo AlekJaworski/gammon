@@ -13,13 +13,10 @@ use crate::error::{GammonError, Result};
 use crate::traits::Basis;
 
 use super::{
-    prepend_intercept, rank_and_log_pseudo_det, DesignStrategy, PreparedDesign, Predictor,
+    prepend_intercept, rank_and_log_pseudo_det, DesignStrategy, Predictor, PreparedDesign,
 };
 
-#[cfg_attr(
-    feature = "persistence",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct RePredictor {
     /// Unique sorted levels from the training data. Unseen levels at
     /// predict-time map to a zero row (matches mgcv `bs="re"`).
@@ -46,17 +43,12 @@ impl RePredictor {
     /// Build the raw one-hot design + sorted levels for column
     /// `x_col_idx`. Shared with `Additive` so a single column slice flows
     /// through both code paths.
-    pub(crate) fn fit_raw(
-        x: ArrayView2<f64>,
-        x_col_idx: usize,
-    ) -> Result<RawReFit> {
+    pub(crate) fn fit_raw(x: ArrayView2<f64>, x_col_idx: usize) -> Result<RawReFit> {
         let x_col = x.column(x_col_idx);
         let basis = RandomEffectsBasis::from_data(x_col);
         let levels = basis.levels.clone();
         if levels.is_empty() {
-            return Err(GammonError::InvalidParameter(
-                "Re basis: x is empty".into(),
-            ));
+            return Err(GammonError::InvalidParameter("Re basis: x is empty".into()));
         }
         let x_view = x.slice(ndarray::s![.., x_col_idx..x_col_idx + 1]);
         let raw = basis.evaluate(x_view);

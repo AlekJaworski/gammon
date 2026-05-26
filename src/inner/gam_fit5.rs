@@ -29,8 +29,8 @@ use crate::family::{Family, IdentityLink, OcatLoss, OcatVariance};
 use crate::traits::{InnerSolver, Loss};
 
 use super::{
-    add_penalty, beta_sbeta, halve_until_valid, weighted_xt, CholeskySolver,
-    GaussianInnerFit, LinearSolver, PirlsOpts,
+    add_penalty, beta_sbeta, halve_until_valid, weighted_xt, CholeskySolver, GaussianInnerFit,
+    LinearSolver, PirlsOpts,
 };
 
 /// PIRLS-style inner solver for the `ocat` extended family. β is solved
@@ -154,24 +154,14 @@ impl<S: LinearSolver> OcatInner<S> {
                 let pd = d + lambda * beta_sbeta(&s_total, b);
                 (e, d, pd, None)
             };
-            let is_invalid =
-                |e: &Array1<f64>, _m: Option<&Array1<f64>>| -> bool {
-                    !e.iter().all(|ev| ev.is_finite())
-                };
+            let is_invalid = |e: &Array1<f64>, _m: Option<&Array1<f64>>| -> bool {
+                !e.iter().all(|ev| ev.is_finite())
+            };
 
-            let (beta_try, eta_try, dev_try, pdev_try, _mu, accepted) =
-                halve_until_valid(
-                    beta_try0,
-                    &beta_old,
-                    eta_try0,
-                    dev_try0,
-                    pdev_try0,
-                    None,
-                    pdev_old,
-                    iter_one,
-                    recompute,
-                    is_invalid,
-                );
+            let (beta_try, eta_try, dev_try, pdev_try, _mu, accepted) = halve_until_valid(
+                beta_try0, &beta_old, eta_try0, dev_try0, pdev_try0, None, pdev_old, iter_one,
+                recompute, is_invalid,
+            );
 
             if accepted {
                 let beta_max_change = beta_try

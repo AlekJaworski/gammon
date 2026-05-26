@@ -1,15 +1,25 @@
 //! Phase 7 parity test: gammon `fit_gamma_cr` vs mgcv on 1-D Gamma + log.
 
-use std::path::PathBuf;
 use ndarray::{Array1, Array2};
 use serde::Deserialize;
+use std::path::PathBuf;
 
 #[derive(Deserialize)]
-struct Fixture { inputs: Inputs, mgcv_output: MgcvOutput }
+struct Fixture {
+    inputs: Inputs,
+    mgcv_output: MgcvOutput,
+}
 #[derive(Deserialize)]
-struct Inputs { x_train: Vec<Vec<f64>>, y_train: Vec<f64>, k: Vec<usize> }
+struct Inputs {
+    x_train: Vec<Vec<f64>>,
+    y_train: Vec<f64>,
+    k: Vec<usize>,
+}
 #[derive(Deserialize)]
-struct MgcvOutput { predictions_train: Vec<f64>, scale: f64 }
+struct MgcvOutput {
+    predictions_train: Vec<f64>,
+    scale: f64,
+}
 
 fn load(name: &str) -> Fixture {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -19,11 +29,17 @@ fn load(name: &str) -> Fixture {
 }
 
 fn max_rel_err(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs() / (y.abs() + 1.0)).fold(0.0_f64, f64::max)
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs() / (y.abs() + 1.0))
+        .fold(0.0_f64, f64::max)
 }
 
 fn max_abs_err(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0_f64, f64::max)
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0_f64, f64::max)
 }
 
 #[test]
@@ -54,5 +70,8 @@ fn gamma_log_n300_k10_cr() {
     // (omitting lgamma/digamma terms in φ) costs some parity vs mgcv's
     // exact φ-Newton; documented in family.rs::Gamma docstring.
     assert!(rel < 2e-2, "Gamma μ rel error {rel:.3e} exceeds 2e-2");
-    assert!(scale_rel < 1e-1, "Gamma φ̂ rel error {scale_rel:.3e} exceeds 1e-1");
+    assert!(
+        scale_rel < 1e-1,
+        "Gamma φ̂ rel error {scale_rel:.3e} exceeds 1e-1"
+    );
 }

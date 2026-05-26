@@ -31,10 +31,7 @@ use super::{prepend_intercept, prepend_zero_column};
 /// grids + each margin's `XP` reparameterisation matrix (mgcv smooth.r
 /// line 817) + the tensor-level centring matrix `C` so the design can be
 /// rebuilt on new x.
-#[cfg_attr(
-    feature = "persistence",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct TensorPredictor {
     pub col_a: usize,
     pub col_b: usize,
@@ -66,11 +63,7 @@ impl TensorPredictor {
         Ok(prepend_intercept(centred.view()))
     }
 
-    pub(crate) fn design_deriv(
-        &self,
-        x_new: ArrayView2<f64>,
-        axis: usize,
-    ) -> Result<Array2<f64>> {
+    pub(crate) fn design_deriv(&self, x_new: ArrayView2<f64>, axis: usize) -> Result<Array2<f64>> {
         self.check_cols(x_new)?;
         let raw_d1 = self.tensor_design(x_new, Some(axis));
         let centred_d1 = raw_d1.dot(&self.centring);
@@ -93,11 +86,7 @@ impl TensorPredictor {
     /// If `deriv_axis` is `Some(axis)`, the corresponding margin's
     /// derivative is used (and the other margin's design is unchanged);
     /// if `axis` matches neither column, the result is a zero matrix.
-    fn tensor_design(
-        &self,
-        x_new: ArrayView2<f64>,
-        deriv_axis: Option<usize>,
-    ) -> Array2<f64> {
+    fn tensor_design(&self, x_new: ArrayView2<f64>, deriv_axis: Option<usize>) -> Array2<f64> {
         let (MarginKind::Cr, MarginKind::Cr) = (self.bs_a, self.bs_b);
         let cr_a = CrSpline::new(self.knots_a.clone()).expect("invalid stored knots_a");
         let cr_b = CrSpline::new(self.knots_b.clone()).expect("invalid stored knots_b");

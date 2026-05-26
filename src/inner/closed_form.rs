@@ -45,14 +45,7 @@ pub fn gaussian_inner_solve<S: LinearSolver>(
     s_total: ArrayView2<f64>,
 ) -> Result<GaussianInnerFit<S>> {
     let (xtwx, xtwy) = xtwx_xtwy(x_design, y, weights);
-    gaussian_inner_solve_cached::<S>(
-        x_design,
-        y,
-        weights,
-        xtwx.view(),
-        xtwy.view(),
-        s_total,
-    )
+    gaussian_inner_solve_cached::<S>(x_design, y, weights, xtwx.view(), xtwy.view(), s_total)
 }
 
 /// `crate::traits::InnerSolver` impl for the Gaussian + identity-link path.
@@ -84,8 +77,11 @@ impl<S: LinearSolver> GaussianClosedFormInner<S> {
         weights: Option<Array1<f64>>,
         s_list: Vec<Array2<f64>>,
     ) -> Self {
-        let (cached_xtwx, cached_xtwy) =
-            xtwx_xtwy(x_design.view(), y.view(), weights.as_ref().map(|w| w.view()));
+        let (cached_xtwx, cached_xtwy) = xtwx_xtwy(
+            x_design.view(),
+            y.view(),
+            weights.as_ref().map(|w| w.view()),
+        );
         Self {
             x_design,
             y,

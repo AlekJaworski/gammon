@@ -27,22 +27,22 @@ pub mod inner;
 pub mod outer;
 pub mod score;
 pub mod special;
-pub mod transform;
 pub mod traits;
+pub mod transform;
 
 #[cfg(feature = "python")]
 pub mod python;
 
 pub use design::{
     combined_s, Additive, AdditivePredictor, Cr, CrPredictor, CrStable, CrStablePredictor,
-    DesignStrategy, PreparedDesign, Predictor, Re, RePredictor, TermSpec,
+    DesignStrategy, Predictor, PreparedDesign, Re, RePredictor, TermSpec,
 };
 pub use error::{GammonError, Result};
+pub use family::{ocat_init_theta, OcatLoss, OcatVariance};
 pub use fit::{
     fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver,
-    FittedGam, FitWithProfile, LinkKind, PredictScale,
+    FitWithProfile, FittedGam, LinkKind, PredictScale,
 };
-pub use transform::{StableReparam, SumToZero};
-pub use family::{ocat_init_theta, OcatLoss, OcatVariance};
 pub use inner::{CholeskySolver, LinearSolver, LuSolver};
 pub use score::{FixedAtOneProfile, MgcvTwoSigmaProfile, OwnedByLossProfile, Profile};
+pub use transform::{StableReparam, SumToZero};

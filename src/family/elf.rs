@@ -89,9 +89,7 @@ pub(crate) fn elf_parts(y: f64, mu: f64, tau: f64, sigma: f64, lambda: f64) -> E
     // dl = s(1-s)/λ — derivative of logistic CDF.
     let dl = s * (1.0 - s) / lambda;
     // t = λ(1-τ)log(1-τ) + λτ·log(τ) - (1-τ)r + λ·softplus
-    let t = (1.0 - tau) * lambda * (1.0 - tau).ln()
-        + lambda * tau * tau.ln()
-        - (1.0 - tau) * r
+    let t = (1.0 - tau) * lambda * (1.0 - tau).ln() + lambda * tau * tau.ln() - (1.0 - tau) * r
         + lambda * softplus;
     // v0.x: dmu_qgam = -2(s - 1 + τ)/σ — this is ∂(2L)/∂μ.
     let dmu_qgam = -2.0 * (s - 1.0 + tau) / sigma;
@@ -135,8 +133,7 @@ impl Loss for ElfLoss {
         // log B(a, b) = lgamma(a) + lgamma(b) - lgamma(a+b)
         let log_beta = crate::special::log_gamma(a) + crate::special::log_gamma(b)
             - crate::special::log_gamma(a + b);
-        (1.0 - tau) * lambda * (1.0 - tau).ln() / sigma
-            + lambda * tau * tau.ln() / sigma
+        (1.0 - tau) * lambda * (1.0 - tau).ln() / sigma + lambda * tau * tau.ln() / sigma
             - lambda.ln()
             - log_beta
     }
@@ -175,7 +172,11 @@ impl VarianceFn for ElfVariance {
 /// Phase 10 convenience constructor — ELF + identity link at given
 /// (τ, σ, λ). σ and λ are typically set by `fit_quantile_cr` from a
 /// data-driven heuristic; pass `1.0` for both as a placeholder.
-pub fn elf_identity(tau: f64, sigma: f64, lambda: f64) -> Family<ElfLoss, IdentityLink, ElfVariance> {
+pub fn elf_identity(
+    tau: f64,
+    sigma: f64,
+    lambda: f64,
+) -> Family<ElfLoss, IdentityLink, ElfVariance> {
     Family::new(
         ElfLoss { tau, sigma, lambda },
         IdentityLink,

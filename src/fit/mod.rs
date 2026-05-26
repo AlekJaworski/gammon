@@ -49,8 +49,7 @@ mod persistence;
 pub mod quantile;
 
 pub use canonical::{
-    fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver,
-    FitWithProfile,
+    fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver, FitWithProfile,
 };
 
 /// Link kind tag carried on the [`FittedGam`] so `predict_ci` /
@@ -61,10 +60,7 @@ pub use canonical::{
 /// these three canonical links. New families adopting a new link kind
 /// extend this enum (a library-controlled change).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(
-    feature = "persistence",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub enum LinkKind {
     Identity,
     Log,
@@ -113,10 +109,7 @@ pub enum PredictScale {
     Response,
 }
 
-#[cfg_attr(
-    feature = "persistence",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct FittedGam {
     /// Coefficient vector: `[intercept, term_1 coefs, term_2 coefs, …]`.
     /// Layout depends on the [`Predictor`] (CR centred basis, RE one-hot,
@@ -296,7 +289,11 @@ impl FittedGam {
             for j in 0..p_a {
                 delta_row[j] = ra[j] - rb[j];
             }
-            let d: f64 = delta_row.iter().zip(self.beta.iter()).map(|(a, b)| a * b).sum();
+            let d: f64 = delta_row
+                .iter()
+                .zip(self.beta.iter())
+                .map(|(a, b)| a * b)
+                .sum();
             let v = self.vcov.dot(&delta_row);
             let var_i: f64 = delta_row.iter().zip(v.iter()).map(|(a, b)| a * b).sum();
             let se = var_i.max(0.0).sqrt();
@@ -316,21 +313,24 @@ impl FittedGam {
 /// Kept local (no extra crate dep) — gammon intentionally avoids a stats
 /// crate at this layer. Validates `0 < p < 1`; panics on out-of-range.
 fn normal_quantile(p: f64) -> f64 {
-    assert!(0.0 < p && p < 1.0, "normal_quantile: p must be in (0,1), got {p}");
+    assert!(
+        0.0 < p && p < 1.0,
+        "normal_quantile: p must be in (0,1), got {p}"
+    );
     // Acklam's algorithm.
     let a = [
         -3.969683028665376e+01,
-         2.209460984245205e+02,
+        2.209460984245205e+02,
         -2.759285104469687e+02,
-         1.383577518672690e+02,
+        1.383577518672690e+02,
         -3.066479806614716e+01,
-         2.506628277459239e+00,
+        2.506628277459239e+00,
     ];
     let b = [
         -5.447609879822406e+01,
-         1.615858368580409e+02,
+        1.615858368580409e+02,
         -1.556989798598866e+02,
-         6.680131188771972e+01,
+        6.680131188771972e+01,
         -1.328068155288572e+01,
     ];
     let c = [
@@ -338,30 +338,30 @@ fn normal_quantile(p: f64) -> f64 {
         -3.223964580411365e-01,
         -2.400758277161838e+00,
         -2.549732539343734e+00,
-         4.374664141464968e+00,
-         2.938163982698783e+00,
+        4.374664141464968e+00,
+        2.938163982698783e+00,
     ];
     let d = [
-         7.784695709041462e-03,
-         3.224671290700398e-01,
-         2.445134137142996e+00,
-         3.754408661907416e+00,
+        7.784695709041462e-03,
+        3.224671290700398e-01,
+        2.445134137142996e+00,
+        3.754408661907416e+00,
     ];
     let p_low = 0.02425;
     let p_high = 1.0 - p_low;
     if p < p_low {
         let q = (-2.0 * p.ln()).sqrt();
-        (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])
-            / ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1.0)
+        (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+            / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
     } else if p <= p_high {
         let q = p - 0.5;
-        let r = q*q;
-        (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q
-            / (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1.0)
+        let r = q * q;
+        (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q
+            / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
     } else {
         let q = (-2.0 * (1.0 - p).ln()).sqrt();
-        -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5])
-            / ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1.0)
+        -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5])
+            / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
     }
 }
 

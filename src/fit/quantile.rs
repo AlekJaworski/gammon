@@ -11,9 +11,7 @@ use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use crate::design::PreparedDesign;
 use crate::error::{GammonError, Result};
 use crate::family::{elf_identity, ElfLoss};
-use crate::inner::{
-    ArmijoElfInner, ArmijoElfOpts, GaussianInnerFit, LinearSolver,
-};
+use crate::inner::{ArmijoElfInner, ArmijoElfOpts, GaussianInnerFit, LinearSolver};
 use crate::outer::{NewtonOpts, NewtonWithHalving};
 use crate::score::{EnvelopeScore, FixedAtOneProfile};
 use crate::traits::{InnerSolver, OuterSolver};
@@ -93,7 +91,11 @@ fn derive_elf_sigma_lambda(
     tau: f64,
 ) -> (f64, f64) {
     if init_sigma > 0.0 {
-        let lambda_eff = if init_lambda > 0.0 { init_lambda } else { init_sigma };
+        let lambda_eff = if init_lambda > 0.0 {
+            init_lambda
+        } else {
+            init_sigma
+        };
         return (init_sigma, lambda_eff);
     }
     let err = 0.05_f64;
@@ -102,7 +104,11 @@ fn derive_elf_sigma_lambda(
         err * (2.0 * std::f64::consts::PI * sigma2_floor).sqrt() / (2.0 * 2.0_f64.ln());
     let tail_scale = (1.0 / (4.0 * tau * (1.0 - tau))).max(1.0);
     let sigma_auto = co_default * tail_scale;
-    let lambda_auto = if init_lambda > 0.0 { init_lambda } else { sigma_auto };
+    let lambda_auto = if init_lambda > 0.0 {
+        init_lambda
+    } else {
+        sigma_auto
+    };
     (sigma_auto, lambda_auto)
 }
 
@@ -149,7 +155,11 @@ pub(crate) fn fit_quantile_from_prep<S: LinearSolver>(
     };
     let score = EnvelopeScore::<ElfLoss, ArmijoElfInner<S>, FixedAtOneProfile, S>::with_inner(
         inner,
-        ElfLoss { tau, sigma, lambda: lambda_elf },
+        ElfLoss {
+            tau,
+            sigma,
+            lambda: lambda_elf,
+        },
         FixedAtOneProfile,
         y.to_owned(),
         prep.s_list.clone(),

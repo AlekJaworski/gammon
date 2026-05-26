@@ -86,9 +86,7 @@ fn scat_unweighted_n300_k10_cr() {
     .expect("gammon::fit (scat/TDist) should not fail");
     assert!(fit.converged, "scat outer did not converge");
 
-    let pred = fit
-        .predict(x.view())
-        .expect("predict should not fail");
+    let pred = fit.predict(x.view()).expect("predict should not fail");
 
     let rmse_v = rmse(pred.as_slice().unwrap(), &fx.mgcv_output.predictions_train);
     let rel = max_rel_err(pred.as_slice().unwrap(), &fx.mgcv_output.predictions_train);

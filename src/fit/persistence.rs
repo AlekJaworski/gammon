@@ -53,9 +53,7 @@ impl FittedGam {
     /// original fit.
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let body = serde_json::to_vec(self).map_err(|e| {
-            GammonError::InvalidParameter(format!(
-                "FittedGam::serialize: JSON encode failed: {e}"
-            ))
+            GammonError::InvalidParameter(format!("FittedGam::serialize: JSON encode failed: {e}"))
         })?;
         let len = body.len() as u64;
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
@@ -99,11 +97,9 @@ impl FittedGam {
         let mut l8 = [0u8; 8];
         l8.copy_from_slice(&bytes[10..18]);
         let body_len = u64::from_le_bytes(l8) as usize;
-        let end = HEADER_LEN
-            .checked_add(body_len)
-            .ok_or_else(|| GammonError::InvalidParameter(
-                "FittedGam::deserialize: length overflow".into(),
-            ))?;
+        let end = HEADER_LEN.checked_add(body_len).ok_or_else(|| {
+            GammonError::InvalidParameter("FittedGam::deserialize: length overflow".into())
+        })?;
         if bytes.len() < end {
             return Err(GammonError::InvalidParameter(format!(
                 "FittedGam::deserialize: truncated body (have {} bytes, header \
@@ -127,9 +123,7 @@ impl FittedGam {
     /// `format_version` byte.
     pub fn serialize_json(&self) -> Result<String> {
         serde_json::to_string(self).map_err(|e| {
-            GammonError::InvalidParameter(format!(
-                "FittedGam::serialize_json: encode failed: {e}"
-            ))
+            GammonError::InvalidParameter(format!("FittedGam::serialize_json: encode failed: {e}"))
         })
     }
 

@@ -34,16 +34,12 @@ pub use bernoulli::{bernoulli_logit, Bernoulli, BinomialVariance};
 pub use elf::{elf_identity, ElfLoss, ElfVariance};
 pub use gamma::{gamma_log, Gamma, GammaVariance};
 pub use gaussian::{gaussian_identity, ConstantVariance, Gaussian};
-pub use inverse_gaussian::{
-    inverse_gaussian_log, InverseGaussian, InverseGaussianVariance,
-};
+pub use inverse_gaussian::{inverse_gaussian_log, InverseGaussian, InverseGaussianVariance};
 pub use link::{IdentityLink, LogLink, LogitLink};
 pub use negbin::{negbin_log, NegBin, NegBinVariance};
 pub use ocat::{ocat_identity, ocat_init_theta, OcatLoss, OcatVariance};
 pub use poisson::{poisson_log, Poisson, PoissonVariance};
-pub use quasi::{
-    quasibinomial_logit, quasipoisson_log, QuasiBinomial, QuasiPoisson,
-};
+pub use quasi::{quasibinomial_logit, quasipoisson_log, QuasiBinomial, QuasiPoisson};
 pub use tdist::{tdist_identity, TDist, TVariance};
 pub use tweedie::{tweedie_log, Tweedie, TweedieVariance};
 

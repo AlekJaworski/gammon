@@ -87,11 +87,7 @@ pub fn trigamma(mut x: f64) -> f64 {
 ///
 /// Only `1 < p < 2` is supported (compound-Poisson-Gamma region).
 /// Returns zeros for y ≤ 0 (no series needed at the point mass at 0).
-pub fn tweedie_series(
-    y: &[f64],
-    phi: f64,
-    p: f64,
-) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
+pub fn tweedie_series(y: &[f64], phi: f64, p: f64) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
     let n = y.len();
     let mut log_w_out = vec![0.0f64; n];
     let mut dlog_w_drho_out = vec![0.0f64; n];
@@ -228,7 +224,12 @@ pub fn tweedie_series(
         dlog_w_dp_out[i] = wdlogwdp / wi;
     }
 
-    (log_w_out, dlog_w_drho_out, d2_log_w_drho2_out, dlog_w_dp_out)
+    (
+        log_w_out,
+        dlog_w_drho_out,
+        d2_log_w_drho2_out,
+        dlog_w_dp_out,
+    )
 }
 
 /// Tweedie saturated log-W per observation — `log W(y; φ, p)` summed over

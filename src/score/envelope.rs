@@ -67,8 +67,12 @@ pub struct EnvelopeScore<
 /// Phase-0 / Phase-1 convenience type alias for the Gaussian one-Cholesky
 /// inner with the mgcv two-σ² convention. PIRLS-iterative families wire
 /// `EnvelopeScore<L, PirlsInner<L, K, V>, P>` directly.
-pub type GaussianClosedFormScore =
-    EnvelopeScore<Gaussian, GaussianClosedFormInner<CholeskySolver>, MgcvTwoSigmaProfile, CholeskySolver>;
+pub type GaussianClosedFormScore = EnvelopeScore<
+    Gaussian,
+    GaussianClosedFormInner<CholeskySolver>,
+    MgcvTwoSigmaProfile,
+    CholeskySolver,
+>;
 
 impl<L, I, P, S> EnvelopeScore<L, I, P, S>
 where
@@ -208,7 +212,12 @@ where
         for j in 0..n_terms {
             let s_j = &self.s_list[j];
             let s_beta = s_j.dot(&inner.beta);
-            let bsb_j: f64 = inner.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            let bsb_j: f64 = inner
+                .beta
+                .iter()
+                .zip(s_beta.iter())
+                .map(|(a, b)| a * b)
+                .sum();
             let tr_hinv_s_j = inner.trace_a_inv(s_j.view());
             bsb_per_term.push(bsb_j);
             tr_hinv_s_per_term.push(tr_hinv_s_j);
@@ -254,17 +263,14 @@ where
         // and scalar `bsb`; here we pass `lambda = 1` and the pre-computed
         // `bsb_total = Σ_j λ_j β'S_jβ` so `dp = D + 1·bsb_total` matches
         // the multi-smooth Dp.
-        let score_sigma2 = match self.profile.dispersion(
-            &self.loss,
-            &inner,
-            1.0,
-            bsb_total,
-            tr_hinv_xtwx,
-            self.mp,
-        ) {
-            Some(phi) => phi,
-            None => return Ok((1e12, Array1::zeros(n_terms))),
-        };
+        let score_sigma2 =
+            match self
+                .profile
+                .dispersion(&self.loss, &inner, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
+            {
+                Some(phi) => phi,
+                None => return Ok((1e12, Array1::zeros(n_terms))),
+            };
 
         // `Dp = D + Σ_j λ_j·β'S_jβ`.
         let dp = inner.deviance + bsb_total;
@@ -291,8 +297,7 @@ where
         // InverseGaussian) the general form is the only correct one.
         let two_pi = 2.0 * std::f64::consts::PI;
         let mp_f = self.mp as f64;
-        let reml = dp / (2.0 * score_sigma2)
-            - 0.5 * mp_f * (two_pi * score_sigma2).ln()
+        let reml = dp / (2.0 * score_sigma2) - 0.5 * mp_f * (two_pi * score_sigma2).ln()
             + 0.5 * log_det_h
             - 0.5 * log_det_lambda_s
             - ls_sum;

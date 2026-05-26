@@ -13,9 +13,7 @@ use gammon::{CrStable, Re};
 fn assert_predictions_identical(orig: &FittedGam, restored: &FittedGam, x: &Array1<f64>) {
     let x2 = x.view().insert_axis(Axis(1));
     let p_orig = orig.predict(x2).expect("orig predict failed");
-    let p_new = restored
-        .predict(x2)
-        .expect("restored predict failed");
+    let p_new = restored.predict(x2).expect("restored predict failed");
     assert_eq!(p_orig.len(), p_new.len());
     for (i, (a, b)) in p_orig.iter().zip(p_new.iter()).enumerate() {
         assert!(
@@ -43,8 +41,14 @@ fn fitted_gam_bincode_roundtrip_gaussian_cr() {
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (2.0 * xi).sin()).collect();
 
-    let fit = gammon::fit(gaussian_identity(), x.view().insert_axis(Axis(1)), y.view(), None, 10)
-        .expect("gaussian fit failed");
+    let fit = gammon::fit(
+        gaussian_identity(),
+        x.view().insert_axis(Axis(1)),
+        y.view(),
+        None,
+        10,
+    )
+    .expect("gaussian fit failed");
 
     let bytes = fit.serialize().expect("serialize failed");
     let restored = FittedGam::deserialize(&bytes).expect("deserialize failed");
@@ -71,14 +75,24 @@ fn fitted_gam_bincode_roundtrip_bernoulli_cr() {
             let p = 1.0 / (1.0 + (-eta).exp());
             let h = (i.wrapping_mul(2654435761)) as u32;
             let u = (h as f64) / (u32::MAX as f64);
-            if u < p { 1.0 } else { 0.0 }
+            if u < p {
+                1.0
+            } else {
+                0.0
+            }
         })
         .collect();
     let x = Array1::from_vec(xs);
     let y = Array1::from_vec(ys);
 
-    let fit = gammon::fit(bernoulli_logit(), x.view().insert_axis(Axis(1)), y.view(), None, 10)
-        .expect("bernoulli fit failed");
+    let fit = gammon::fit(
+        bernoulli_logit(),
+        x.view().insert_axis(Axis(1)),
+        y.view(),
+        None,
+        10,
+    )
+    .expect("bernoulli fit failed");
     let bytes = fit.serialize().expect("serialize failed");
     let restored = FittedGam::deserialize(&bytes).expect("deserialize failed");
 
@@ -100,14 +114,24 @@ fn fitted_gam_bincode_roundtrip_tweedie_cr() {
             let h = (i.wrapping_mul(2654435761)) as u32;
             let u = (h as f64) / (u32::MAX as f64);
             let mu = (2.0 * x).exp();
-            if u < 0.3 { 0.0 } else { mu * (1.0 + 0.5 * (u - 0.5)) }
+            if u < 0.3 {
+                0.0
+            } else {
+                mu * (1.0 + 0.5 * (u - 0.5))
+            }
         })
         .collect();
     let x = Array1::from_vec(xs);
     let y = Array1::from_vec(ys);
 
-    let fit = gammon::fit(tweedie_log(1.5, 1.0), x.view().insert_axis(Axis(1)), y.view(), None, 8)
-        .expect("tweedie fit failed");
+    let fit = gammon::fit(
+        tweedie_log(1.5, 1.0),
+        x.view().insert_axis(Axis(1)),
+        y.view(),
+        None,
+        8,
+    )
+    .expect("tweedie fit failed");
     let bytes = fit.serialize().expect("serialize failed");
     let restored = FittedGam::deserialize(&bytes).expect("deserialize failed");
 
@@ -134,8 +158,14 @@ fn fitted_gam_roundtrip_re_predictor_variant() {
     let x = Array1::from_vec(xs);
     let y = Array1::from_vec(ys);
 
-    let fit = gammon::fit_with_design(gaussian_identity(), Re, x.view().insert_axis(Axis(1)), y.view(), None)
-        .expect("re fit failed");
+    let fit = gammon::fit_with_design(
+        gaussian_identity(),
+        Re,
+        x.view().insert_axis(Axis(1)),
+        y.view(),
+        None,
+    )
+    .expect("re fit failed");
     let bytes = fit.serialize().expect("serialize failed");
     let restored = FittedGam::deserialize(&bytes).expect("deserialize failed");
 
@@ -169,7 +199,9 @@ fn fitted_gam_roundtrip_cr_stable_predictor_variant() {
 
 #[test]
 fn deserialize_rejects_bad_magic() {
-    let bytes = vec![b'N', b'O', b'P', b'E', b'!', b'!', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let bytes = vec![
+        b'N', b'O', b'P', b'E', b'!', b'!', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
     let err = match FittedGam::deserialize(&bytes) {
         Ok(_) => panic!("deserialize must reject bad magic"),
         Err(e) => e,
@@ -199,7 +231,14 @@ fn deserialize_rejects_truncated_body() {
     let n = 50;
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (2.0 * xi).sin()).collect();
-    let fit = gammon::fit(gaussian_identity(), x.view().insert_axis(Axis(1)), y.view(), None, 6).unwrap();
+    let fit = gammon::fit(
+        gaussian_identity(),
+        x.view().insert_axis(Axis(1)),
+        y.view(),
+        None,
+        6,
+    )
+    .unwrap();
     let bytes = fit.serialize().unwrap();
     let truncated = &bytes[..bytes.len() - 5];
     let err = match FittedGam::deserialize(truncated) {
@@ -216,9 +255,19 @@ fn serialize_size_smoke_gaussian_n500() {
     let n = 500;
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (2.0 * xi).sin()).collect();
-    let fit = gammon::fit(gaussian_identity(), x.view().insert_axis(Axis(1)), y.view(), None, 10).unwrap();
+    let fit = gammon::fit(
+        gaussian_identity(),
+        x.view().insert_axis(Axis(1)),
+        y.view(),
+        None,
+        10,
+    )
+    .unwrap();
     let bytes = fit.serialize().unwrap();
-    println!("serialized size (Gaussian n=500, k=10): {} bytes", bytes.len());
+    println!(
+        "serialized size (Gaussian n=500, k=10): {} bytes",
+        bytes.len()
+    );
     // Rough guard: a single-smooth Gaussian fit should fit in a few KB.
     assert!(
         bytes.len() < 20_000,
@@ -233,7 +282,14 @@ fn json_roundtrip_is_byte_for_byte_predictions() {
     let n = 150;
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (2.0 * xi).sin()).collect();
-    let fit = gammon::fit(gaussian_identity(), x.view().insert_axis(Axis(1)), y.view(), None, 8).unwrap();
+    let fit = gammon::fit(
+        gaussian_identity(),
+        x.view().insert_axis(Axis(1)),
+        y.view(),
+        None,
+        8,
+    )
+    .unwrap();
     let s = fit.serialize_json().unwrap();
     let restored = FittedGam::deserialize_json(&s).unwrap();
     assert_predictions_identical(&fit, &restored, &x);

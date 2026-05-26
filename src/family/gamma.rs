@@ -78,28 +78,18 @@ impl Loss for Gamma {
     /// Verbatim port from v0.x `src/pirls/mod.rs::Family::estimate_phi_mgcv`
     /// Gamma branch (lines 847-883). Triple guard: per-step relative damping
     /// `max(*0.1).min(*10)`, absolute floor `1e-8`, NaN trap.
-    fn profile_score_sigma2(
-        &self,
-        dp: f64,
-        n_obs: usize,
-        n_minus_mp: f64,
-        phi_init: f64,
-    ) -> f64 {
+    fn profile_score_sigma2(&self, dp: f64, n_obs: usize, n_minus_mp: f64, phi_init: f64) -> f64 {
         let n = n_obs as f64;
         let mp_f = n - n_minus_mp;
         let mut phi = phi_init.max(1e-8);
         let tol_abs = 1e-10 * (dp.abs() + mp_f + 1.0);
         for _ in 0..30 {
             let inv_phi = 1.0 / phi;
-            let f = dp
-                + 2.0 * n * (crate::special::digamma(inv_phi) + phi.ln())
-                + mp_f * phi;
+            let f = dp + 2.0 * n * (crate::special::digamma(inv_phi) + phi.ln()) + mp_f * phi;
             if f.abs() < tol_abs {
                 break;
             }
-            let fp = (2.0 * n / phi)
-                * (1.0 - crate::special::trigamma(inv_phi) * inv_phi)
-                + mp_f;
+            let fp = (2.0 * n / phi) * (1.0 - crate::special::trigamma(inv_phi) * inv_phi) + mp_f;
             // Guard against zero / near-zero derivative.
             if fp.abs() < 1e-15 {
                 break;

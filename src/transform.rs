@@ -263,10 +263,7 @@ mod tests {
         let centred = stz.evaluate(x2.view());
         let colsums = centred.sum_axis(Axis(0));
         for (j, &cs) in colsums.iter().enumerate() {
-            assert!(
-                cs.abs() < 1e-9,
-                "centred col {j} sums to {cs}, expected 0"
-            );
+            assert!(cs.abs() < 1e-9, "centred col {j} sums to {cs}, expected 0");
         }
         assert_eq!(centred.ncols(), 4); // k-1 = 5-1
     }
@@ -296,10 +293,7 @@ mod tests {
     /// Build the centred-block penalty and the SumToZero<CrSpline> basis
     /// from a fitted CR spline. Returns the basis + penalty needed by
     /// `StableReparam::from_inner_penalty`.
-    fn build_centred_cr(
-        knots: Array1<f64>,
-        x: &Array1<f64>,
-    ) -> (SumToZero<CrSpline>, Array2<f64>) {
+    fn build_centred_cr(knots: Array1<f64>, x: &Array1<f64>) -> (SumToZero<CrSpline>, Array2<f64>) {
         let cr = CrSpline::new(knots).unwrap();
         let x2 = col(x);
         let raw_design = cr.evaluate(x2.view());
@@ -403,7 +397,10 @@ mod tests {
             .zip(expected.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f64, f64::max);
-        assert!(max_diff < 1e-12, "rotated eval != centred·V (max_diff {max_diff:.3e})");
+        assert!(
+            max_diff < 1e-12,
+            "rotated eval != centred·V (max_diff {max_diff:.3e})"
+        );
     }
 
     #[test]

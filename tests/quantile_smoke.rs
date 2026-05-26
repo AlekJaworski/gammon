@@ -71,17 +71,18 @@ fn quantile_three_taus_monotone_and_converged() {
             10, // k
         )
         .unwrap_or_else(|e| panic!("gammon::fit (ELF, τ={tau}) failed: {e}"));
-        assert!(
-            fit.converged,
-            "τ={tau}: outer Newton did not converge"
-        );
+        assert!(fit.converged, "τ={tau}: outer Newton did not converge");
         // Sensible iteration count — shouldn't be at the cap.
-        assert!(fit.n_iters > 0 && fit.n_iters < 50,
-            "τ={tau}: outer iters = {} (expected 1..50)", fit.n_iters);
+        assert!(
+            fit.n_iters > 0 && fit.n_iters < 50,
+            "τ={tau}: outer iters = {} (expected 1..50)",
+            fit.n_iters
+        );
         // EDF is real-valued and plausible (between 1 and k).
         assert!(
             fit.edf_total.is_finite() && fit.edf_total >= 0.5 && fit.edf_total <= 10.0,
-            "τ={tau}: edf = {} out of plausible range", fit.edf_total
+            "τ={tau}: edf = {} out of plausible range",
+            fit.edf_total
         );
 
         let pred = fit.predict(x2).expect("predict failed");

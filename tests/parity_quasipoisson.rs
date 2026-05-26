@@ -58,8 +58,14 @@ fn quasipoisson_log_n300_k10_cr() {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
 
-    let fit = gammon::fit(gammon::family::quasipoisson_log(), x.view(), y.view(), None, k)
-        .expect("gammon::fit (QuasiPoisson) should not fail");
+    let fit = gammon::fit(
+        gammon::family::quasipoisson_log(),
+        x.view(),
+        y.view(),
+        None,
+        k,
+    )
+    .expect("gammon::fit (QuasiPoisson) should not fail");
     assert!(fit.converged, "QuasiPoisson outer did not converge");
 
     let eta = fit.predict(x.view()).expect("predict failed");
@@ -67,8 +73,7 @@ fn quasipoisson_log_n300_k10_cr() {
 
     let rel = max_rel_err(&mu_gammon, &fx.mgcv_output.predictions_train);
     let abs_e = max_abs_err(&mu_gammon, &fx.mgcv_output.predictions_train);
-    let scale_rel =
-        (fit.scale - fx.mgcv_output.scale).abs() / fx.mgcv_output.scale.max(1e-12);
+    let scale_rel = (fit.scale - fx.mgcv_output.scale).abs() / fx.mgcv_output.scale.max(1e-12);
     println!(
         "[quasipoisson n300 k10] max_rel = {rel:.3e}; max_abs = {abs_e:.3e}; \
          φ̂ gammon = {:.4} vs mgcv = {:.4} (rel {scale_rel:.3e}); \
@@ -79,7 +84,10 @@ fn quasipoisson_log_n300_k10_cr() {
     // Phase-4 bound: 5e-3 on predictions (same as Poisson), and 5e-2 on
     // φ̂ (looser because dispersion is profiled and the gammon-vs-mgcv
     // φ̂ alignment depends on the score's σ² convention).
-    assert!(rel < 5e-3, "QuasiPoisson μ rel error {rel:.3e} exceeds 5e-3");
+    assert!(
+        rel < 5e-3,
+        "QuasiPoisson μ rel error {rel:.3e} exceeds 5e-3"
+    );
     assert!(
         scale_rel < 5e-2,
         "QuasiPoisson φ̂ rel error {scale_rel:.3e} exceeds 5e-2"

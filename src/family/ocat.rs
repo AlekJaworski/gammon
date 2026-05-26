@@ -42,10 +42,7 @@ impl OcatLoss {
             n_cats - 2,
             "Ocat thresholds length must equal n_cats - 2"
         );
-        Self {
-            thresholds,
-            n_cats,
-        }
+        Self { thresholds, n_cats }
     }
 
     /// Boundary-aware logistic-CDF difference `F(b) − F(a)`, cancellation
@@ -252,7 +249,11 @@ pub fn ocat_identity(
     thresholds: ndarray::Array1<f64>,
     n_cats: usize,
 ) -> Family<OcatLoss, IdentityLink, OcatVariance> {
-    Family::new(OcatLoss::new(thresholds, n_cats), IdentityLink, OcatVariance)
+    Family::new(
+        OcatLoss::new(thresholds, n_cats),
+        IdentityLink,
+        OcatVariance,
+    )
 }
 
 /// Initial log-gap threshold heuristic from category counts. Mirrors mgcv

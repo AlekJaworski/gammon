@@ -31,8 +31,8 @@ pub use armijo::{ArmijoElfInner, ArmijoElfOpts};
 pub use closed_form::{gaussian_inner_solve, GaussianClosedFormInner};
 pub use gam_fit5::OcatInner;
 pub use linalg::{
-    chol_back_solve, chol_forward_solve, factor_and_solve_with_ridge,
-    CholeskySolver, LinearSolver, LuSolver,
+    chol_back_solve, chol_forward_solve, factor_and_solve_with_ridge, CholeskySolver, LinearSolver,
+    LuSolver,
 };
 pub use pirls::{PirlsInner, PirlsOpts};
 
@@ -275,23 +275,29 @@ pub(crate) fn halve_until_valid<F, V>(
     iter_one: bool,
     mut recompute: F,
     is_invalid: V,
-) -> (Array1<f64>, Array1<f64>, f64, f64, Option<Array1<f64>>, bool)
+) -> (
+    Array1<f64>,
+    Array1<f64>,
+    f64,
+    f64,
+    Option<Array1<f64>>,
+    bool,
+)
 where
     F: FnMut(&Array1<f64>) -> (Array1<f64>, f64, f64, Option<Array1<f64>>),
     V: Fn(&Array1<f64>, Option<&Array1<f64>>) -> bool,
 {
     let p = beta_try.len();
     let div_thresh = 10.0 * (0.1 + pdev_old.abs()) * f64::EPSILON.sqrt();
-    let needs_halve =
-        |pdev_t: f64, eta_t: &Array1<f64>, mu_t: Option<&Array1<f64>>| -> bool {
-            if !pdev_t.is_finite() {
-                return true;
-            }
-            if is_invalid(eta_t, mu_t) {
-                return true;
-            }
-            !iter_one && pdev_t - pdev_old > div_thresh
-        };
+    let needs_halve = |pdev_t: f64, eta_t: &Array1<f64>, mu_t: Option<&Array1<f64>>| -> bool {
+        if !pdev_t.is_finite() {
+            return true;
+        }
+        if is_invalid(eta_t, mu_t) {
+            return true;
+        }
+        !iter_one && pdev_t - pdev_old > div_thresh
+    };
 
     let mut halvings = 0usize;
     while needs_halve(pdev_try, &eta_try, mu_try.as_ref()) && halvings < 100 {

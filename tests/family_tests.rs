@@ -100,7 +100,13 @@ fn bernoulli_deviance_is_zero_at_y_eq_mu() {
 
 #[test]
 fn bernoulli_d_loss_dmu_matches_fd() {
-    fd_d_loss(&Bernoulli, &[0.0, 1.0], &[0.1, 0.3, 0.5, 0.7, 0.9], 1e-6, 1e-5);
+    fd_d_loss(
+        &Bernoulli,
+        &[0.0, 1.0],
+        &[0.1, 0.3, 0.5, 0.7, 0.9],
+        1e-6,
+        1e-5,
+    );
 }
 
 #[test]
@@ -113,7 +119,10 @@ fn logit_link_round_trips() {
     let l = LogitLink;
     for &mu in &[0.01, 0.3, 0.5, 0.7, 0.99] {
         let recovered = l.inverse_link(l.link(mu));
-        assert!((recovered - mu).abs() < 1e-12, "mu={mu} recovered={recovered}");
+        assert!(
+            (recovered - mu).abs() < 1e-12,
+            "mu={mu} recovered={recovered}"
+        );
     }
 }
 
@@ -154,7 +163,10 @@ fn binomial_variance_is_mu_one_minus_mu() {
 
 #[test]
 fn tdist_deviance_zero_at_y_eq_mu() {
-    let t = TDist { nu: 5.0, sigma2: 0.25 };
+    let t = TDist {
+        nu: 5.0,
+        sigma2: 0.25,
+    };
     assert!(t.deviance_per_obs(0.5, 0.5).abs() < 1e-12);
 }
 
@@ -186,14 +198,20 @@ fn tdist_d2_loss_dmu_matches_fd() {
 
 #[test]
 fn tdist_shape_params_roundtrip() {
-    let original = TDist { nu: 4.5, sigma2: 0.16 };
+    let original = TDist {
+        nu: 4.5,
+        sigma2: 0.16,
+    };
     let params = original.get_shape_params();
     assert_eq!(params.len(), 2);
     // params = [log(0.16), log(4.5 - 2)]
     assert!((params[0] - 0.16_f64.ln()).abs() < 1e-12);
     assert!((params[1] - 2.5_f64.ln()).abs() < 1e-12);
 
-    let mut restored = TDist { nu: 99.0, sigma2: 99.0 };
+    let mut restored = TDist {
+        nu: 99.0,
+        sigma2: 99.0,
+    };
     restored.set_shape_params(&params);
     assert!((restored.nu - 4.5).abs() < 1e-12);
     assert!((restored.sigma2 - 0.16).abs() < 1e-12);
@@ -217,7 +235,10 @@ fn family_shape_params_sync_loss_and_variance() {
 fn tdist_d2_is_negative_for_outliers() {
     // Robust-regression property: d²L/dμ² should turn NEGATIVE when
     // |y - μ| > √(ν·σ²), i.e. outliers reduce the loss curvature.
-    let t = TDist { nu: 4.0, sigma2: 1.0 };
+    let t = TDist {
+        nu: 4.0,
+        sigma2: 1.0,
+    };
     let threshold = (t.nu * t.sigma2).sqrt(); // = 2.0
     assert!(t.d2_loss_dmu(0.0, 0.0) > 0.0);
     assert!(t.d2_loss_dmu(1.0, 0.0) > 0.0);
@@ -239,12 +260,24 @@ fn poisson_deviance_zero_at_y_eq_mu() {
 
 #[test]
 fn poisson_d_loss_dmu_matches_fd() {
-    fd_d_loss(&Poisson, &[0.0, 1.0, 5.0, 10.0], &[0.5, 1.0, 3.0, 8.0, 20.0], 1e-6, 1e-5);
+    fd_d_loss(
+        &Poisson,
+        &[0.0, 1.0, 5.0, 10.0],
+        &[0.5, 1.0, 3.0, 8.0, 20.0],
+        1e-6,
+        1e-5,
+    );
 }
 
 #[test]
 fn poisson_d2_loss_dmu_matches_fd() {
-    fd_d2_loss(&Poisson, &[1.0, 5.0, 10.0], &[0.5, 1.0, 3.0, 8.0], 1e-4, 1e-3);
+    fd_d2_loss(
+        &Poisson,
+        &[1.0, 5.0, 10.0],
+        &[0.5, 1.0, 3.0, 8.0],
+        1e-4,
+        1e-3,
+    );
 }
 
 #[test]
@@ -252,7 +285,10 @@ fn log_link_round_trips() {
     let l = LogLink;
     for &mu in &[0.1, 1.0, 5.0, 100.0] {
         let recovered = l.inverse_link(l.link(mu));
-        assert!((recovered - mu).abs() / mu < 1e-12, "μ={mu} recovered={recovered}");
+        assert!(
+            (recovered - mu).abs() / mu < 1e-12,
+            "μ={mu} recovered={recovered}"
+        );
     }
 }
 
@@ -289,14 +325,26 @@ fn negbin_deviance_zero_at_y_eq_mu_for_positive_y() {
 #[test]
 fn negbin_d_loss_dmu_matches_fd() {
     for &theta in &[0.5, 2.0, 10.0] {
-        fd_d_loss(&NegBin { theta }, &[0.0, 1.0, 5.0, 20.0], &[0.5, 1.0, 5.0, 20.0], 1e-6, 1e-5);
+        fd_d_loss(
+            &NegBin { theta },
+            &[0.0, 1.0, 5.0, 20.0],
+            &[0.5, 1.0, 5.0, 20.0],
+            1e-6,
+            1e-5,
+        );
     }
 }
 
 #[test]
 fn negbin_d2_loss_dmu_matches_fd() {
     for &theta in &[1.0, 5.0] {
-        fd_d2_loss(&NegBin { theta }, &[0.0, 2.0, 10.0], &[1.0, 3.0, 8.0], 1e-4, 1e-3);
+        fd_d2_loss(
+            &NegBin { theta },
+            &[0.0, 2.0, 10.0],
+            &[1.0, 3.0, 8.0],
+            1e-4,
+            1e-3,
+        );
     }
 }
 
@@ -347,7 +395,13 @@ fn gamma_deviance_zero_at_y_eq_mu() {
 
 #[test]
 fn gamma_d_loss_dmu_matches_fd() {
-    fd_d_loss(&Gamma, &[0.1, 1.0, 5.0, 20.0], &[0.5, 1.0, 5.0, 20.0], 1e-6, 1e-5);
+    fd_d_loss(
+        &Gamma,
+        &[0.1, 1.0, 5.0, 20.0],
+        &[0.5, 1.0, 5.0, 20.0],
+        1e-6,
+        1e-5,
+    );
 }
 
 #[test]
@@ -368,7 +422,13 @@ fn invgauss_deviance_zero_at_y_eq_mu() {
 
 #[test]
 fn invgauss_d_loss_dmu_matches_fd() {
-    fd_d_loss(&InverseGaussian, &[0.5, 1.0, 5.0], &[0.5, 1.0, 5.0], 1e-6, 1e-5);
+    fd_d_loss(
+        &InverseGaussian,
+        &[0.5, 1.0, 5.0],
+        &[0.5, 1.0, 5.0],
+        1e-6,
+        1e-5,
+    );
 }
 
 #[test]
@@ -384,7 +444,13 @@ fn invgauss_variance_is_mu_cubed() {
 #[test]
 fn tweedie_d_loss_dmu_matches_fd() {
     for &p in &[1.3, 1.5, 1.7] {
-        fd_d_loss(&Tweedie { p, phi: 1.0 }, &[0.0, 1.0, 5.0], &[0.5, 1.0, 3.0], 1e-6, 1e-5);
+        fd_d_loss(
+            &Tweedie { p, phi: 1.0 },
+            &[0.0, 1.0, 5.0],
+            &[0.5, 1.0, 3.0],
+            1e-6,
+            1e-5,
+        );
     }
 }
 
@@ -425,14 +491,26 @@ fn ocat_deviance_is_nonnegative_and_finite() {
 fn ocat_d_loss_dmu_matches_fd() {
     let theta = ndarray::Array1::from_vec(vec![0.4_f64, 0.6]);
     let ocat = OcatLoss::new(theta, 4);
-    fd_d_loss(&ocat, &[1.0, 2.0, 3.0, 4.0], &[-0.3, 0.1, 0.7, 1.2], 1e-6, 1e-5);
+    fd_d_loss(
+        &ocat,
+        &[1.0, 2.0, 3.0, 4.0],
+        &[-0.3, 0.1, 0.7, 1.2],
+        1e-6,
+        1e-5,
+    );
 }
 
 #[test]
 fn ocat_d2_loss_dmu_matches_fd_of_dmu() {
     let theta = ndarray::Array1::from_vec(vec![0.4_f64, 0.6]);
     let ocat = OcatLoss::new(theta, 4);
-    fd_d2_loss(&ocat, &[1.0, 2.0, 3.0, 4.0], &[-0.3, 0.1, 0.7, 1.2], 1e-4, 1e-3);
+    fd_d2_loss(
+        &ocat,
+        &[1.0, 2.0, 3.0, 4.0],
+        &[-0.3, 0.1, 0.7, 1.2],
+        1e-4,
+        1e-3,
+    );
 }
 
 #[test]

@@ -18,8 +18,8 @@ use crate::family::{ElfLoss, ElfVariance, Family, IdentityLink};
 use crate::traits::InnerSolver;
 
 use super::{
-    add_penalty, chol_back_solve, cholesky_with_safety_ridge, chol_forward_solve,
-    weighted_xt, CholeskySolver, GaussianInnerFit, LinearSolver,
+    add_penalty, chol_back_solve, chol_forward_solve, cholesky_with_safety_ridge, weighted_xt,
+    CholeskySolver, GaussianInnerFit, LinearSolver,
 };
 
 /// `InnerSolver` for the qgam-style Quantile/ELF family.
@@ -123,18 +123,15 @@ impl<S: LinearSolver> ArmijoElfInner<S> {
         // β init: warm-start if provided, else zero. The fit_quantile_cr
         // driver always supplies a Gaussian-warm-start β; this branch
         // is only for direct trait-stack callers (smoke tests).
-        let mut beta: Array1<f64> = self
-            .beta_init
-            .clone()
-            .unwrap_or_else(|| Array1::zeros(p));
+        let mut beta: Array1<f64> = self.beta_init.clone().unwrap_or_else(|| Array1::zeros(p));
 
         // Penalised ELF deviance — the Armijo objective.
         let elf_pen_deviance = |b: &Array1<f64>| -> f64 {
             let eta_t = self.x_design.dot(b);
             let mut total = 0.0_f64;
             for i in 0..n {
-                let d = crate::family::elf_parts(self.y[i], eta_t[i], tau, sigma, lambda_elf)
-                    .deviance;
+                let d =
+                    crate::family::elf_parts(self.y[i], eta_t[i], tau, sigma, lambda_elf).deviance;
                 if !d.is_finite() {
                     return f64::INFINITY;
                 }
@@ -162,14 +159,8 @@ impl<S: LinearSolver> ArmijoElfInner<S> {
             let mut w = Array1::<f64>::zeros(n);
             let mut g = Array1::<f64>::zeros(n);
             for i in 0..n {
-                let s_i = crate::family::elf_parts(
-                    self.y[i],
-                    eta[i],
-                    tau,
-                    sigma,
-                    lambda_elf,
-                )
-                .sigmoid;
+                let s_i =
+                    crate::family::elf_parts(self.y[i], eta[i], tau, sigma, lambda_elf).sigmoid;
                 // w_i = s_i(1-s_i) / (σ λ)
                 w[i] = s_i * (1.0 - s_i) / (sigma * lambda_elf);
                 // g_i = (s_i - (1-τ)) / σ
@@ -256,8 +247,7 @@ impl<S: LinearSolver> ArmijoElfInner<S> {
         let mut working_response = Array1::<f64>::zeros(n);
         let mut deviance = 0.0_f64;
         for i in 0..n {
-            let parts =
-                crate::family::elf_parts(self.y[i], eta[i], tau, sigma, lambda_elf);
+            let parts = crate::family::elf_parts(self.y[i], eta[i], tau, sigma, lambda_elf);
             // ELF working weight w_i = ∂²L/∂μ² / 2 (since deviance = 2L,
             // the working weight should be d²(L)/dμ² to match the
             // Fisher-info Hessian shape used in PIRLS).
@@ -266,7 +256,11 @@ impl<S: LinearSolver> ArmijoElfInner<S> {
             // working response: η + g/w  where  g = (s - (1-τ))/σ, well-defined
             // when w > 0.
             let g_i = (parts.sigmoid - (1.0 - tau)) / sigma;
-            working_response[i] = if w_i > 1e-12 { eta[i] + g_i / w_i } else { eta[i] };
+            working_response[i] = if w_i > 1e-12 {
+                eta[i] + g_i / w_i
+            } else {
+                eta[i]
+            };
             deviance += parts.deviance;
         }
 

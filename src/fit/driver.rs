@@ -12,13 +12,9 @@ use ndarray::{Array1, ArrayView1, ArrayView2};
 use crate::design::PreparedDesign;
 use crate::error::Result;
 use crate::family::Family;
-use crate::inner::{
-    CholeskySolver, GaussianInnerFit, LinearSolver, PirlsInner, PirlsOpts,
-};
+use crate::inner::{CholeskySolver, GaussianInnerFit, LinearSolver, PirlsInner, PirlsOpts};
 use crate::outer::{NewtonOpts, NewtonWithHalving};
-use crate::score::{
-    EnvelopeScore, Profile, ShapeAwareEnvelopeScore, ShapeInnerBuilder,
-};
+use crate::score::{EnvelopeScore, Profile, ShapeAwareEnvelopeScore, ShapeInnerBuilder};
 use crate::traits::{CoordsKind, InnerSolver, Link, Loss, OuterSolver, VarianceFn};
 
 use super::{compute_edf, compute_edf_per_term, compute_vcov, FittedGam, LinkKind};

@@ -73,8 +73,14 @@ fn fit_and_check(fixture_name: &str, max_rel_pred: f64) {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
 
-    let fit = gammon::fit(gammon::family::bernoulli_logit(), x.view(), y.view(), None, k)
-        .unwrap_or_else(|e| panic!("[{fixture_name}] fit failed: {e}"));
+    let fit = gammon::fit(
+        gammon::family::bernoulli_logit(),
+        x.view(),
+        y.view(),
+        None,
+        k,
+    )
+    .unwrap_or_else(|e| panic!("[{fixture_name}] fit failed: {e}"));
     assert!(fit.converged, "[{fixture_name}] outer did not converge");
 
     // gammon's `predict` for Bernoulli returns η = X·β (link scale). mgcv's

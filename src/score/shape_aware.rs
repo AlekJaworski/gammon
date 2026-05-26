@@ -49,7 +49,13 @@ struct FrozenBetaCtx {
 /// - `OcatInnerBuilder<S>` — drives the ocat extended family via `OcatInner`,
 ///   constrained to `Family<OcatLoss, IdentityLink, OcatVariance>` (the
 ///   only valid Loss/Link/Variance triple for ordered categorical).
-pub trait ShapeInnerBuilder<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver = CholeskySolver> {
+pub trait ShapeInnerBuilder<
+    L: Loss + Clone,
+    K: Link + Clone,
+    V: VarianceFn + Clone,
+    S: LinearSolver = CholeskySolver,
+>
+{
     type Inner: InnerSolver<Fit = GaussianInnerFit<S>>;
 
     fn build(
@@ -184,24 +190,12 @@ where
 
 /// PIRLS-driven shape-aware score — what TDist/scat, NegBin use.
 /// (φ fixed at 1 — for Tweedie use `ShapeAwarePirlsScoreOwnedPhi`.)
-pub type ShapeAwarePirlsScore<L, K, V> = ShapeAwareEnvelopeScore<
-    L,
-    K,
-    V,
-    PirlsInnerBuilder,
-    FixedAtOneProfile,
-    CholeskySolver,
->;
+pub type ShapeAwarePirlsScore<L, K, V> =
+    ShapeAwareEnvelopeScore<L, K, V, PirlsInnerBuilder, FixedAtOneProfile, CholeskySolver>;
 
 /// PIRLS-driven shape-aware score with φ read live off the Loss — Tweedie.
-pub type ShapeAwarePirlsScoreOwnedPhi<L, K, V> = ShapeAwareEnvelopeScore<
-    L,
-    K,
-    V,
-    PirlsInnerBuilder,
-    OwnedByLossProfile,
-    CholeskySolver,
->;
+pub type ShapeAwarePirlsScoreOwnedPhi<L, K, V> =
+    ShapeAwareEnvelopeScore<L, K, V, PirlsInnerBuilder, OwnedByLossProfile, CholeskySolver>;
 
 /// Ocat-driven shape-aware score — what `fit_ocat_cr` uses (φ ≡ 1).
 pub type ShapeAwareOcatScore = ShapeAwareEnvelopeScore<
@@ -270,10 +264,7 @@ where
     /// Returns the inner fit plus the rebuilt family (so the score body
     /// can read `loss.saturated_log_lik` / `loss.fixed_dispersion`
     /// consistent with the params).
-    fn fit_inner_at(
-        &self,
-        theta: &Array1<f64>,
-    ) -> Result<(GaussianInnerFit<S>, Family<L, K, V>)> {
+    fn fit_inner_at(&self, theta: &Array1<f64>) -> Result<(GaussianInnerFit<S>, Family<L, K, V>)> {
         let n_shape = self.family_base.n_shape_params();
         debug_assert_eq!(
             theta.len(),
@@ -309,12 +300,7 @@ where
     /// `OcatLoss::saturated_log_lik = 0`, so the formula collapses to
     /// `D/2 + log|H|/2 - log|λS|+/2 - Mp/2·log(2π)` — the same formula
     /// `ShapeAwareOcatScore` used pre-unification.
-    fn score_value(
-        &self,
-        fit: &GaussianInnerFit<S>,
-        family: &Family<L, K, V>,
-        rho: f64,
-    ) -> f64 {
+    fn score_value(&self, fit: &GaussianInnerFit<S>, family: &Family<L, K, V>, rho: f64) -> f64 {
         let lambda = rho.exp();
         let s_beta = self.s_list[0].dot(&fit.beta);
         let bsb: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
@@ -323,16 +309,16 @@ where
         // FixedAtOneProfile and OwnedByLossProfile in the shape-aware
         // path, so the cheap `p` upper-bound is fine.
         let tr_hinv_xtwx = fit.p as f64;
-        let phi = match self
-            .profile
-            .dispersion(&family.loss, fit, lambda, bsb, tr_hinv_xtwx, self.mp)
-        {
-            Some(p) => p,
-            None => return 1e12,
-        };
+        let phi =
+            match self
+                .profile
+                .dispersion(&family.loss, fit, lambda, bsb, tr_hinv_xtwx, self.mp)
+            {
+                Some(p) => p,
+                None => return 1e12,
+            };
         let log_det_h = fit.log_det_a();
-        let log_det_lambda_s =
-            (self.rank_s_list[0] as f64) * rho + self.log_pseudo_det_s_list[0];
+        let log_det_lambda_s = (self.rank_s_list[0] as f64) * rho + self.log_pseudo_det_s_list[0];
         let ls_sum: f64 = self
             .y
             .iter()
@@ -340,9 +326,7 @@ where
             .sum();
         let two_pi = 2.0 * std::f64::consts::PI;
         let mp = self.mp as f64;
-        dp / (2.0 * phi)
-            - 0.5 * mp * (two_pi * phi).ln()
-            + 0.5 * log_det_h
+        dp / (2.0 * phi) - 0.5 * mp * (two_pi * phi).ln() + 0.5 * log_det_h
             - 0.5 * log_det_lambda_s
             - ls_sum
     }
@@ -368,8 +352,7 @@ where
             .dispersion(&family.loss, &fit, lambda, bsb, tr_hinv_xtwx, self.mp)
             .unwrap_or(1.0);
         // ∂REML/∂(log λ) = λβ'Sβ/(2φ) + λ·tr(H⁻¹S)/2 - rank_s/2
-        let g_rho = lambda * bsb / (2.0 * phi)
-            + 0.5 * lambda * tr_hinv_s
+        let g_rho = lambda * bsb / (2.0 * phi) + 0.5 * lambda * tr_hinv_s
             - 0.5 * (self.rank_s_list[0] as f64);
 
         // Shape-param gradient: try analytic first; fall back to central FD.
@@ -597,8 +580,7 @@ where
             .dispersion(&family.loss, fit, lambda, bsb, tr_hinv_xtwx, self.mp)
             .unwrap_or(1.0);
 
-        let g_rho = lambda * bsb / (2.0 * phi_center)
-            + 0.5 * lambda * tr_hinv_s
+        let g_rho = lambda * bsb / (2.0 * phi_center) + 0.5 * lambda * tr_hinv_s
             - 0.5 * (self.rank_s_list[0] as f64);
 
         let n_shape = family.n_shape_params();
@@ -683,8 +665,7 @@ where
             .dispersion(&family.loss, fit, lambda, ctx.bsb, fit.p as f64, self.mp)
             .unwrap_or(ctx.phi_center);
 
-        let g_rho = lambda * ctx.bsb / (2.0 * phi)
-            + 0.5 * lambda * ctx.tr_hinv_s
+        let g_rho = lambda * ctx.bsb / (2.0 * phi) + 0.5 * lambda * ctx.tr_hinv_s
             - 0.5 * (self.rank_s_list[0] as f64);
 
         let mut g = Array1::<f64>::zeros(1 + n_shape);

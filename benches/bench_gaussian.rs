@@ -34,12 +34,26 @@ fn main() {
     let y = Array1::from_vec(ys);
 
     // Warm up.
-    let _ = gammon::fit(gammon::family::gaussian_identity(), x.view(), y.view(), None, k).unwrap();
+    let _ = gammon::fit(
+        gammon::family::gaussian_identity(),
+        x.view(),
+        y.view(),
+        None,
+        k,
+    )
+    .unwrap();
 
     let runs = 200;
     let t0 = Instant::now();
     for _ in 0..runs {
-        let _ = gammon::fit(gammon::family::gaussian_identity(), x.view(), y.view(), None, k).unwrap();
+        let _ = gammon::fit(
+            gammon::family::gaussian_identity(),
+            x.view(),
+            y.view(),
+            None,
+            k,
+        )
+        .unwrap();
     }
     let elapsed = t0.elapsed();
     let per_fit = elapsed / runs;

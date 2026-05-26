@@ -59,13 +59,7 @@ fn ocat_1d_recovers_monotone_smooth() {
     // R = 4 categories, true latent η(x) = 4·(x − 0.5) (monotone increasing).
     // Thresholds: α = [−∞, −1, 0.5, 2.0, +∞]  →  log-gaps θ = [log 1.5, log 1.5].
     let n_cats = 4usize;
-    let alpha = vec![
-        f64::NEG_INFINITY,
-        -1.0_f64,
-        0.5,
-        2.0,
-        f64::INFINITY,
-    ];
+    let alpha = vec![f64::NEG_INFINITY, -1.0_f64, 0.5, 2.0, f64::INFINITY];
 
     let n = 400usize;
     let xs: Vec<f64> = (0..n).map(|i| (i as f64) / (n as f64 - 1.0)).collect();
@@ -82,14 +76,8 @@ fn ocat_1d_recovers_monotone_smooth() {
     // Canonical entry: build the family with the default init θ that the
     // wrapper used to derive internally on `None`.
     let theta0 = ocat_init_theta(y.view(), n_cats);
-    let fit = gammon::fit(
-        ocat_identity(theta0, n_cats),
-        x.view(),
-        y.view(),
-        None,
-        10,
-    )
-    .expect("gammon::fit (Ocat) should not fail");
+    let fit = gammon::fit(ocat_identity(theta0, n_cats), x.view(), y.view(), None, 10)
+        .expect("gammon::fit (Ocat) should not fail");
 
     println!(
         "[ocat smoke] ρ̂ = {:.3}; iters = {}; edf = {:.2}; reml = {:.3}; converged = {}",

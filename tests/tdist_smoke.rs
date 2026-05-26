@@ -33,9 +33,9 @@ fn tdist_pirls_runs_via_trait_stack() {
             // Pseudo-deterministic "t-distributed" noise: clip-tail.
             let h = (i.wrapping_mul(2654435761)) as u32;
             let u = (h as f64 / u32::MAX as f64) - 0.5; // U(-0.5, 0.5)
-            // Generate a draw from approximate t_4 via inverse-CDF-ish.
-            // For the smoke test we just want heavy-tailed noise: scale by
-            // 1/(0.1 + |u|) gives a power-law tail.
+                                                        // Generate a draw from approximate t_4 via inverse-CDF-ish.
+                                                        // For the smoke test we just want heavy-tailed noise: scale by
+                                                        // 1/(0.1 + |u|) gives a power-law tail.
             let noise = 0.05 * u.signum() / (0.5 - u.abs() + 0.05);
             signal + noise
         })
@@ -98,10 +98,7 @@ fn tdist_pirls_runs_via_trait_stack() {
     assert!(fit.converged, "TDist PIRLS didn't converge");
     println!(
         "TDist PIRLS: iters={} dev={:.4} edf={} beta[0]={:.4}",
-        fit.iterations,
-        fit.deviance,
-        fit.p,
-        fit.beta[0]
+        fit.iterations, fit.deviance, fit.p, fit.beta[0]
     );
 
     // Sanity: μ should be roughly bounded by the signal range, not blown

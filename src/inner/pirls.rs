@@ -9,8 +9,8 @@ use crate::family::Family;
 use crate::traits::{InnerSolver, Link, Loss, VarianceFn};
 
 use super::{
-    add_penalty, beta_sbeta, factor_and_solve_with_ridge, halve_until_valid,
-    weighted_xt, CholeskySolver, GaussianInnerFit, LinearSolver,
+    add_penalty, beta_sbeta, factor_and_solve_with_ridge, halve_until_valid, weighted_xt,
+    CholeskySolver, GaussianInnerFit, LinearSolver,
 };
 
 /// `crate::traits::InnerSolver` impl for any `Family<L, K, V>` via PIRLS.
@@ -36,7 +36,12 @@ use super::{
 /// `S: LinearSolver` (default `CholeskySolver`) picks the factorisation
 /// backend at the type level — `PirlsInner<L, K, V, LuSolver>` swaps
 /// Cholesky for LAPACK LU with no other code changes.
-pub struct PirlsInner<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver = CholeskySolver> {
+pub struct PirlsInner<
+    L: Loss + Clone,
+    K: Link + Clone,
+    V: VarianceFn + Clone,
+    S: LinearSolver = CholeskySolver,
+> {
     pub x_design: Array2<f64>,
     pub y: Array1<f64>,
     pub prior_weights: Option<Array1<f64>>,
@@ -115,8 +120,10 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         if let Some(e0) = &self.opts.eta_init {
             eta.assign(e0);
         }
-        let mut mu: Array1<f64> =
-            eta.iter().map(|&e| self.family.link.inverse_link(e)).collect();
+        let mut mu: Array1<f64> = eta
+            .iter()
+            .map(|&e| self.family.link.inverse_link(e))
+            .collect();
         let mut dev = self.compute_deviance(&mu, &prior_w);
 
         let mut beta = Array1::<f64>::zeros(p);
@@ -151,8 +158,8 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
                 // Phase-5b port — ridged factor used ONLY for β̂; the
                 // unridged factor is returned as `a_factor` and feeds
                 // log|H| / tr(H⁻¹S). See `gaussian_inner_solve`.
-                let (factor, b) = factor_and_solve_with_ridge::<S>(&a, xtwz.view())
-                    .map_err(|e| match e {
+                let (factor, b) =
+                    factor_and_solve_with_ridge::<S>(&a, xtwz.view()).map_err(|e| match e {
                         GammonError::SingularSystem(msg) => {
                             GammonError::SingularSystem(format!("PIRLS factor: {msg}"))
                         }
@@ -169,15 +176,19 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             let iter_one = it == 0;
             let beta_try0 = beta_trial.clone();
             let eta_try0 = self.x_design.dot(&beta_try0);
-            let mu_try0: Array1<f64> =
-                eta_try0.iter().map(|&e| self.family.link.inverse_link(e)).collect();
+            let mu_try0: Array1<f64> = eta_try0
+                .iter()
+                .map(|&e| self.family.link.inverse_link(e))
+                .collect();
             let dev_try0 = self.compute_deviance(&mu_try0, &prior_w);
             let pdev_try0 = dev_try0 + lambda * beta_sbeta(&s_total, &beta_try0);
 
             let recompute = |b: &Array1<f64>| {
                 let e = self.x_design.dot(b);
-                let m: Array1<f64> =
-                    e.iter().map(|&ev| self.family.link.inverse_link(ev)).collect();
+                let m: Array1<f64> = e
+                    .iter()
+                    .map(|&ev| self.family.link.inverse_link(ev))
+                    .collect();
                 let d = self.compute_deviance(&m, &prior_w);
                 let pd = d + lambda * beta_sbeta(&s_total, b);
                 (e, d, pd, Some(m))
@@ -187,19 +198,18 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
                 !self.eta_mu_valid(e, m)
             };
 
-            let (beta_try, eta_try, dev_try, pdev_try, mu_try_opt, accepted) =
-                halve_until_valid(
-                    beta_try0,
-                    &beta,
-                    eta_try0,
-                    dev_try0,
-                    pdev_try0,
-                    Some(mu_try0),
-                    pdev_old,
-                    iter_one,
-                    recompute,
-                    is_invalid,
-                );
+            let (beta_try, eta_try, dev_try, pdev_try, mu_try_opt, accepted) = halve_until_valid(
+                beta_try0,
+                &beta,
+                eta_try0,
+                dev_try0,
+                pdev_try0,
+                Some(mu_try0),
+                pdev_old,
+                iter_one,
+                recompute,
+                is_invalid,
+            );
 
             if accepted {
                 let dev_change = (dev - dev_try).abs() / (dev.abs() + 1e-30);
@@ -579,7 +589,12 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             if !eta[i].is_finite() || !mu[i].is_finite() {
                 return false;
             }
-            if !self.family.loss.deviance_per_obs(self.y[i], mu[i]).is_finite() {
+            if !self
+                .family
+                .loss
+                .deviance_per_obs(self.y[i], mu[i])
+                .is_finite()
+            {
                 return false;
             }
         }

@@ -43,7 +43,14 @@ fn diag_low_signal_beta_coefficientwise() {
     let x = Array2::from_shape_vec((n, 1), x_vec).unwrap();
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
-    let fit = gammon::fit(gammon::family::gaussian_identity(), x.view(), y.view(), None, k).unwrap();
+    let fit = gammon::fit(
+        gammon::family::gaussian_identity(),
+        x.view(),
+        y.view(),
+        None,
+        k,
+    )
+    .unwrap();
     let lambda_mgcv = fx.mgcv_output.lambda[0];
     let rho_mgcv = lambda_mgcv.ln();
 
@@ -53,14 +60,23 @@ fn diag_low_signal_beta_coefficientwise() {
     println!("mgcv ρ   = {:.10}", rho_mgcv);
     println!("Δρ       = {:.3e}", rho_scalar - rho_mgcv);
     println!();
-    println!("scale: gammon={:.10e} mgcv={:.10e}", fit.scale, fx.mgcv_output.scale);
+    println!(
+        "scale: gammon={:.10e} mgcv={:.10e}",
+        fit.scale, fx.mgcv_output.scale
+    );
     println!();
     println!("β coefficient-wise:");
     println!("  idx | gammon                | mgcv                | Δ");
     for i in 0..fit.beta.len() {
         let c = fit.beta[i];
         let m = fx.mgcv_output.beta[i];
-        println!("  {:>3} | {:>20.10e} | {:>20.10e} | {:>10.3e}", i, c, m, c - m);
+        println!(
+            "  {:>3} | {:>20.10e} | {:>20.10e} | {:>10.3e}",
+            i,
+            c,
+            m,
+            c - m
+        );
     }
     println!();
     let pred = fit.predict(x.view()).unwrap();
@@ -76,8 +92,20 @@ fn diag_low_signal_beta_coefficientwise() {
     // (sanity), the gap is in the basis or β itself.
     // Sanity: predict reproduces fit.beta · design.
     let p0 = pred[0];
-    let p_recomputed = fit.beta.iter().enumerate().map(|(i, b)| {
-        if i == 0 { *b } else { 0.0 } // crude: just verify intercept lines up
-    }).sum::<f64>();
-    println!("predict[0] = {:.6e}; β[0] (intercept) = {:.6e}", p0, p_recomputed);
+    let p_recomputed = fit
+        .beta
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            if i == 0 {
+                *b
+            } else {
+                0.0
+            } // crude: just verify intercept lines up
+        })
+        .sum::<f64>();
+    println!(
+        "predict[0] = {:.6e}; β[0] (intercept) = {:.6e}",
+        p0, p_recomputed
+    );
 }

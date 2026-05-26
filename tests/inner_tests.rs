@@ -55,7 +55,11 @@ fn pirls_bernoulli_recovers_logistic_fit_on_noisy_data() {
         _solver: PhantomData,
     };
     let fit = solver.fit(&array![-5.0]).unwrap(); // tiny but nonzero λ
-    assert!(fit.beta[1] < 0.0, "slope should be negative; got {}", fit.beta[1]);
+    assert!(
+        fit.beta[1] < 0.0,
+        "slope should be negative; got {}",
+        fit.beta[1]
+    );
     assert!(fit.converged, "PIRLS did not converge");
     assert_eq!(fit.eta.len(), 10);
     assert_eq!(fit.mu.len(), 10);

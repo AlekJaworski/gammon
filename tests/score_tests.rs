@@ -33,7 +33,12 @@ fn score_value_at_fixed_sigma2(
     .unwrap();
     let lambda = rho.exp();
     let s_beta = score.s_list[0].dot(&inner.beta);
-    let bsb: f64 = inner.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+    let bsb: f64 = inner
+        .beta
+        .iter()
+        .zip(s_beta.iter())
+        .map(|(a, b)| a * b)
+        .sum();
     let dp = inner.rss + lambda * bsb;
     let log_det_h = inner.log_det_a();
     let log_det_lambda_s = (score.rank_s_list[0] as f64) * rho + score.log_pseudo_det_s_list[0];
@@ -44,9 +49,7 @@ fn score_value_at_fixed_sigma2(
         .iter()
         .map(|&y| score.loss.saturated_log_lik(y, fixed_sigma2))
         .sum();
-    dp / (2.0 * fixed_sigma2)
-        - 0.5 * mp_f * (two_pi * fixed_sigma2).ln()
-        + 0.5 * log_det_h
+    dp / (2.0 * fixed_sigma2) - 0.5 * mp_f * (two_pi * fixed_sigma2).ln() + 0.5 * log_det_h
         - 0.5 * log_det_lambda_s
         - ls_sum
 }
@@ -81,7 +84,12 @@ fn envelope_gradient_matches_fixed_sigma2_fd() {
     )
     .unwrap();
     let s_beta = score.s_list[0].dot(&inner.beta);
-    let bsb_score: f64 = inner.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+    let bsb_score: f64 = inner
+        .beta
+        .iter()
+        .zip(s_beta.iter())
+        .map(|(a, b)| a * b)
+        .sum();
     let dp = inner.rss + lambda * bsb_score;
     let n_minus_mp = (inner.n as f64) - (score.mp as f64);
     let sigma2_score = dp / n_minus_mp;
@@ -135,11 +143,7 @@ fn tweedie_analytic_shape_grad_matches_fd() {
         _solver: std::marker::PhantomData,
     };
 
-    let probes: &[[f64; 3]] = &[
-        [0.5, 0.0, 0.0],
-        [2.0, 0.5, 0.3],
-        [1.0, -0.5, -0.2],
-    ];
+    let probes: &[[f64; 3]] = &[[0.5, 0.0, 0.0], [2.0, 0.5, 0.3], [1.0, -0.5, -0.2]];
 
     for theta_init in probes {
         let theta = Array1::from_vec(theta_init.to_vec());
@@ -166,7 +170,10 @@ fn tweedie_analytic_shape_grad_matches_fd() {
             assert!(
                 rel < 2e-2,
                 "θ={:?} g[{i}] analytic={:+.6e} fd={:+.6e} rel={:.2e}",
-                theta_init, g[i], g_fd[i], rel
+                theta_init,
+                g[i],
+                g_fd[i],
+                rel
             );
         }
     }
@@ -220,11 +227,7 @@ fn tweedie_analytic_hess_matches_fd_on_grad() {
     // and the looser tolerance applies (this is exactly v0.x's
     // tweedie_theta_grad_hess_analytic comment about Newton tolerating
     // the O(h) Hessian error).
-    let probes: &[[f64; 3]] = &[
-        [0.5, 0.0, 0.0],
-        [1.0, 0.1, 0.1],
-        [1.5, -0.1, -0.1],
-    ];
+    let probes: &[[f64; 3]] = &[[0.5, 0.0, 0.0], [1.0, 0.1, 0.1], [1.5, -0.1, -0.1]];
 
     for theta_init in probes {
         let theta = Array1::from_vec(theta_init.to_vec());
@@ -266,7 +269,10 @@ fn tweedie_analytic_hess_matches_fd_on_grad() {
             assert!(
                 rel < 5e-2,
                 "θ={:?} diag[{i}] analytic={:+.4e} fd={:+.4e} rel={:.2e}",
-                theta_init, h_anal[[i, i]], h_fd[[i, i]], rel
+                theta_init,
+                h_anal[[i, i]],
+                h_fd[[i, i]],
+                rel
             );
         }
     }
@@ -283,8 +289,7 @@ fn debug_tweedie_real_data_grad_walk() {
 
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     p.push("tests/fixtures/1d_tweedie_log_n300_k10_cr.json");
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
     let x_vec: Vec<f64> = v["inputs"]["x_train"]
         .as_array()
         .unwrap()

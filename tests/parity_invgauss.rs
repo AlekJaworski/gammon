@@ -1,15 +1,25 @@
 //! Phase 8 parity test: gammon `fit_inverse_gaussian_cr` vs mgcv.
 
-use std::path::PathBuf;
 use ndarray::{Array1, Array2};
 use serde::Deserialize;
+use std::path::PathBuf;
 
 #[derive(Deserialize)]
-struct Fixture { inputs: Inputs, mgcv_output: MgcvOutput }
+struct Fixture {
+    inputs: Inputs,
+    mgcv_output: MgcvOutput,
+}
 #[derive(Deserialize)]
-struct Inputs { x_train: Vec<Vec<f64>>, y_train: Vec<f64>, k: Vec<usize> }
+struct Inputs {
+    x_train: Vec<Vec<f64>>,
+    y_train: Vec<f64>,
+    k: Vec<usize>,
+}
 #[derive(Deserialize)]
-struct MgcvOutput { predictions_train: Vec<f64>, scale: f64 }
+struct MgcvOutput {
+    predictions_train: Vec<f64>,
+    scale: f64,
+}
 
 fn load(name: &str) -> Fixture {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -19,11 +29,17 @@ fn load(name: &str) -> Fixture {
 }
 
 fn max_rel_err(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs() / (y.abs() + 1.0)).fold(0.0_f64, f64::max)
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs() / (y.abs() + 1.0))
+        .fold(0.0_f64, f64::max)
 }
 
 fn max_abs_err(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0_f64, f64::max)
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0_f64, f64::max)
 }
 
 #[test]
@@ -34,8 +50,14 @@ fn invgauss_log_n300_k10_cr() {
     let x = Array2::from_shape_vec((n, 1), x_vec).unwrap();
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
-    let fit =
-        gammon::fit(gammon::family::inverse_gaussian_log(), x.view(), y.view(), None, k).unwrap();
+    let fit = gammon::fit(
+        gammon::family::inverse_gaussian_log(),
+        x.view(),
+        y.view(),
+        None,
+        k,
+    )
+    .unwrap();
     let eta = fit.predict(x.view()).unwrap();
     let mu_gammon: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
     let rel = max_rel_err(&mu_gammon, &fx.mgcv_output.predictions_train);
@@ -51,5 +73,8 @@ fn invgauss_log_n300_k10_cr() {
     // function (V=μ³) of the canonical-link families, so the score
     // landscape is steepest. 5e-2 absorbs that.
     assert!(rel < 5e-2, "IG μ rel error {rel:.3e} exceeds 5e-2");
-    assert!(scale_rel < 1e-1, "IG φ̂ rel error {scale_rel:.3e} exceeds 1e-1");
+    assert!(
+        scale_rel < 1e-1,
+        "IG φ̂ rel error {scale_rel:.3e} exceeds 1e-1"
+    );
 }

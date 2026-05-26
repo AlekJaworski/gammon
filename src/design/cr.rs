@@ -15,17 +15,14 @@ use crate::transform::{StableReparam, SumToZero};
 
 use super::{
     matrix_inf_norm, prepend_intercept, prepend_zero_column, rank_and_log_pseudo_det,
-    DesignStrategy, PreparedDesign, Predictor,
+    DesignStrategy, Predictor, PreparedDesign,
 };
 
 // -----------------------------------------------------------------------------
 // CR predictor — knots + sum-to-zero centring matrix.
 // -----------------------------------------------------------------------------
 
-#[cfg_attr(
-    feature = "persistence",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct CrPredictor {
     pub knots: Array1<f64>,
     pub centring: Array2<f64>,
@@ -134,10 +131,7 @@ impl DesignStrategy for Cr {
 // CR + StableReparam predictor — knots, centring, AND rotation V.
 // -----------------------------------------------------------------------------
 
-#[cfg_attr(
-    feature = "persistence",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
 pub struct CrStablePredictor {
     pub knots: Array1<f64>,
     pub centring: Array2<f64>,
@@ -251,4 +245,3 @@ impl DesignStrategy for CrStable {
         })
     }
 }
-

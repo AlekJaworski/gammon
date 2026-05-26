@@ -107,16 +107,16 @@ impl VarianceFn for TVariance {
     fn set_shape_params(&mut self, params: &[f64]) {
         // Sync `sigma2` from the first transformed param (log σ²). Ignores
         // the ν transform — variance doesn't depend on ν for scat.
-        debug_assert_eq!(params.len(), 2, "TVariance expects 2 shape params (slot 0 is log σ²)");
+        debug_assert_eq!(
+            params.len(),
+            2,
+            "TVariance expects 2 shape params (slot 0 is log σ²)"
+        );
         self.sigma2 = params[0].exp();
     }
 }
 
 /// Phase 2a convenience constructor — TDist + identity link at given shape.
 pub fn tdist_identity(nu: f64, sigma2: f64) -> Family<TDist, IdentityLink, TVariance> {
-    Family::new(
-        TDist { nu, sigma2 },
-        IdentityLink,
-        TVariance { sigma2 },
-    )
+    Family::new(TDist { nu, sigma2 }, IdentityLink, TVariance { sigma2 })
 }

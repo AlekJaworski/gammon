@@ -95,7 +95,11 @@ impl VarianceFn for NegBinVariance {
         mu + mu * mu / self.theta
     }
     fn set_shape_params(&mut self, params: &[f64]) {
-        debug_assert_eq!(params.len(), 1, "NegBinVariance expects 1 shape param (log θ)");
+        debug_assert_eq!(
+            params.len(),
+            1,
+            "NegBinVariance expects 1 shape param (log θ)"
+        );
         self.theta = params[0].exp();
     }
 }

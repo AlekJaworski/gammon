@@ -66,8 +66,14 @@ fn additive_2d_gaussian_n500_k10_cr() {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
 
     let terms = vec![
-        TermSpec::Cr { col: 0, k: fx.inputs.k[0] },
-        TermSpec::Cr { col: 1, k: fx.inputs.k[1] },
+        TermSpec::Cr {
+            col: 0,
+            k: fx.inputs.k[0],
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: fx.inputs.k[1],
+        },
     ];
     let fit = fit_with_design(
         gaussian_identity(),
@@ -100,13 +106,17 @@ fn additive_2d_gaussian_n500_k10_cr() {
         .predict(x.view())
         .expect("Additive predict on training x failed");
     let rel = max_rel_err(pred.as_slice().unwrap(), &fx.mgcv_output.predictions_train);
-    let scale_rel =
-        (fit.scale - fx.mgcv_output.scale).abs() / fx.mgcv_output.scale.max(1e-12);
+    let scale_rel = (fit.scale - fx.mgcv_output.scale).abs() / fx.mgcv_output.scale.max(1e-12);
     println!(
         "[additive 2d gaussian n500 k10 cr] max_rel = {rel:.3e}; scale_rel = {scale_rel:.3e} \
          (gammon {:.6e} vs mgcv {:.6e}); ρ̂ = [{:.3}, {:.3}]; edf = ({:.2}, {:.2}); iters = {}",
-        fit.scale, fx.mgcv_output.scale, fit.rho[0], fit.rho[1],
-        fit.edf_per_term[0], fit.edf_per_term[1], fit.n_iters,
+        fit.scale,
+        fx.mgcv_output.scale,
+        fit.rho[0],
+        fit.rho[1],
+        fit.edf_per_term[0],
+        fit.edf_per_term[1],
+        fit.n_iters,
     );
     assert!(
         rel < 5e-4,
