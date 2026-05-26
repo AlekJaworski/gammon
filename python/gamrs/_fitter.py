@@ -15,6 +15,7 @@ import numpy as np
 
 from . import _gamrs_native
 from ._coerce import FAMILY_TO_GAMRS, to_1d_array, to_2d_with_columns
+from ._low_level import CrTerm, CrStableTerm, ReTerm, TeTerm, Term, _term_to_tuple
 from ._stubs import GamSummary, TermContributions  # noqa: F401
 
 ArrayLike = Any  # avoid hard dep on pandas/polars typing
@@ -59,8 +60,9 @@ class Gam:
         consider_categorical: bool = False,
         auto_k: bool = False,
         discrete: bool = False,
-        # gamrs-only knob: which design strategy to use.
+        # gamrs-only knobs:
         design: str = "cr",
+        terms: Optional[Sequence[Term]] = None,
         **kwargs: Any,
     ) -> None:
         if family not in FAMILY_TO_GAMRS:
@@ -132,6 +134,9 @@ class Gam:
         self.auto_k = auto_k
         self.discrete = bool(discrete)
         self.design = design
+        # Typed-term API alternative to predictors=/predictor_basis_map=.
+        # When both are passed, terms= wins and the others are ignored.
+        self.terms: Optional[list[Term]] = list(terms) if terms is not None else None
 
         if self.auto_k:
             warnings.warn(
@@ -180,22 +185,17 @@ class Gam:
     def fit(self, X: ArrayLike, y: ArrayLike, sample_weight: Any = None) -> "Gam":
         """Fit the GAM. Drop-in for ``mgcv_rust.Gam.fit``.
 
-        ``X`` may be a DataFrame / 2-D ndarray / 1-D ndarray. For now
-        gamrs is single-smooth — multi-column X raises
-        ``NotImplementedError``.
+        ``X`` may be a DataFrame / 2-D ndarray / 1-D ndarray. Multi-column
+        X dispatches to the additive multi-smooth path (one CR term per
+        column by default; ``predictor_basis_map`` lets you switch a
+        column to ``"re"``). For the typed-term API, pass ``terms=`` to
+        the constructor — that path bypasses predictor-name resolution.
         """
         X_arr, cols = to_2d_with_columns(X, self.predictors)
         y_arr = to_1d_array(y, name="y")
         if X_arr.shape[0] != y_arr.shape[0]:
             raise ValueError(
                 f"X has {X_arr.shape[0]} rows but y has {y_arr.shape[0]} elements"
-            )
-        if X_arr.shape[1] != 1:
-            raise NotImplementedError(
-                f"gamrs.Gam is single-smooth today — got {X_arr.shape[1]} "
-                f"predictor columns ({cols}). For multi-smooth fits use the "
-                "v0.x mgcv_rust.Gam wrapper or wait for gamrs's multi-smooth "
-                "support."
             )
 
         if self.predictors is None:
@@ -218,50 +218,98 @@ class Gam:
         else:
             self.sample_weight = None
 
-        # Resolve k for the single smooth (cap at n_unique - 1).
-        pname = cols[0]
-        k = int(self.term_k_mapping.get(pname, self.k_default))
-        n_unique = int(np.unique(X_arr[:, 0]).size)
-        k = max(2, min(k, max(2, n_unique - 1)))
-        self._k_used = k
-
-        # Resolve the design strategy. Honour predictor_basis_map for "re".
-        design = self.design
-        bs_override = self.predictor_basis_map.get(pname)
-        if bs_override == "re":
-            design = "re"
-        elif bs_override in ("parametric", "linear"):
-            raise NotImplementedError(
-                f"predictor_basis_map[{pname!r}]={bs_override!r} (parametric / "
-                "linear unsmoothed term) is not yet wired in gamrs; use the v0.x "
-                "mgcv_rust.Gam wrapper for parametric columns."
-            )
-        elif bs_override is not None and bs_override not in ("cr",):
-            warnings.warn(
-                f"predictor_basis_map[{pname!r}]={bs_override!r} not yet "
-                f"supported by gamrs; falling back to design={design!r}.",
-                UserWarning,
-                stacklevel=2,
-            )
-
         x_2d = np.ascontiguousarray(X_arr, dtype=np.float64)
-        self._fitted = _gamrs_native.fit(
+        family_kw = self._family_kwargs_for_native()
+
+        # Build the term list — either from self.terms (typed API) or
+        # derived from columns + predictor_basis_map (v0.x API).
+        if self.terms is not None:
+            term_objs = list(self.terms)
+            self._k_used = [
+                t.k if isinstance(t, (CrTerm, CrStableTerm)) else
+                (t.k[0] * t.k[1] if isinstance(t, TeTerm) else 0)
+                for t in term_objs
+            ]
+        else:
+            term_objs = self._build_terms_from_columns(X_arr, cols)
+            self._k_used = [
+                t.k if isinstance(t, (CrTerm, CrStableTerm)) else 0
+                for t in term_objs
+            ]
+
+        # Single-smooth → fast path (preserves byte-equivalence with
+        # pre-multi-smooth fits + the existing parity tests).
+        if len(term_objs) == 1 and isinstance(term_objs[0], (CrTerm, ReTerm, CrStableTerm)):
+            t = term_objs[0]
+            if isinstance(t, CrTerm):
+                design, k_arg = "cr", t.k
+            elif isinstance(t, CrStableTerm):
+                design, k_arg = "cr_stable", t.k
+            else:  # ReTerm
+                design, k_arg = "re", 2  # k unused for re; pass a placeholder
+            self._fitted = _gamrs_native.fit(
+                self._gamrs_family,
+                x_2d,
+                y_arr,
+                weights=self.sample_weight,
+                k=int(k_arg),
+                design=design,
+                **family_kw,
+            )
+            return self
+
+        # Multi-smooth → additive dispatch.
+        term_tuples = [_term_to_tuple(t) for t in term_objs]
+        self._fitted = _gamrs_native.fit_additive(
             self._gamrs_family,
             x_2d,
             y_arr,
+            term_tuples,
             weights=self.sample_weight,
-            k=k,
-            design=design,
-            **self._family_kwargs_for_native(),
+            **family_kw,
         )
         return self
 
+    def _build_terms_from_columns(
+        self, X_arr: np.ndarray, cols: Sequence[str]
+    ) -> list[Term]:
+        """Translate the v0.x predictors / predictor_basis_map / term_k_mapping
+        signature into a list of typed terms. One term per column.
+        """
+        out: list[Term] = []
+        for col_idx, pname in enumerate(cols):
+            bs_override = self.predictor_basis_map.get(pname)
+            if bs_override in ("parametric", "linear"):
+                raise NotImplementedError(
+                    f"predictor_basis_map[{pname!r}]={bs_override!r} (parametric / "
+                    "linear unsmoothed term) is not yet wired in gamrs; use the "
+                    "v0.x mgcv_rust.Gam wrapper for parametric columns."
+                )
+            if bs_override == "re":
+                out.append(ReTerm(col=col_idx))
+                continue
+            if bs_override is not None and bs_override not in ("cr",):
+                warnings.warn(
+                    f"predictor_basis_map[{pname!r}]={bs_override!r} not yet "
+                    "supported by gamrs; falling back to 'cr'.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            k = int(self.term_k_mapping.get(pname, self.k_default))
+            n_unique = int(np.unique(X_arr[:, col_idx]).size)
+            k = max(2, min(k, max(2, n_unique - 1)))
+            out.append(CrTerm(col=col_idx, k=k))
+        return out
+
     def _coerce_predict_X(self, X: ArrayLike) -> np.ndarray:
         X_arr, _ = to_2d_with_columns(X, self._effective_predictors)
-        if X_arr.shape[1] != 1:
+        expected = (
+            len(self._effective_predictors) if self._effective_predictors is not None else None
+        )
+        if expected is not None and X_arr.shape[1] != expected:
             raise ValueError(
-                f"predict X must have 1 column for the single-smooth fit; "
-                f"got {X_arr.shape[1]}"
+                f"predict X has {X_arr.shape[1]} columns; expected {expected} "
+                f"(matching fit-time predictors {self._effective_predictors!r})"
             )
         return np.ascontiguousarray(X_arr, dtype=np.float64)
 
@@ -501,13 +549,32 @@ class Gam:
 
     @property
     def k_(self) -> np.ndarray:
-        """Per-smooth k vector. Single-smooth so length-1."""
-        return np.array([] if self._k_used is None else [self._k_used], dtype=int)
+        """Per-smooth k vector. Length = number of terms."""
+        if self._k_used is None:
+            return np.array([], dtype=int)
+        if isinstance(self._k_used, int):
+            return np.array([self._k_used], dtype=int)
+        return np.array(self._k_used, dtype=int)
 
     @property
     def bs_(self) -> np.ndarray:
-        """Per-smooth basis kind. Length-1; mirrors v0.x's ``bs_``."""
-        return np.array([self.design], dtype=object)
+        """Per-smooth basis kind. Length = number of terms."""
+        if self.terms is not None:
+            return np.array(
+                [
+                    "te" if isinstance(t, TeTerm) else
+                    "re" if isinstance(t, ReTerm) else
+                    "cr_stable" if isinstance(t, CrStableTerm) else "cr"
+                    for t in self.terms
+                ],
+                dtype=object,
+            )
+        if self._effective_predictors is None:
+            return np.array([self.design], dtype=object)
+        return np.array(
+            [self.predictor_basis_map.get(p, self.design) for p in self._effective_predictors],
+            dtype=object,
+        )
 
     @property
     def auto_k_trace_(self) -> Any:
