@@ -169,7 +169,7 @@ fn fitted_gam_roundtrip_cr_stable_predictor_variant() {
 
 #[test]
 fn deserialize_rejects_bad_magic() {
-    let bytes = vec![b'N', b'O', b'P', b'E', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let bytes = vec![b'N', b'O', b'P', b'E', b'!', b'!', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let err = match FittedGam::deserialize(&bytes) {
         Ok(_) => panic!("deserialize must reject bad magic"),
         Err(e) => e,

@@ -83,11 +83,11 @@ impl FittedGam {
             return Err(GammonError::InvalidParameter(format!(
                 "FittedGam::deserialize: bad magic; expected {:?}, got {:?}",
                 MAGIC,
-                &bytes[..4]
+                &bytes[..6]
             )));
         }
         let mut v4 = [0u8; 4];
-        v4.copy_from_slice(&bytes[4..8]);
+        v4.copy_from_slice(&bytes[6..10]);
         let version = u32::from_le_bytes(v4);
         if version != FORMAT_VERSION {
             return Err(GammonError::InvalidParameter(format!(
@@ -97,7 +97,7 @@ impl FittedGam {
             )));
         }
         let mut l8 = [0u8; 8];
-        l8.copy_from_slice(&bytes[8..16]);
+        l8.copy_from_slice(&bytes[10..18]);
         let body_len = u64::from_le_bytes(l8) as usize;
         let end = HEADER_LEN
             .checked_add(body_len)
