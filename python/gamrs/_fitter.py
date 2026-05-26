@@ -157,6 +157,10 @@ class Gam:
         self._effective_predictors = self._original_predictors = None
         self.dropped_predictors_ = {}
         self._k_used = None
+        # Subset-view state. None on a fitted model means "use all terms".
+        # Set by __getitem__; consulted by predict() to mask un-selected
+        # term blocks of the lpmatrix.
+        self._subset_mask: Optional[set] = None
 
     # ------------------------ helpers --------------------------------- #
 
@@ -322,34 +326,81 @@ class Gam:
         """Predict on the requested scale. Drop-in for v0.x.
 
         ``scale``: ``'response'`` (inv-linked), ``'link'`` (η), or
-        ``'deviation'`` (subset-views only — raises here).
+        ``'deviation'`` (subset views only — η contribution of just the
+        selected terms, intercept dropped).
 
-        ``type='terms'`` returns a :class:`TermContributions` — currently
-        raises ``NotImplementedError`` (gamrs doesn't expose per-term
-        indices yet).
+        ``type='terms'`` returns per-term contributions as an
+        ``(n_rows, n_terms)`` ndarray (intercept column dropped). Each
+        column j is the η contribution of term j on the link scale.
         """
         f = self._require_fitted()
         if type not in (None, "terms"):
             raise ValueError(f"type must be None or 'terms', got {type!r}")
-        if type == "terms":
-            raise NotImplementedError(
-                "predict(type='terms') is not yet wired in gamrs — "
-                "gamrs doesn't expose per-term coef indices through the "
-                "bindings layer. Use mgcv_rust.Gam for per-term breakdowns."
-            )
         if scale not in ("response", "link", "deviation"):
             raise ValueError(
                 f"scale must be 'response', 'link', or 'deviation', got {scale!r}"
             )
-        if scale == "deviation":
-            raise ValueError(
-                "scale='deviation' is only meaningful on subset views; "
-                "gamrs doesn't yet support subset views — use scale='link'."
-            )
         x = self._coerce_predict_X(X)
-        if scale == "link":
-            return np.asarray(f.predict(x))
-        return np.asarray(f.predict_response(x))
+        beta = np.asarray(f.beta)
+        ranges = f.term_col_ranges()
+
+        if type == "terms":
+            lp = np.asarray(f.evaluate_lpmatrix(x))
+            return np.column_stack(
+                [lp[:, start:end] @ beta[start:end] for (start, end) in ranges]
+            )
+
+        # Subset view: mask un-selected term blocks before β·lp.
+        if self._subset_mask is not None:
+            lp = np.asarray(f.evaluate_lpmatrix(x))
+            masked = self._apply_subset_mask(lp, ranges, scale)
+            eta = masked @ beta
+        else:
+            if scale == "deviation":
+                raise ValueError(
+                    "scale='deviation' is only meaningful on subset views — "
+                    "use gam[[<predictors>]].predict(X, scale='deviation')."
+                )
+            eta = np.asarray(f.predict(x))
+
+        if scale in ("link", "deviation"):
+            return eta
+        # response scale — inverse-link η elementwise (use native path
+        # when possible to match its inverse-link conventions exactly).
+        if self._subset_mask is None:
+            return np.asarray(f.predict_response(x))
+        # Subset path: apply the same inverse link manually.
+        link = (self.link or "identity").lower()
+        if link == "log":
+            return np.exp(eta)
+        if link == "logit":
+            return 1.0 / (1.0 + np.exp(-eta))
+        return eta  # identity
+
+    def _apply_subset_mask(
+        self,
+        lp: np.ndarray,
+        ranges: Sequence[tuple[int, int]],
+        scale: str,
+    ) -> np.ndarray:
+        """Zero out columns belonging to terms NOT in ``self._subset_mask``.
+
+        Intercept (column 0) is kept iff ``"__constant__" in self._subset_mask``,
+        OR if ``scale != "deviation"`` and no intercept directive was given.
+        On ``scale='deviation'`` the intercept is dropped, leaving the pure
+        marginal effect of the selected terms.
+        """
+        mask = self._subset_mask  # type: ignore[union-attr]
+        preds = self._effective_predictors or []
+        out = lp.copy()
+        intercept_selected = self.INTERCEPT in mask
+        if scale == "deviation" or not intercept_selected:
+            out[:, 0] = 0.0
+        for term_idx, (start, end) in enumerate(ranges):
+            user_name = preds[term_idx] if term_idx < len(preds) else f"term_{term_idx}"
+            if user_name not in mask:
+                out[:, start:end] = 0.0
+        return out
 
     def predict_ci(
         self,
@@ -601,27 +652,59 @@ class Gam:
         return self.vcov_
 
     def get_design_matrix(self) -> np.ndarray:
-        raise NotImplementedError(
-            "get_design_matrix() is not yet wired in gamrs. Use "
-            "mgcv_rust.Gam.get_design_matrix() for now."
-        )
-
-    def get_edf_df(self) -> Any:
-        raise NotImplementedError(
-            "get_edf_df() is not yet wired in gamrs. Use "
-            "mgcv_rust.Gam.get_edf_df() for now."
-        )
+        """Lpmatrix for the training X. ``(n_train, p)`` ndarray with
+        column 0 = intercept and columns 1..p = per-term blocks.
+        See :meth:`get_term_indices` for column ranges per term."""
+        f = self._require_fitted()
+        if self.X is None:
+            raise RuntimeError(
+                "Training X wasn't retained on this instance (subset view "
+                "or deserialized model). Call evaluate_lpmatrix(X) with "
+                "your X instead."
+            )
+        return np.asarray(f.evaluate_lpmatrix(self.X))
 
     def evaluate_lpmatrix(self, X: ArrayLike) -> np.ndarray:
-        """Build the design matrix for predict-X. Useful for custom
-        prediction / posterior sampling pipelines."""
-        # The gamrs FittedGam doesn't expose the design rebuilder
-        # directly via Python; we synthesise it by chaining
-        # gamrs's `predict` with a unit β vector — too lossy. Raise.
-        raise NotImplementedError(
-            "evaluate_lpmatrix() is not yet wired in gamrs (the design "
-            "rebuilder isn't surfaced through PyO3). Use mgcv_rust.Gam."
-        )
+        """Build the design matrix at new X. ``(n_new, p)`` ndarray with
+        column 0 = intercept and columns 1..p = per-term blocks. Useful
+        for custom posterior sampling, partial predictions, or plugging
+        into downstream uncertainty pipelines."""
+        f = self._require_fitted()
+        x = self._coerce_predict_X(X)
+        return np.asarray(f.evaluate_lpmatrix(x))
+
+    def get_term_indices(self) -> list[tuple[str, int, int]]:
+        """Per-term column ranges into the lpmatrix.
+
+        Returns a list of ``(predictor_name, first, last_inclusive)``
+        tuples in predictor order. ``first`` / ``last`` are 0-based
+        indices into the ``(n, p)`` lpmatrix returned by
+        :meth:`evaluate_lpmatrix`. The intercept (column 0) is NOT
+        included — it sits at index 0 of every lpmatrix.
+        """
+        f = self._require_fitted()
+        ranges = f.term_col_ranges()
+        names = self._effective_predictors or [
+            f"term_{i}" for i in range(len(ranges))
+        ]
+        return [
+            (names[i] if i < len(names) else f"term_{i}", start, end - 1)
+            for i, (start, end) in enumerate(ranges)
+        ]
+
+    def get_edf_df(self) -> Any:
+        """Per-term EDF as a pandas DataFrame with columns
+        ``['predictor', 'edf']``. Sum (plus intercept dof=1) ≈ edf_total."""
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "get_edf_df() needs pandas; install with `pip install pandas`."
+            ) from exc
+        f = self._require_fitted()
+        edf = np.asarray(f.edf_per_term)
+        names = self._effective_predictors or [f"term_{i}" for i in range(len(edf))]
+        return pd.DataFrame({"predictor": names, "edf": edf})
 
     def get_posterior_samples(
         self, X: ArrayLike, n_samples: int = 1000, seed: int = 42
@@ -730,13 +813,30 @@ class Gam:
         return 1.0 - ss_res / ss_tot
 
     def __getitem__(self, predictors: Union[str, Iterable[str]]) -> "Gam":
-        """v0.x subset-view support. gamrs doesn't yet support these
-        because it's single-smooth — raise with a hint."""
-        raise NotImplementedError(
-            "Subset views (gam[name]) are not yet wired in gamrs. gamrs is "
-            "single-smooth today, so a subset view of one smooth is the "
-            "whole model — call methods on the parent ``Gam`` directly."
-        )
+        """Subset view — `gam[["x0"]]` returns a view that predicts using
+        only the named terms. Other terms' contributions are masked to
+        zero before β·lp; use ``scale='deviation'`` to also drop the
+        intercept and get the pure marginal effect.
+
+        Pass ``gamrs.Gam.INTERCEPT`` (``"__constant__"``) to include the
+        intercept explicitly. Single string is shorthand for a one-element
+        iterable.
+        """
+        import copy
+        self._require_fitted()
+        if isinstance(predictors, str):
+            requested = [predictors]
+        else:
+            requested = list(predictors)
+        known = set(self._effective_predictors or []) | {self.INTERCEPT}
+        for name in requested:
+            if name not in known:
+                raise KeyError(
+                    f"unknown predictor {name!r}; known: {sorted(known)}"
+                )
+        view = copy.copy(self)
+        view._subset_mask = set(requested)
+        return view
 
     def __repr__(self) -> str:
         if self._fitted is None:

@@ -28,7 +28,7 @@ use pyo3::types::{PyBytes, PyType};
 use pyo3::wrap_pyfunction;
 use pyo3::Bound;
 
-use crate::design::{Additive, Cr, CrStable, DesignStrategy, MarginKind, Re, TermSpec};
+use crate::design::{Additive, Cr, CrStable, DesignStrategy, MarginKind, Predictor, Re, TermSpec};
 use crate::error::GamrsError;
 use crate::family::{
     bernoulli_logit, elf_identity, gamma_log, gaussian_identity, inverse_gaussian_log, negbin_log,
@@ -122,6 +122,32 @@ impl PyFittedGam {
     /// float64 ndarray.
     fn vcov<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         self.inner.vcov.clone().into_pyarray(py)
+    }
+
+    /// Per-term column ranges into the lpmatrix `[1 | C_1 | C_2 | …]`.
+    /// Returns a list of `(first, last_exclusive)` tuples — one per term
+    /// for an Additive fit, or a single `[(1, p)]` for a single-smooth fit.
+    /// The intercept always sits at column 0, outside any term range.
+    fn term_col_ranges(&self) -> Vec<(usize, usize)> {
+        let p = self.inner.beta.len();
+        match &self.inner.predictor {
+            Predictor::Additive(ap) => ap.term_col_ranges.clone(),
+            _ => vec![(1, p)],
+        }
+    }
+
+    /// Rebuild the design matrix (lpmatrix) at new `x_new`. Shape
+    /// `(n_new, p)` with column 0 = intercept and columns 1..p = the
+    /// per-term blocks. Use with `coef_` for partial / subset predictions
+    /// or with `vcov` for posterior sampling.
+    fn evaluate_lpmatrix<'py>(
+        &self,
+        py: Python<'py>,
+        x_new: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let x_view: ArrayView2<f64> = x_new.as_array();
+        let lp = self.inner.predictor.design(x_view).map_err(map_err)?;
+        Ok(lp.into_pyarray(py))
     }
 
     /// Predict η (linear predictor) on new x. `x_new` is a 2-D float64
