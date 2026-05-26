@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum GammonError {
+pub enum GamrsError {
     #[error("invalid parameter: {0}")]
     InvalidParameter(String),
     #[error("singular system: {0}")]
@@ -12,4 +12,4 @@ pub enum GammonError {
     Linalg(String),
 }
 
-pub type Result<T> = std::result::Result<T, GammonError>;
+pub type Result<T> = std::result::Result<T, GamrsError>;

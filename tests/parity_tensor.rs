@@ -1,7 +1,7 @@
-//! Parity test for gammon's tensor-product path (`te(x0, x1)`) against an
+//! Parity test for gamrs's tensor-product path (`te(x0, x1)`) against an
 //! mgcv-generated fixture.
 //!
-//! Fits `y ~ te(x0, x1, k=c(5,5), bs=c("cr","cr"))` via the gammon
+//! Fits `y ~ te(x0, x1, k=c(5,5), bs=c("cr","cr"))` via the gamrs
 //! `Additive` path with a single `TermSpec::Tensor` term, and compares
 //! the predicted μ̂ on the training set against mgcv's
 //! `predict(..., type='response')` output.
@@ -20,9 +20,9 @@ use std::path::PathBuf;
 use ndarray::{Array1, Array2};
 use serde::Deserialize;
 
-use gammon::design::{Additive, MarginKind, TermSpec};
-use gammon::family::gaussian_identity;
-use gammon::fit_with_design;
+use gamrs::design::{Additive, MarginKind, TermSpec};
+use gamrs::family::gaussian_identity;
+use gamrs::fit_with_design;
 
 #[derive(Deserialize)]
 struct Fixture {
@@ -63,9 +63,9 @@ fn max_rel_err(pred: &[f64], target: &[f64]) -> f64 {
 fn tensor_2d_gaussian_te_n300_k5x5() {
     // Small-n case (n=300, p=25 effective columns after centring).
     // The REML score is shallow near the optimum at this dimension —
-    // gammon and mgcv land on slightly different ρ̂ even though both are
+    // gamrs and mgcv land on slightly different ρ̂ even though both are
     // valid Newton/BFGS stationary points. Bound is widened relative
-    // to n=1000 to absorb this (mgcv-vs-gammon outer optimiser disagreement
+    // to n=1000 to absorb this (mgcv-vs-gamrs outer optimiser disagreement
     // on the shallow region, not a basis correctness issue — see
     // n=1000 sibling case for tighter agreement).
     run_tensor_parity("2d_gaussian_te_n300_k5x5", 2e-2, 5e-2);
@@ -121,7 +121,7 @@ fn run_tensor_parity(fixture_name: &str, mu_rel_bound: f64, scale_rel_bound: f64
     let scale_rel = (fit.scale - fx.mgcv_output.scale).abs() / fx.mgcv_output.scale.max(1e-12);
     println!(
         "[{fixture_name}] max_rel = {rel:.3e}; scale_rel = {scale_rel:.3e} \
-         (gammon {:.6e} vs mgcv {:.6e}); ρ̂ = [{:.3}, {:.3}]; edf = ({:.2}, {:.2}); iters = {}",
+         (gamrs {:.6e} vs mgcv {:.6e}); ρ̂ = [{:.3}, {:.3}]; edf = ({:.2}, {:.2}); iters = {}",
         fit.scale,
         fx.mgcv_output.scale,
         fit.rho[0],

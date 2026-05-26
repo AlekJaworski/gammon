@@ -59,7 +59,7 @@ impl Loss for InverseGaussian {
     /// Inverse Gaussian's canonical link is `1/μ²`; the log link used here
     /// is non-canonical, so mgcv runs full Newton IRLS with per-row Fisher
     /// fallback (`α = 2y/μ - 1 ≤ 0` on ~43% of obs at convergence). Fisher
-    /// scoring throughout (the gammon pre-2026-05-25 default) made `log|H|`
+    /// scoring throughout (the gamrs pre-2026-05-25 default) made `log|H|`
     /// and `tr(H⁻¹S)` in the score body differ from v0.x's Newton-W —
     /// β̂ at the same ρ matches either way (both are stationary points of
     /// the penalised deviance), but the resulting ρ̂ drifted ~1.6e-2 from
@@ -69,7 +69,7 @@ impl Loss for InverseGaussian {
     /// `Family::InverseGaussian` non-canonical (lines 464-466), and
     /// `compute_irls_wz` builds the α-corrected (w, z) row pair
     /// accordingly. The 2026-05-25 IG follow-up port enables the same
-    /// path in gammon via this opt-in flag and the new `Link::d2_link_dmu`
+    /// path in gamrs via this opt-in flag and the new `Link::d2_link_dmu`
     /// + `VarianceFn::d_variance` trait methods.
     fn use_newton_irls(&self) -> bool {
         true

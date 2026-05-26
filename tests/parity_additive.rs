@@ -1,4 +1,4 @@
-//! Parity test for gammon's `Additive` multi-smooth path against an
+//! Parity test for gamrs's `Additive` multi-smooth path against an
 //! mgcv-generated 2-D additive Gaussian fixture (`y ~ s(x0) + s(x1)`).
 //!
 //! Same shape as `parity_gaussian.rs` but the fit goes through
@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use ndarray::{Array1, Array2};
 use serde::Deserialize;
 
-use gammon::design::{Additive, TermSpec};
-use gammon::family::gaussian_identity;
-use gammon::fit_with_design;
+use gamrs::design::{Additive, TermSpec};
+use gamrs::family::gaussian_identity;
+use gamrs::fit_with_design;
 
 #[derive(Deserialize)]
 struct Fixture {
@@ -109,7 +109,7 @@ fn additive_2d_gaussian_n500_k10_cr() {
     let scale_rel = (fit.scale - fx.mgcv_output.scale).abs() / fx.mgcv_output.scale.max(1e-12);
     println!(
         "[additive 2d gaussian n500 k10 cr] max_rel = {rel:.3e}; scale_rel = {scale_rel:.3e} \
-         (gammon {:.6e} vs mgcv {:.6e}); ρ̂ = [{:.3}, {:.3}]; edf = ({:.2}, {:.2}); iters = {}",
+         (gamrs {:.6e} vs mgcv {:.6e}); ρ̂ = [{:.3}, {:.3}]; edf = ({:.2}, {:.2}); iters = {}",
         fit.scale,
         fx.mgcv_output.scale,
         fit.rho[0],

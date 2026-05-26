@@ -1,4 +1,4 @@
-"""`GamPredictor` — frozen, inference-only view of a fitted gammon :class:`Gam`.
+"""`GamPredictor` — frozen, inference-only view of a fitted gamrs :class:`Gam`.
 
 Mirrors :class:`mgcv_rust.GamPredictor` in shape and intent: wraps a
 fitted :class:`Gam` via composition and exposes only the inference API

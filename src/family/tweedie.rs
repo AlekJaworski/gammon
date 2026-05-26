@@ -54,7 +54,7 @@ impl Loss for Tweedie {
     /// `l_base = y^(2-p) / ((1-p)(2-p)·φ)`. Ported from v0.x
     /// `src/pirls/mod.rs::saturated_log_likelihood` Tweedie branch.
     ///
-    /// Previously gammon dropped the `l_base` and `-log(y)` pieces (the
+    /// Previously gamrs dropped the `l_base` and `-log(y)` pieces (the
     /// "Conservative" path). `-log(y)` is y-only and constant in (φ, p),
     /// so it doesn't shift the gradient, but `l_base ∝ 1/φ` is
     /// load-bearing for the log-φ score gradient — its omission was the

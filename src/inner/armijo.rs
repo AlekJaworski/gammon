@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 
 use ndarray::{Array1, Array2};
 
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 use crate::family::{ElfLoss, ElfVariance, Family, IdentityLink};
 use crate::traits::InnerSolver;
 
@@ -110,12 +110,12 @@ impl<S: LinearSolver> ArmijoElfInner<S> {
         let lambda_elf = self.family.loss.lambda;
 
         if !(tau > 0.0 && tau < 1.0) {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "ELF τ must be in (0, 1); got {tau}"
             )));
         }
         if sigma <= 0.0 || lambda_elf <= 0.0 {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "ELF σ and λ must be > 0; got σ={sigma} λ={lambda_elf}"
             )));
         }

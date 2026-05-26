@@ -1,4 +1,4 @@
-//! Phase 10 smoke test: gammon's `fit_quantile_cr` end-to-end.
+//! Phase 10 smoke test: gamrs's `fit_quantile_cr` end-to-end.
 //!
 //! Strategy: synthetic 1-D data where the true τ-quantile of y|x is a
 //! known smooth function. Fit at three different τ values and verify:
@@ -63,14 +63,14 @@ fn quantile_three_taus_monotone_and_converged() {
     let mut pinballs: Vec<f64> = Vec::with_capacity(3);
 
     for &tau in &taus {
-        let fit = gammon::fit(
-            gammon::family::elf_identity(tau, /*sigma=*/ 0.0, /*lambda=*/ 0.0),
+        let fit = gamrs::fit(
+            gamrs::family::elf_identity(tau, /*sigma=*/ 0.0, /*lambda=*/ 0.0),
             x2,
             y.view(),
             None,
             10, // k
         )
-        .unwrap_or_else(|e| panic!("gammon::fit (ELF, τ={tau}) failed: {e}"));
+        .unwrap_or_else(|e| panic!("gamrs::fit (ELF, τ={tau}) failed: {e}"));
         assert!(fit.converged, "τ={tau}: outer Newton did not converge");
         // Sensible iteration count — shouldn't be at the cap.
         assert!(
@@ -167,8 +167,8 @@ fn quantile_invalid_tau_errors() {
     let x2 = x.view().insert_axis(Axis(1));
     for &bad in &[-0.1_f64, 0.0, 1.0, 1.5] {
         assert!(
-            gammon::fit(
-                gammon::family::elf_identity(bad, 0.0, 0.0),
+            gamrs::fit(
+                gamrs::family::elf_identity(bad, 0.0, 0.0),
                 x2,
                 y.view(),
                 None,

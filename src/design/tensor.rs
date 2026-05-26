@@ -20,7 +20,7 @@
 use ndarray::{Array2, ArrayView2};
 
 use crate::basis::{CrSpline, TensorProductBasis};
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 use crate::traits::{Basis, BasisTransform};
 use crate::transform::SumToZero;
 
@@ -72,7 +72,7 @@ impl TensorPredictor {
 
     fn check_cols(&self, x_new: ArrayView2<f64>) -> Result<()> {
         if self.col_a >= x_new.ncols() || self.col_b >= x_new.ncols() {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "TensorPredictor: term reads columns ({}, {}) but x has only {} columns",
                 self.col_a,
                 self.col_b,
@@ -143,7 +143,7 @@ impl TensorTermFit {
         bs_b: MarginKind,
     ) -> Result<Self> {
         if col_a == col_b {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "Tensor term must have distinct margin columns (got col_a == col_b == {col_a})"
             )));
         }
@@ -260,7 +260,7 @@ fn rescale_by_leading_eig(s: Array2<f64>) -> Result<Array2<f64>> {
     let (eigs, _) = s
         .clone()
         .eigh(ndarray_linalg::UPLO::Lower)
-        .map_err(|e| GammonError::Linalg(format!("eigh failed in tensor penalty rescale: {e}")))?;
+        .map_err(|e| GamrsError::Linalg(format!("eigh failed in tensor penalty rescale: {e}")))?;
     let max_eig = eigs.iter().cloned().fold(0.0_f64, f64::max);
     if max_eig <= 0.0 {
         return Ok(s);

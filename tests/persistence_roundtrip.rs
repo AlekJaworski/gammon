@@ -6,9 +6,9 @@
 
 use ndarray::{Array1, Axis};
 
-use gammon::family::{bernoulli_logit, gaussian_identity, tweedie_log};
-use gammon::fit::FittedGam;
-use gammon::{CrStable, Re};
+use gamrs::family::{bernoulli_logit, gaussian_identity, tweedie_log};
+use gamrs::fit::FittedGam;
+use gamrs::{CrStable, Re};
 
 fn assert_predictions_identical(orig: &FittedGam, restored: &FittedGam, x: &Array1<f64>) {
     let x2 = x.view().insert_axis(Axis(1));
@@ -41,7 +41,7 @@ fn fitted_gam_bincode_roundtrip_gaussian_cr() {
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (2.0 * xi).sin()).collect();
 
-    let fit = gammon::fit(
+    let fit = gamrs::fit(
         gaussian_identity(),
         x.view().insert_axis(Axis(1)),
         y.view(),
@@ -85,7 +85,7 @@ fn fitted_gam_bincode_roundtrip_bernoulli_cr() {
     let x = Array1::from_vec(xs);
     let y = Array1::from_vec(ys);
 
-    let fit = gammon::fit(
+    let fit = gamrs::fit(
         bernoulli_logit(),
         x.view().insert_axis(Axis(1)),
         y.view(),
@@ -124,7 +124,7 @@ fn fitted_gam_bincode_roundtrip_tweedie_cr() {
     let x = Array1::from_vec(xs);
     let y = Array1::from_vec(ys);
 
-    let fit = gammon::fit(
+    let fit = gamrs::fit(
         tweedie_log(1.5, 1.0),
         x.view().insert_axis(Axis(1)),
         y.view(),
@@ -158,7 +158,7 @@ fn fitted_gam_roundtrip_re_predictor_variant() {
     let x = Array1::from_vec(xs);
     let y = Array1::from_vec(ys);
 
-    let fit = gammon::fit_with_design(
+    let fit = gamrs::fit_with_design(
         gaussian_identity(),
         Re,
         x.view().insert_axis(Axis(1)),
@@ -181,7 +181,7 @@ fn fitted_gam_roundtrip_cr_stable_predictor_variant() {
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (3.0 * xi).sin()).collect();
 
-    let fit = gammon::fit_with_design(
+    let fit = gamrs::fit_with_design(
         gaussian_identity(),
         CrStable { k: 10 },
         x.view().insert_axis(Axis(1)),
@@ -213,7 +213,7 @@ fn deserialize_rejects_bad_magic() {
 fn deserialize_rejects_unsupported_version() {
     // Build a header with a known-bad version.
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"GAMMON");
+    bytes.extend_from_slice(b"GAMRS");
     bytes.extend_from_slice(&u32::to_le_bytes(9999));
     bytes.extend_from_slice(&u64::to_le_bytes(0));
     let err = match FittedGam::deserialize(&bytes) {
@@ -231,7 +231,7 @@ fn deserialize_rejects_truncated_body() {
     let n = 50;
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (2.0 * xi).sin()).collect();
-    let fit = gammon::fit(
+    let fit = gamrs::fit(
         gaussian_identity(),
         x.view().insert_axis(Axis(1)),
         y.view(),
@@ -255,7 +255,7 @@ fn serialize_size_smoke_gaussian_n500() {
     let n = 500;
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (2.0 * xi).sin()).collect();
-    let fit = gammon::fit(
+    let fit = gamrs::fit(
         gaussian_identity(),
         x.view().insert_axis(Axis(1)),
         y.view(),
@@ -282,7 +282,7 @@ fn json_roundtrip_is_byte_for_byte_predictions() {
     let n = 150;
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (2.0 * xi).sin()).collect();
-    let fit = gammon::fit(
+    let fit = gamrs::fit(
         gaussian_identity(),
         x.view().insert_axis(Axis(1)),
         y.view(),

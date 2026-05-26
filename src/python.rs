@@ -1,9 +1,9 @@
-//! PyO3 bindings — `gammon._gammon_native` Python extension module.
+//! PyO3 bindings — `gamrs._gamrs_native` Python extension module.
 //!
-//! Wraps gammon's canonical typed Rust API (`gammon::fit{,_with_design}` +
+//! Wraps gamrs's canonical typed Rust API (`gamrs::fit{,_with_design}` +
 //! `FittedGam`) behind a single `fit(family, ...)` function that takes
 //! string family / design names at the Python boundary and dispatches to
-//! the typed `gammon::fit_with_design(...)` call internally. This is the
+//! the typed `gamrs::fit_with_design(...)` call internally. This is the
 //! only place strings cross into the type layer — the Rust core stays
 //! fully typed (project standard: zero-string config in Rust).
 //!
@@ -16,7 +16,7 @@
 //!   `predict_ci(x, level, scale)`, `predict_diff(x_a, x_b, level)`,
 //!   `vcov()` as methods.
 //!
-//! Errors map gammon's `GammonError::InvalidParameter` (which already carries
+//! Errors map gamrs's `GamrsError::InvalidParameter` (which already carries
 //! row-aware guidance — "Gamma requires y > 0; got y=-0.3 at row 42") to
 //! Python's `ValueError`, so callers see actionable messages.
 
@@ -29,7 +29,7 @@ use pyo3::wrap_pyfunction;
 use pyo3::Bound;
 
 use crate::design::{Additive, Cr, CrStable, DesignStrategy, MarginKind, Re, TermSpec};
-use crate::error::GammonError;
+use crate::error::GamrsError;
 use crate::family::{
     bernoulli_logit, elf_identity, gamma_log, gaussian_identity, inverse_gaussian_log, negbin_log,
     ocat_identity, poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity, tweedie_log,
@@ -37,13 +37,13 @@ use crate::family::{
 use crate::fit::{FamilyFit, FittedGam, PredictScale};
 
 // =============================================================================
-// Error mapping — GammonError → PyValueError / PyRuntimeError.
+// Error mapping — GamrsError → PyValueError / PyRuntimeError.
 // =============================================================================
 
-fn map_err(e: GammonError) -> PyErr {
+fn map_err(e: GamrsError) -> PyErr {
     match e {
-        GammonError::InvalidParameter(msg) => PyValueError::new_err(msg),
-        GammonError::SingularSystem(msg) => {
+        GamrsError::InvalidParameter(msg) => PyValueError::new_err(msg),
+        GamrsError::SingularSystem(msg) => {
             PyRuntimeError::new_err(format!("singular system: {msg}"))
         }
         other => PyRuntimeError::new_err(other.to_string()),
@@ -54,7 +54,7 @@ fn map_err(e: GammonError) -> PyErr {
 // PyFittedGam — Python-visible wrapper around the Rust `FittedGam`.
 // =============================================================================
 
-#[pyclass(name = "FittedGam", module = "gammon._gammon_native")]
+#[pyclass(name = "FittedGam", module = "gamrs._gamrs_native")]
 pub struct PyFittedGam {
     inner: FittedGam,
 }
@@ -187,7 +187,7 @@ impl PyFittedGam {
     /// Serialize the fit to a length-framed binary buffer (magic +
     /// version + JSON body). Round-trips bit-for-bit through
     /// :meth:`deserialize` — predictions are FP-identical after a
-    /// reload. See `crates/gammon/src/fit/persistence.rs` for the wire
+    /// reload. See `crates/gamrs/src/fit/persistence.rs` for the wire
     /// format.
     fn serialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let bytes = self.inner.serialize().map_err(map_err)?;
@@ -196,7 +196,7 @@ impl PyFittedGam {
 
     /// Classmethod: rebuild a :class:`FittedGam` from the bytes produced
     /// by :meth:`serialize`. Raises ``ValueError`` (mapped from
-    /// ``GammonError::InvalidParameter``) on a bad magic / version /
+    /// ``GamrsError::InvalidParameter``) on a bad magic / version /
     /// truncated body / unparseable JSON.
     #[classmethod]
     fn deserialize(_cls: &Bound<'_, PyType>, bytes: &[u8]) -> PyResult<Self> {
@@ -245,7 +245,7 @@ impl PyFittedGam {
 // Internal helpers — design-strategy dispatch and a per-family fit macro.
 // =============================================================================
 
-/// Run `gammon::fit_with_design` for a typed family using one of the
+/// Run `gamrs::fit_with_design` for a typed family using one of the
 /// canonical design strategies, with the string `design` keyword
 /// mediated at this single boundary.
 fn fit_dispatch_design<L, K, V>(
@@ -278,7 +278,7 @@ where
 // The single string→type dispatch boundary — `fit(family_name, ...)`.
 // =============================================================================
 
-/// Fit a gammon GAM. The only string-keyed entry into the typed core.
+/// Fit a gamrs GAM. The only string-keyed entry into the typed core.
 ///
 /// `family_name` accepts the v0.x-compatible names:
 /// - `"gaussian"` → `gaussian_identity()`
@@ -443,9 +443,9 @@ fn fit<'py>(
 }
 
 // =============================================================================
-// Module entry point. The name must match the `[lib].name = "gammon"` in
+// Module entry point. The name must match the `[lib].name = "gamrs"` in
 // Cargo.toml, prefixed with an underscore so Python imports it as
-// `gammon._gammon_native` after the `python/gammon/` package layer re-exports.
+// `gamrs._gamrs_native` after the `python/gamrs/` package layer re-exports.
 // =============================================================================
 
 // =============================================================================
@@ -558,7 +558,7 @@ fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<Term
     Ok(out)
 }
 
-/// Run `gammon::fit_with_design(..., Additive { terms })` for a typed family.
+/// Run `gamrs::fit_with_design(..., Additive { terms })` for a typed family.
 /// String dispatch on `family_name` happens here at the FFI boundary.
 fn fit_additive_dispatch<L, K, V>(
     family: crate::family::Family<L, K, V>,
@@ -576,7 +576,7 @@ where
     L::fit_from_prep(family, prep, x, y, weights).map_err(map_err)
 }
 
-/// Fit a multi-smooth additive gammon GAM: `y ~ s(x_{c_0}) + s(x_{c_1}) + …`.
+/// Fit a multi-smooth additive gamrs GAM: `y ~ s(x_{c_0}) + s(x_{c_1}) + …`.
 ///
 /// `terms` is a Python list of `(col, basis_name, k)` tuples — one tuple
 /// per smoothing term. `basis_name` is one of `"cr"`, `"cr_stable"`, or
@@ -587,7 +587,7 @@ where
 /// `family_name` accepts the same set as `fit(...)` minus families that
 /// require single-smooth (shape-aware: tdist, scat, negbin, tweedie, ocat,
 /// elf, quantile — those error out at the fit driver with a clear message
-/// directing the user back to `gammon.fit(...)`).
+/// directing the user back to `gamrs.fit(...)`).
 #[pyfunction]
 #[pyo3(signature = (family_name, x, y, terms, weights=None))]
 fn fit_additive<'py>(
@@ -625,7 +625,7 @@ fn fit_additive<'py>(
         other => {
             return Err(PyValueError::new_err(format!(
                 "fit_additive: family {other:?} is shape-managed and restricted to \
-                 single-smooth in 94b; use gammon.fit(family={other:?}, …) or wait for \
+                 single-smooth in 94b; use gamrs.fit(family={other:?}, …) or wait for \
                  multi-smooth shape-aware support. Supported additive families: \
                  gaussian, bernoulli/binomial, poisson, quasipoisson, quasibinomial, \
                  gamma, inverse_gaussian"
@@ -636,7 +636,7 @@ fn fit_additive<'py>(
 }
 
 #[pymodule]
-fn _gammon_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _gamrs_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFittedGam>()?;
     m.add_function(wrap_pyfunction!(fit, m)?)?;
     m.add_function(wrap_pyfunction!(fit_additive, m)?)?;

@@ -1,4 +1,4 @@
-//! Gammon wall-clock baseline across the solver-path spectrum.
+//! Gamrs wall-clock baseline across the solver-path spectrum.
 //!
 //! Six fixtures, one per representative solver path:
 //!
@@ -15,12 +15,12 @@
 //! "design construction" vs. "outer/inner optimisation". All
 //! measurements use `std::time::Instant` with warmup + N samples per
 //! fixture; the existing `bench_gaussian` follows the same pattern
-//! because `criterion` is not in gammon's dev-dependencies.
+//! because `criterion` is not in gamrs's dev-dependencies.
 //!
-//! `cargo bench -p gammon --bench bench_baseline` (release profile).
+//! `cargo bench -p gamrs --bench bench_baseline` (release profile).
 //!
 //! The bench writes timings to stdout and saves a JSON summary to
-//! `/tmp/gammon_bench_baseline.json` so the parent agent can post-process.
+//! `/tmp/gamrs_bench_baseline.json` so the parent agent can post-process.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -203,7 +203,7 @@ fn print_table(results: &[BenchResult]) {
 // ---------------------------------------------------------------------------
 
 fn bench_design_prep(fx: &Fixture) -> Duration {
-    use gammon::basis::CrSpline;
+    use gamrs::basis::CrSpline;
     // Warm up.
     for _ in 0..WARMUP_ITERS {
         let cr = CrSpline::with_quantile_knots(fx.x.view(), fx.k).unwrap();
@@ -219,7 +219,7 @@ fn bench_design_prep(fx: &Fixture) -> Duration {
 }
 
 fn main() {
-    println!("=== gammon baseline bench (release profile) ===");
+    println!("=== gamrs baseline bench (release profile) ===");
     println!(
         "rustc: {}; arch: {}; opt-level: 3 (release)",
         option_env!("RUSTC_VERSION").unwrap_or("?"),
@@ -232,8 +232,8 @@ fn main() {
     {
         let fx = load_fixture("1d_gaussian_smooth_n1000_k50_cr");
         let r = bench_one(&fx, "GaussianClosedFormInner", |fx| {
-            let f = gammon::fit(
-                gammon::family::gaussian_identity(),
+            let f = gamrs::fit(
+                gamrs::family::gaussian_identity(),
                 fx.x.view(),
                 fx.y.view(),
                 None,
@@ -249,8 +249,8 @@ fn main() {
     {
         let fx = load_fixture("1d_bernoulli_logit_n1000_k10_cr");
         let r = bench_one(&fx, "PirlsInner (Bernoulli)", |fx| {
-            let f = gammon::fit(
-                gammon::family::bernoulli_logit(),
+            let f = gamrs::fit(
+                gamrs::family::bernoulli_logit(),
                 fx.x.view(),
                 fx.y.view(),
                 None,
@@ -266,8 +266,8 @@ fn main() {
     {
         let fx = load_fixture("1d_poisson_log_n300_k10_cr");
         let r = bench_one(&fx, "PirlsInner (Poisson)", |fx| {
-            let f = gammon::fit(
-                gammon::family::poisson_log(),
+            let f = gamrs::fit(
+                gamrs::family::poisson_log(),
                 fx.x.view(),
                 fx.y.view(),
                 None,
@@ -283,8 +283,8 @@ fn main() {
     {
         let fx = load_fixture("1d_gamma_log_n300_k10_cr");
         let r = bench_one(&fx, "PirlsInner + profile-σ² Newton", |fx| {
-            let f = gammon::fit(
-                gammon::family::gamma_log(),
+            let f = gamrs::fit(
+                gamrs::family::gamma_log(),
                 fx.x.view(),
                 fx.y.view(),
                 None,
@@ -300,8 +300,8 @@ fn main() {
     {
         let fx = load_fixture("1d_tweedie_log_n300_k10_cr");
         let r = bench_one(&fx, "ShapeAwareEnvelopeScore (Tweedie)", |fx| {
-            let f = gammon::fit(
-                gammon::family::tweedie_log(1.5, 1.0),
+            let f = gamrs::fit(
+                gamrs::family::tweedie_log(1.5, 1.0),
                 fx.x.view(),
                 fx.y.view(),
                 None,
@@ -317,8 +317,8 @@ fn main() {
     {
         let fx = load_fixture("1d_invgauss_log_n300_k10_cr");
         let r = bench_one(&fx, "PirlsInner + Newton-W (IG)", |fx| {
-            let f = gammon::fit(
-                gammon::family::inverse_gaussian_log(),
+            let f = gamrs::fit(
+                gamrs::family::inverse_gaussian_log(),
                 fx.x.view(),
                 fx.y.view(),
                 None,
@@ -386,7 +386,7 @@ fn main() {
     );
 
     // ----------------------------------------------------------------
-    // Tweedie-specific hot-function profile (gammon::special::*).
+    // Tweedie-specific hot-function profile (gamrs::special::*).
     //
     // No perf/flamegraph available in this worktree — instead we
     // micro-bench the Tweedie special functions that we know are called
@@ -411,12 +411,12 @@ fn main() {
 
         // tweedie_series — full vectorised call, n=300.
         for _ in 0..WARMUP_ITERS {
-            let _ = gammon::special::tweedie_series(&y_slice, phi, p);
+            let _ = gamrs::special::tweedie_series(&y_slice, phi, p);
         }
         let n_series = 200;
         let t0 = Instant::now();
         for _ in 0..n_series {
-            let r = gammon::special::tweedie_series(&y_slice, phi, p);
+            let r = gamrs::special::tweedie_series(&y_slice, phi, p);
             std::hint::black_box(r);
         }
         let series_us = t0.elapsed().as_secs_f64() * 1e6 / n_series as f64;
@@ -425,7 +425,7 @@ fn main() {
         for _ in 0..WARMUP_ITERS {
             let mut s = 0.0;
             for &yi in &y_slice {
-                s += gammon::special::tweedie_log_w(yi, phi, p);
+                s += gamrs::special::tweedie_log_w(yi, phi, p);
             }
             std::hint::black_box(s);
         }
@@ -434,7 +434,7 @@ fn main() {
         for _ in 0..n_logw {
             let mut s = 0.0;
             for &yi in &y_slice {
-                s += gammon::special::tweedie_log_w(yi, phi, p);
+                s += gamrs::special::tweedie_log_w(yi, phi, p);
             }
             std::hint::black_box(s);
         }
@@ -444,7 +444,7 @@ fn main() {
         for _ in 0..WARMUP_ITERS {
             let mut s = 0.0;
             for j in 1..=200_u64 {
-                s += gammon::special::log_gamma(j as f64);
+                s += gamrs::special::log_gamma(j as f64);
             }
             std::hint::black_box(s);
         }
@@ -453,7 +453,7 @@ fn main() {
         for _ in 0..n_lg {
             let mut s = 0.0;
             for j in 1..=200_u64 {
-                s += gammon::special::log_gamma(j as f64);
+                s += gamrs::special::log_gamma(j as f64);
             }
             std::hint::black_box(s);
         }
@@ -518,7 +518,7 @@ fn main() {
         s.push_str("  }\n}\n");
         s
     };
-    let out_path = "/tmp/gammon_bench_baseline.json";
+    let out_path = "/tmp/gamrs_bench_baseline.json";
     if let Err(e) = std::fs::write(out_path, &json) {
         eprintln!("warning: failed to write {out_path}: {e}");
     } else {

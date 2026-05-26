@@ -4,7 +4,7 @@
 //! (Link, Variance) pair; the impl body is the validate-wire-drive
 //! sequence that used to live in the deleted per-family
 //! `fit_*_cr_with_solver` wrappers. The trait declaration and the
-//! `gammon::fit{,_with,_with_design,_with_solver}` public functions live in
+//! `gamrs::fit{,_with,_with_design,_with_solver}` public functions live in
 //! `canonical.rs`.
 //!
 //! Impls consume a `PreparedDesign` built upstream by a
@@ -16,7 +16,7 @@ use std::marker::PhantomData;
 use ndarray::{Array1, ArrayView1, ArrayView2};
 
 use crate::design::PreparedDesign;
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 use crate::family::{
     bernoulli_logit, gamma_log, inverse_gaussian_log, negbin_log, ocat_identity, ocat_init_theta,
     poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity, tweedie_log, Bernoulli,
@@ -255,7 +255,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, NegBinVariance, S> for NegBin
         let init_theta = family.loss.theta;
         check_lengths(x, y, prior_weights)?;
         if !(init_theta > 0.0 && init_theta.is_finite()) {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "NegBin overdispersion init_theta must be a positive finite scalar (small θ → high variance, large θ → Poisson limit); got init_theta={init_theta}"
             )));
         }
@@ -296,12 +296,12 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, TVariance, S> for TDist 
         let init_sigma2 = family.loss.sigma2;
         check_lengths(x, y, prior_weights)?;
         if !(init_nu > 2.0 && init_nu.is_finite()) {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "scat/TDist degrees-of-freedom init_nu must be > 2 (finite variance); got init_nu={init_nu}"
             )));
         }
         if !(init_sigma2 > 0.0 && init_sigma2.is_finite()) {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "scat/TDist scale init_sigma2 must be a positive finite scalar; got init_sigma2={init_sigma2}"
             )));
         }
@@ -341,14 +341,14 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, TweedieVariance, S> for Tweed
         let init_phi = family.loss.phi;
         check_lengths(x, y, prior_weights)?;
         if !(1.0 < init_p && init_p < 2.0) {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "Tweedie variance power must be in (1, 2) — strict interior \
                  (p=1 → Poisson, p=2 → Gamma — use those families directly); \
                  got init_p={init_p}"
             )));
         }
         if !(init_phi > 0.0 && init_phi.is_finite()) {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "Tweedie dispersion init_phi must be a positive finite scalar; got init_phi={init_phi}"
             )));
         }
@@ -392,14 +392,14 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
 
         check_lengths(x, y, prior_weights)?;
         if n_cats < 3 {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "Ocat requires n_cats ≥ 3 (≤ 2 levels collapses to Bernoulli — use bernoulli_logit instead); got n_cats={n_cats}"
             )));
         }
         for (i, &yi) in y.iter().enumerate() {
             let r = yi.round() as i64;
             if r < 1 || (r as usize) > n_cats {
-                return Err(GammonError::InvalidParameter(format!(
+                return Err(GamrsError::InvalidParameter(format!(
                     "Ocat requires y to be an integer in 1..={n_cats}; got y={yi} at row {i}"
                 )));
             }
@@ -411,7 +411,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         let theta0_shape: Array1<f64> =
             init_theta_opt.unwrap_or_else(|| ocat_init_theta(y, n_cats));
         if theta0_shape.len() != n_cats - 2 {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "Ocat init_theta length must equal n_cats - 2 = {} (log-gap thresholds between adjacent categories above the first); got {}",
                 n_cats - 2,
                 theta0_shape.len()
@@ -420,7 +420,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
 
         // 94b: shape-aware (ocat) is single-smooth only.
         if prep.s_list.len() != 1 {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "ocat is restricted to single-smooth fits in 94b; got {} terms",
                 prep.s_list.len()
             )));

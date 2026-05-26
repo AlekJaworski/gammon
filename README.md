@@ -1,4 +1,4 @@
-# gammon
+# gamrs
 
 Generalised Additive Models in Rust — a clean-room reimplementation built on
 six composable trait layers (`Basis`, `BasisTransform`, `Loss`/`Link`/`VarianceFn`,
@@ -59,18 +59,18 @@ serialize/deserialize, GamPredictor for inference-only deployment.
 ## Use (Rust)
 
 ```rust
-use gammon::{TermSpec, MarginKind, DesignStrategy};
+use gamrs::{TermSpec, MarginKind, DesignStrategy};
 use ndarray::Array2;
 
 let x: Array2<f64> = /* (n, n_input_dims) */;
 let y = /* Array1<f64> */;
 
 // Single 1-D smooth
-let fit = gammon::fit(gammon::family::gaussian_identity(), x.view(), y.view(), None, 10)?;
+let fit = gamrs::fit(gamrs::family::gaussian_identity(), x.view(), y.view(), None, 10)?;
 
 // Multi-smooth additive
-let fit = gammon::fit_with_design(
-    gammon::family::gaussian_identity(),
+let fit = gamrs::fit_with_design(
+    gamrs::family::gaussian_identity(),
     DesignStrategy::Additive { terms: vec![
         TermSpec::Cr { col: 0, k: 10 },
         TermSpec::Cr { col: 1, k: 15 },
@@ -79,8 +79,8 @@ let fit = gammon::fit_with_design(
 )?;
 
 // Tensor product
-let fit = gammon::fit_with_design(
-    gammon::family::gaussian_identity(),
+let fit = gamrs::fit_with_design(
+    gamrs::family::gaussian_identity(),
     DesignStrategy::Additive { terms: vec![
         TermSpec::Tensor { col_a: 0, col_b: 1, k_a: 5, k_b: 5, bs_a: MarginKind::Cr, bs_b: MarginKind::Cr },
     ]},
@@ -93,7 +93,7 @@ let mu = fit.predict(x.view())?;
 ## Use (Python)
 
 ```python
-from gammon import Gam, CrTerm, ReTerm, TeTerm
+from gamrs import Gam, CrTerm, ReTerm, TeTerm
 
 # Additive multi-smooth
 g = Gam(terms=[CrTerm("x0", k=10), CrTerm("x1", k=15)])

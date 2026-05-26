@@ -7,7 +7,7 @@ use super::Family;
 
 /// Gamma likelihood for continuous positive responses (waiting times,
 /// concentrations, etc.). Canonical link is `1/μ`; mgcv's `Gamma()` and
-/// `Gamma(link="log")` are both supported but gammon ships only the log
+/// `Gamma(link="log")` are both supported but gamrs ships only the log
 /// link for now (most common in practice).
 ///
 /// - Deviance: `D(y, μ) = 2[(y - μ)/μ - log(y/μ)]` for `y > 0`.

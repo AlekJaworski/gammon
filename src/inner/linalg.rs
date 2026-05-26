@@ -7,7 +7,7 @@
 //!
 //! Two impls today:
 //! - **`CholeskySolver`** (default everywhere) — pure-Cholesky path, the
-//!   v0.2 gammon convention. Lower-triangular factor `L` from
+//!   v0.2 gamrs convention. Lower-triangular factor `L` from
 //!   `ndarray-linalg::Cholesky`, plus hand-rolled `forward_solve` /
 //!   `back_solve` (one allocation per RHS, matches v0.x bit-for-bit at the
 //!   `tr(A⁻¹S)` level — see `score/mod.rs` historical `trace_solve`).
@@ -20,7 +20,7 @@
 //!   is **NOT** in factorisation; it's in the outer Newton ρ convergence
 //!   (likely v0.x's `Sl.initial.repara` rotation, not ported yet).
 //!
-//! Choice is type-level — `gammon::fit::<_, _, _, LuSolver>(family, …)` —
+//! Choice is type-level — `gamrs::fit::<_, _, _, LuSolver>(family, …)` —
 //! never a string key (matches §G "Generic over traits, not enum dispatch"
 //! + the typed-config feedback note).
 //!
@@ -42,13 +42,13 @@
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use ndarray_linalg::{Cholesky, Determinant, FactorizeInto, LUFactorized, Solve, UPLO};
 
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 
 /// Factor + solve + log-det + `tr(A⁻¹·M)` operations on a symmetric positive-
 /// definite matrix `A = X'WX + λS`. Implementors choose the factorisation
 /// — Cholesky for speed, LU for v0.x bit-equivalence at the factor level.
 ///
-/// Type-level dispatch: `gammon::fit::<_, _, _, LuSolver>(...)` selects the
+/// Type-level dispatch: `gamrs::fit::<_, _, _, LuSolver>(...)` selects the
 /// LU backend without any runtime branch.
 pub trait LinearSolver: Clone + Copy + Default + 'static {
     /// Concrete factorisation type (e.g. lower Cholesky factor, LU pivots).
@@ -104,7 +104,7 @@ impl LinearSolver for CholeskySolver {
 
     fn factorize(a: Array2<f64>) -> Result<Self::Factorization> {
         a.cholesky(UPLO::Lower)
-            .map_err(|e| GammonError::SingularSystem(format!("Cholesky failed: {e}")))
+            .map_err(|e| GamrsError::SingularSystem(format!("Cholesky failed: {e}")))
     }
 
     fn solve(fact: &Self::Factorization, b: ArrayView1<f64>) -> Array1<f64> {
@@ -188,14 +188,14 @@ pub fn chol_back_solve(l: &Array2<f64>, z: ArrayView1<f64>) -> Array1<f64> {
 
 /// LAPACK LU-with-partial-pivoting backend. v0.x's `reml/system.rs` uses
 /// LU on the ridged `A` for β̂ and `dgetri` (LU) on the unridged `A` for
-/// `tr_a`; this backend lets gammon callers reproduce that path exactly.
+/// `tr_a`; this backend lets gamrs callers reproduce that path exactly.
 ///
 /// Empirically (2026-05-24): LU and Cholesky produce β̂ identical to
 /// 1e-13 across all 9 family parity fixtures. The §C4-note Phase-5b
 /// "Cholesky-vs-LU is the gap" hypothesis was **wrong** — the residual
 /// `low_signal_n1000_k10` 2.27e-6 mgcv-parity gap lives in the outer
 /// Newton ρ convergence (likely v0.x's `Sl.initial.repara` rotation, not
-/// ported to gammon), not in the factor backend. LU is kept for forward-
+/// ported to gamrs), not in the factor backend. LU is kept for forward-
 /// compat and as the surface for any future indefinite-A path.
 #[derive(Clone, Copy, Default)]
 pub struct LuSolver;
@@ -207,7 +207,7 @@ impl LinearSolver for LuSolver {
         let p = a.nrows();
         let lu = a
             .factorize_into()
-            .map_err(|e| GammonError::SingularSystem(format!("LU failed: {e}")))?;
+            .map_err(|e| GamrsError::SingularSystem(format!("LU failed: {e}")))?;
         Ok(LuFactorState { lu, n: p })
     }
 
@@ -288,9 +288,9 @@ pub struct LuFactorState {
 ///     `ridge = 1e-12·max(|A_ii|, 1)`, mirroring v0.x's
 ///     `src/reml/system.rs:374-381`. v0.x adds the same ridge before
 ///     calling LAPACK `dgesv` (LU) for β̂ and `dgetri` (LU) for tr_a;
-///     gammon does the same for either backend.
+///     gamrs does the same for either backend.
 ///
-/// Without the ridge, gammon's pure-Cholesky β̂ was bit-different from v0.x's
+/// Without the ridge, gamrs's pure-Cholesky β̂ was bit-different from v0.x's
 /// LU+ridge β̂ on ill-conditioned fixtures (e.g. `low_signal_n1000_k10`).
 /// With the ridge, the §C4-note Gaussian byte-equivalence gap closes
 /// while keeping every score-side formula on the unridged factorisation.

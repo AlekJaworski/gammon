@@ -1,4 +1,4 @@
-"""Minimal coercion facade over :func:`gammon._gammon_native.fit`.
+"""Minimal coercion facade over :func:`gamrs._gamrs_native.fit`.
 
 The native binding is strict (it wants 1-D float64 contiguous arrays
 for x and y). This wrapper handles the common 2-D ``(n, 1)`` /
@@ -21,7 +21,7 @@ from typing import Any, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
-from . import _gammon_native
+from . import _gamrs_native
 
 
 def _ensure_1d_float64(arr: Any, *, name: str) -> np.ndarray:
@@ -41,10 +41,10 @@ def _ensure_1d_float64(arr: Any, *, name: str) -> np.ndarray:
 
 
 class GAM:
-    """Coerce-and-forward wrapper around :func:`gammon._gammon_native.fit`.
+    """Coerce-and-forward wrapper around :func:`gamrs._gamrs_native.fit`.
 
     Use this when you want a single-predictor 1-D fit without the
-    DataFrame plumbing of :class:`gammon.Gam`. Method signatures match
+    DataFrame plumbing of :class:`gamrs.Gam`. Method signatures match
     the native ``fit`` function plus light input coercion.
     """
 
@@ -81,7 +81,7 @@ class GAM:
         w_arr = (
             _ensure_1d_float64(weights, name="weights") if weights is not None else None
         )
-        self._fitted = _gammon_native.fit(
+        self._fitted = _gamrs_native.fit(
             self.family_name,
             x_arr,
             y_arr,
@@ -213,7 +213,7 @@ Term = Union[CrTerm, CrStableTerm, ReTerm, TeTerm]
 
 
 def _term_to_tuple(term: Term) -> tuple:
-    """Convert a typed `Term` to the tuple form `_gammon_native.fit_additive`
+    """Convert a typed `Term` to the tuple form `_gamrs_native.fit_additive`
     expects at the FFI boundary. Strings live ONLY here, between the
     Python typed surface and the Rust enum — they never leak in either
     direction."""
@@ -256,7 +256,7 @@ def fit_additive(
     (all length = number of smoothing params, i.e. 1 per univariate term,
     2 per tensor term) for per-term diagnostics.
 
-    `family` accepts the same strings as :func:`_gammon_native.fit` minus
+    `family` accepts the same strings as :func:`_gamrs_native.fit` minus
     the shape-managed families (tdist, scat, negbin, tweedie, ocat, elf,
     quantile) which are restricted to single-smooth in 94b.
     """
@@ -277,4 +277,4 @@ def fit_additive(
     term_tuples = [_term_to_tuple(t) for t in terms]
     if not term_tuples:
         raise ValueError("terms must be non-empty")
-    return _gammon_native.fit_additive(family, x_arr, y_arr, term_tuples, weights=w_arr)
+    return _gamrs_native.fit_additive(family, x_arr, y_arr, term_tuples, weights=w_arr)

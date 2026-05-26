@@ -23,7 +23,7 @@ impl Loss for QuasiPoisson {
         Poisson.deviance_per_obs(y, mu)
     }
     /// Quasi-likelihood has no true probability density, so the saturated
-    /// log-lik is undefined. v0.x and gammon use mgcv's Gaussian-approximation
+    /// log-lik is undefined. v0.x and gamrs use mgcv's Gaussian-approximation
     /// `-0.5·log(2πφ)` per obs (sum `-n/2·log(2πφ)`). Phase-2b v0.2 port:
     /// switched FROM the Poisson sat_lik (σ²-independent) TO the Gaussian
     /// approximation so the σ²-profile equation in the new Form B score

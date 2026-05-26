@@ -1,10 +1,10 @@
 """Forward-compat stubs that match v0.x's :mod:`mgcv_rust` exports
-1-1 in shape but raise ``NotImplementedError`` for features gammon
+1-1 in shape but raise ``NotImplementedError`` for features gamrs
 doesn't yet wire.
 
-Keeping these here (instead of inline in :mod:`gammon._fitter`) keeps
+Keeping these here (instead of inline in :mod:`gamrs._fitter`) keeps
 ``_fitter.py`` under the 700-LOC project budget while still letting
-consumer code do ``from gammon import TermContributions`` etc. without
+consumer code do ``from gamrs import TermContributions`` etc. without
 ``ImportError``.
 """
 
@@ -17,7 +17,7 @@ import numpy as np
 
 class TermContributions:
     """Result of ``Gam.predict(X, type='terms')``. Shape mirrors v0.x's
-    namesake — gammon doesn't yet expose per-term coef indices through
+    namesake — gamrs doesn't yet expose per-term coef indices through
     the bindings, so ``Gam.predict(type='terms')`` raises rather than
     constructing one of these directly. Fields are kept so consumer
     code can compile.
@@ -32,7 +32,7 @@ class TermContributions:
 class GamSummary:
     """Stub matching v0.x's ``GamSummary`` shape (intercept, scale, edf, λ).
 
-    gammon surfaces the scalar values via :meth:`gammon.Gam.summary`; the
+    gamrs surfaces the scalar values via :meth:`gamrs.Gam.summary`; the
     per-term breakdown that v0.x's summary depends on is not yet wired
     here, but the dataclass-style attribute names match exactly so
     callers can read them off without code changes.
@@ -69,9 +69,9 @@ class GamSummary:
         )
 
 
-# GamPredictor moved to `gammon._predictor` — the fleshed-out, fit-time
+# GamPredictor moved to `gamrs._predictor` — the fleshed-out, fit-time
 # persistence-aware implementation. Importers that want the class should
-# do `from gammon import GamPredictor` (or `from gammon._predictor import
+# do `from gamrs import GamPredictor` (or `from gamrs._predictor import
 # GamPredictor`). We intentionally avoid re-exporting here to dodge a
 # circular import: `_predictor` itself imports from `_fitter`, and
 # `_fitter` previously imported `GamPredictor` from this stub module.

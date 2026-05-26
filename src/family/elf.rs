@@ -19,7 +19,7 @@ use super::Family;
 /// qgam's logistic width (`co`). As σ → 0, `2L → ρ_τ(r)`.
 ///
 /// **Stateful loss with three shape params**: `τ` is user-supplied at
-/// construction and NOT optimised; `(σ, λ)` are profiled. gammon's Phase-10
+/// construction and NOT optimised; `(σ, λ)` are profiled. gamrs's Phase-10
 /// port follows v0.x's `fit_pirls_quantile` heuristic — both σ and λ are
 /// derived from a Gaussian warm-start and fixed across the outer ρ-loop
 /// (so `n_shape_params() = 0`). Fully profiling (σ, λ) via the outer
@@ -47,7 +47,7 @@ pub struct ElfVariance {
 }
 
 /// Per-observation pieces of the ELF loss — same shape as v0.x's
-/// `QuantileElfParts` but only the bits gammon needs.
+/// `QuantileElfParts` but only the bits gamrs needs.
 ///
 /// `r = y - μ`, `u = r / λ`, `s = sigmoid(u)` (logistic CDF),
 /// `softplus(u) = log(1 + exp(u))`. Deviance = `2L` per v0.x convention.
@@ -98,7 +98,7 @@ pub(crate) fn elf_parts(y: f64, mu: f64, tau: f64, sigma: f64, lambda: f64) -> E
         deviance: 2.0 * t / sigma,
         // Loss::d_loss_dmu returns ∂(deviance)/∂μ — match v0.x's dmu_qgam
         // (NOT v0.x's QuantileElfParts.dmu, which is 0.5×dmu_qgam — that
-        // field stores ∂(L)/∂μ rather than ∂(deviance)/∂μ; gammon's
+        // field stores ∂(L)/∂μ rather than ∂(deviance)/∂μ; gamrs's
         // convention is deviance-based throughout, like Gaussian/Bernoulli).
         dl_dmu: dmu_qgam,
         d2l_dmu: dmu2_qgam,
@@ -112,7 +112,7 @@ impl Loss for ElfLoss {
     /// τ-quantile target we don't want the mean-centred shrinkage. The
     /// actual warm-start used by `fit_quantile_cr` is a Gaussian-fit
     /// residual quantile shift; this default is only the fallback if
-    /// some caller uses ElfLoss outside the gammon fit driver.
+    /// some caller uses ElfLoss outside the gamrs fit driver.
     fn initial_mu(&self, y: ndarray::ArrayView1<f64>) -> ndarray::Array1<f64> {
         y.iter().copied().collect()
     }
@@ -152,7 +152,7 @@ impl Loss for ElfLoss {
 
     // No shape params exposed to the outer Newton. v0.x's `fit_pirls_quantile`
     // sets σ and λ heuristically from a Gaussian warm-start and never
-    // updates them — gammon's Phase-10 port mirrors that. Profiling (σ, λ)
+    // updates them — gamrs's Phase-10 port mirrors that. Profiling (σ, λ)
     // via outer Newton is a future extension.
     fn n_shape_params(&self) -> usize {
         0

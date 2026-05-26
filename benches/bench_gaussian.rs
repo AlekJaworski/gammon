@@ -1,8 +1,8 @@
-//! Wall-time benchmark: gammon `fit(gaussian_identity(), …)` re-runs on
-//! the same fixture. Just measures gammon's own throughput; the v0.x
-//! comparison runs via Python (`scripts/python/bench_gammon_vs_v0x.py`).
+//! Wall-time benchmark: gamrs `fit(gaussian_identity(), …)` re-runs on
+//! the same fixture. Just measures gamrs's own throughput; the v0.x
+//! comparison runs via Python (`scripts/python/bench_gamrs_vs_v0x.py`).
 //!
-//! `cargo bench -p gammon --bench bench_gaussian` (release profile).
+//! `cargo bench -p gamrs --bench bench_gaussian` (release profile).
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -34,8 +34,8 @@ fn main() {
     let y = Array1::from_vec(ys);
 
     // Warm up.
-    let _ = gammon::fit(
-        gammon::family::gaussian_identity(),
+    let _ = gamrs::fit(
+        gamrs::family::gaussian_identity(),
         x.view(),
         y.view(),
         None,
@@ -46,8 +46,8 @@ fn main() {
     let runs = 200;
     let t0 = Instant::now();
     for _ in 0..runs {
-        let _ = gammon::fit(
-            gammon::family::gaussian_identity(),
+        let _ = gamrs::fit(
+            gamrs::family::gaussian_identity(),
             x.view(),
             y.view(),
             None,
@@ -58,7 +58,7 @@ fn main() {
     let elapsed = t0.elapsed();
     let per_fit = elapsed / runs;
     println!(
-        "fixture: {fx_name}; n={}; k={}; gammon per-fit = {:?}",
+        "fixture: {fx_name}; n={}; k={}; gamrs per-fit = {:?}",
         x.len(),
         k,
         per_fit

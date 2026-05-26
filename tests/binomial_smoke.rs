@@ -1,4 +1,4 @@
-//! Phase 1 smoke test: gammon fits a noisy 1-D Bernoulli + logit GAM and
+//! Phase 1 smoke test: gamrs fits a noisy 1-D Bernoulli + logit GAM and
 //! recovers a sensible smooth shape (monotone increasing) on data where
 //! the true logit is monotone.
 //!
@@ -48,8 +48,8 @@ fn binomial_logit_1d_recovers_monotone_smooth() {
     let y = Array1::from_vec(ys);
     let x2 = x.view().insert_axis(Axis(1));
 
-    let fit = gammon::fit(gammon::family::bernoulli_logit(), x2, y.view(), None, 10)
-        .expect("gammon::fit (Bernoulli) should not fail");
+    let fit = gamrs::fit(gamrs::family::bernoulli_logit(), x2, y.view(), None, 10)
+        .expect("gamrs::fit (Bernoulli) should not fail");
 
     assert!(fit.converged, "Binomial outer didn't converge");
     println!(

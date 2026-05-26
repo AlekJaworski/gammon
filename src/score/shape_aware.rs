@@ -43,7 +43,7 @@ struct FrozenBetaCtx {
 /// outer probe (shape params shift every probe; the inner must see the
 /// current family).
 ///
-/// Two concrete impls in gammon:
+/// Two concrete impls in gamrs:
 /// - `PirlsInnerBuilder<S>` (generic over `L, K, V, S`) — drives TDist/scat,
 ///   Tweedie, NegBin via the standard PIRLS loop.
 /// - `OcatInnerBuilder<S>` — drives the ocat extended family via `OcatInner`,
@@ -408,7 +408,7 @@ where
     /// `Some(...)` / `None` — no string config.
     ///
     /// `Loss::analytic_shape_score_hessian` is an optional override for
-    /// the shape×shape block (defaults `None`; currently no gammon family
+    /// the shape×shape block (defaults `None`; currently no gamrs family
     /// uses it — v0.x's FD-on-analytic-grad converges without it).
     fn compute_value_grad_hess_analytical(
         &self,
@@ -439,7 +439,7 @@ where
         };
 
         // Optional family-supplied closed-form shape×shape block.
-        // Currently `None` for every gammon family — hook for future ports.
+        // Currently `None` for every gamrs family — hook for future ports.
         if n_shape > 0 {
             let lambda = rho.exp();
             let s_beta = self.s_list[0].dot(&fit.beta);
@@ -531,7 +531,7 @@ where
 
     /// v0.1 fallback path — central FD on the gradient with FULL PIRLS
     /// re-converge at each ±h probe. Used by families without an
-    /// analytic shape gradient (TDist, NegBin, Ocat in gammon) where the
+    /// analytic shape gradient (TDist, NegBin, Ocat in gamrs) where the
     /// frozen-β̂ Hessian is structurally inconsistent with the
     /// FD-on-value gradient.
     fn hess_via_fd_on_grad(&self, theta: &Array1<f64>) -> Result<Array2<f64>> {

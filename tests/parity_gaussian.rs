@@ -1,7 +1,7 @@
-//! Phase-0 parity tests for gammon's Gaussian + CR + sum-to-zero pipeline.
+//! Phase-0 parity tests for gamrs's Gaussian + CR + sum-to-zero pipeline.
 //!
-//! Fits gammon on a fixture from the v0.x parity battery and compares fitted-
-//! mean predictions to mgcv's. Phase 0's bar (per the v2 plan §6.4): gammon
+//! Fits gamrs on a fixture from the v0.x parity battery and compares fitted-
+//! mean predictions to mgcv's. Phase 0's bar (per the v2 plan §6.4): gamrs
 //! is byte-equivalent to v0.x → mgcv on a handful of Gaussian fixtures.
 //!
 //! Two bars are checked:
@@ -78,8 +78,8 @@ fn fit_and_check(fixture_name: &str, max_rel_pred: f64, max_rel_scale: f64) {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
 
-    let fit = gammon::fit(
-        gammon::family::gaussian_identity(),
+    let fit = gamrs::fit(
+        gamrs::family::gaussian_identity(),
         x.view(),
         y.view(),
         None,
@@ -98,7 +98,7 @@ fn fit_and_check(fixture_name: &str, max_rel_pred: f64, max_rel_scale: f64) {
     let scale_rel = (fit.scale - fx.mgcv_output.scale).abs() / fx.mgcv_output.scale.max(1e-12);
     println!(
         "[{fixture_name}] max_rel = {rel:.3e}; max_abs = {abs_e:.3e}; rmse = {rmse_v:.3e}; \
-         scale_rel = {scale_rel:.3e} (gammon {:.6e} vs mgcv {:.6e}); ρ̂ = {:.3}; iters = {}",
+         scale_rel = {scale_rel:.3e} (gamrs {:.6e} vs mgcv {:.6e}); ρ̂ = {:.3}; iters = {}",
         fit.scale, fx.mgcv_output.scale, fit.rho[0], fit.n_iters,
     );
     assert!(

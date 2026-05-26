@@ -1,4 +1,4 @@
-//! Phase 9 parity test: gammon `fit_tweedie_cr` vs mgcv `tw()` on 1-D
+//! Phase 9 parity test: gamrs `fit_tweedie_cr` vs mgcv `tw()` on 1-D
 //! Tweedie + log. Joint shape-param optimisation on `[log φ, p_transform]`
 //! alongside `log λ`.
 
@@ -51,8 +51,8 @@ fn tweedie_log_n300_k10_cr() {
     let x = Array2::from_shape_vec((n, 1), x_vec).unwrap();
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
-    let fit = gammon::fit(
-        gammon::family::tweedie_log(/*init_p=*/ 1.5, /*init_phi=*/ 1.0),
+    let fit = gamrs::fit(
+        gamrs::family::tweedie_log(/*init_p=*/ 1.5, /*init_phi=*/ 1.0),
         x.view(),
         y.view(),
         None,
@@ -60,17 +60,17 @@ fn tweedie_log_n300_k10_cr() {
     )
     .unwrap();
     let eta = fit.predict(x.view()).unwrap();
-    let mu_gammon: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
-    let rel = max_rel_err(&mu_gammon, &fx.mgcv_output.predictions_train);
-    let abs_e = max_abs_err(&mu_gammon, &fx.mgcv_output.predictions_train);
+    let mu_gamrs: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
+    let rel = max_rel_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
+    let abs_e = max_abs_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
     println!(
-        "[tweedie n300 k10] max_rel = {rel:.3e}; max_abs = {abs_e:.3e}; φ̂ gammon = {:.4}; ρ̂ = {:.3}; iters = {}; edf = {:.2}",
+        "[tweedie n300 k10] max_rel = {rel:.3e}; max_abs = {abs_e:.3e}; φ̂ gamrs = {:.4}; ρ̂ = {:.3}; iters = {}; edf = {:.2}",
         fit.scale, fit.rho[0], fit.n_iters, fit.edf_total,
     );
     // Phase-1 v0.2 port (2026-05-24): analytical (φ, p) gradient via
     // `tweedie_series` (Dunn-Smyth series derivatives) + full
     // saturated log-lik `l_base + log W − log y` closed the wrong-minimum
-    // bug. gammon now lands at ρ̂ ≈ 5.484 (mgcv 5.479) and φ̂ ≈ 0.975
+    // bug. gamrs now lands at ρ̂ ≈ 5.484 (mgcv 5.479) and φ̂ ≈ 0.975
     // (mgcv 0.975). μ rel-err is ~1.5e-4 (vs the prior 1.8e-1).
     // Tighter threshold to lock in the win.
     assert!(rel < 5e-3, "Tweedie μ rel error {rel:.3e} exceeds 5e-3");

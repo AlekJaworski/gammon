@@ -1,5 +1,5 @@
-"""Disk-level persistence helpers shared by :class:`gammon.Gam` (and the
-:class:`gammon.GamPredictor` wrapper that routes through it).
+"""Disk-level persistence helpers shared by :class:`gamrs.Gam` (and the
+:class:`gamrs.GamPredictor` wrapper that routes through it).
 
 File layout written by :func:`save_gam` and consumed by
 :func:`load_gam`:
@@ -10,7 +10,7 @@ File layout written by :func:`save_gam` and consumed by
     └──────────────┴──────────────────┴─────────────────────────┘
 
 The native body is whatever the Rust core's
-:meth:`gammon._gammon_native.FittedGam.serialize` emits — i.e. gammon's
+:meth:`gamrs._gamrs_native.FittedGam.serialize` emits — i.e. gamrs's
 own ``MAGIC | VERSION | LEN | JSON`` frame. The Python-side header
 adds the wrapper-side metadata (family, link, predictors, design,
 ``_k_used``) so :meth:`Gam.load` can rebuild the wrapper without
@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Union
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from ._fitter import Gam
 
-SCHEMA_TAG = "gammon.Gam/1"
+SCHEMA_TAG = "gamrs.Gam/1"
 
 
 def _gather_meta(gam: "Gam") -> dict[str, Any]:
@@ -69,17 +69,17 @@ def load_gam(cls: type, path: Union[str, "os.PathLike[str]"]) -> "Gam":
     with open(path, "rb") as fh:
         head = fh.read(4)
         if len(head) != 4:
-            raise ValueError(f"gammon.Gam.load: file {path!r} is too short")
+            raise ValueError(f"gamrs.Gam.load: file {path!r} is too short")
         meta_len = int.from_bytes(head, "little")
         meta_bytes = fh.read(meta_len)
         if len(meta_bytes) != meta_len:
-            raise ValueError(f"gammon.Gam.load: truncated metadata in {path!r}")
+            raise ValueError(f"gamrs.Gam.load: truncated metadata in {path!r}")
         meta = json.loads(meta_bytes.decode("utf-8"))
         native_bytes = fh.read()
     if not isinstance(meta, dict) or meta.get("schema") != SCHEMA_TAG:
         got = meta.get("schema") if isinstance(meta, dict) else type(meta).__name__
         raise ValueError(
-            f"gammon.Gam.load: file {path!r} does not carry a {SCHEMA_TAG} "
+            f"gamrs.Gam.load: file {path!r} does not carry a {SCHEMA_TAG} "
             f"schema header (got {got!r})"
         )
     gam = cls.deserialize(native_bytes)
@@ -98,6 +98,6 @@ def load_gam(cls: type, path: Union[str, "os.PathLike[str]"]) -> "Gam":
     gam.negbin_theta = meta.get("negbin_theta")
     gam.r = meta.get("r")
     # Lazy import to avoid a circular load.
-    from ._coerce import FAMILY_TO_GAMMON
-    gam._gammon_family = FAMILY_TO_GAMMON.get(gam.family, (gam.family, gam.link))[0]
+    from ._coerce import FAMILY_TO_GAMRS
+    gam._gamrs_family = FAMILY_TO_GAMRS.get(gam.family, (gam.family, gam.link))[0]
     return gam

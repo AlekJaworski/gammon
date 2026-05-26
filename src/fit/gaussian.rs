@@ -2,7 +2,7 @@
 //!
 //! `fit_gaussian_from_prep` is the shared Gaussian driver consumed by
 //! the `FamilyFitWithSolver` impl for `Gaussian` in `canonical.rs`. Not
-//! a public entry point — the canonical surface is `gammon::fit(...)`.
+//! a public entry point — the canonical surface is `gamrs::fit(...)`.
 //!
 //! Multi-smooth (94b): the driver consumes `prep.s_list` directly. The
 //! outer Newton's θ has length `prep.s_list.len()`; the σ̂² closed form

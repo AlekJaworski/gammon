@@ -2,14 +2,14 @@
 //!
 //! `fit_quantile_from_prep` is the shared ELF driver consumed by the
 //! `FamilyFitWithSolver` impl for `ElfLoss` in `canonical.rs`. Not a
-//! public entry point — the canonical surface is `gammon::fit(...)`.
+//! public entry point — the canonical surface is `gamrs::fit(...)`.
 
 use std::marker::PhantomData;
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use crate::design::PreparedDesign;
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 use crate::family::{elf_identity, ElfLoss};
 use crate::inner::{ArmijoElfInner, ArmijoElfOpts, GaussianInnerFit, LinearSolver};
 use crate::outer::{NewtonOpts, NewtonWithHalving};
@@ -52,7 +52,7 @@ fn qgam_warm_start(
     let xty: Array1<f64> = prep.x_design.t().dot(&y.to_owned());
     let chol_g = a_gauss
         .cholesky(UPLO::Lower)
-        .map_err(|e| GammonError::SingularSystem(format!("ELF warm-start Cholesky: {e}")))?;
+        .map_err(|e| GamrsError::SingularSystem(format!("ELF warm-start Cholesky: {e}")))?;
     let zg = chol_forward_solve(&chol_g, xty.view());
     let beta_gauss = chol_back_solve(&chol_g, zg.view());
 
@@ -124,7 +124,7 @@ pub(crate) fn fit_quantile_from_prep<S: LinearSolver>(
     init_lambda: f64,
 ) -> Result<FittedGam> {
     if !(tau > 0.0 && tau < 1.0) {
-        return Err(GammonError::InvalidParameter(format!(
+        return Err(GamrsError::InvalidParameter(format!(
             "Quantile (ELF) tau must be in the open interval (0, 1) — \
              0/1 are degenerate (point mass at min/max); got tau={tau}"
         )));
@@ -133,7 +133,7 @@ pub(crate) fn fit_quantile_from_prep<S: LinearSolver>(
     let n = x.nrows();
     // 94b: ELF is single-smooth only.
     if prep.s_list.len() != 1 {
-        return Err(GammonError::InvalidParameter(format!(
+        return Err(GamrsError::InvalidParameter(format!(
             "ELF/quantile is restricted to single-smooth fits in 94b; got {} terms",
             prep.s_list.len()
         )));

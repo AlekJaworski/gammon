@@ -2,7 +2,7 @@
 //! StableReparam variants).
 //!
 //! The two `DesignStrategy` impls here (`Cr`, `CrStable`) drive
-//! `gammon::fit(...)` and `fit_with_design(..., CrStable { k }, …)`. Both
+//! `gamrs::fit(...)` and `fit_with_design(..., CrStable { k }, …)`. Both
 //! produce a `PreparedDesign` with `s_list.len() == 1`; the multi-smooth
 //! path lives in [`crate::design::Additive`].
 
@@ -91,7 +91,7 @@ pub(crate) struct CenteredCrFit {
 }
 
 /// Cubic-regression spline + sum-to-zero constraint + intercept.
-/// Default basis for [`gammon::fit`](crate::fit).
+/// Default basis for [`gamrs::fit`](crate::fit).
 pub struct Cr {
     pub k: usize,
 }

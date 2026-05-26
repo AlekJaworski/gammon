@@ -16,7 +16,7 @@
 
 use ndarray::{Array2, ArrayView2};
 
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 
 use super::cr::{CrPredictor, CrStablePredictor};
 use super::re::RePredictor;
@@ -123,7 +123,7 @@ impl AdditivePredictor {
         for (j, pred) in self.term_predictors.iter().enumerate() {
             for &c in &self.cols_used[j] {
                 if c >= x_new.ncols() {
-                    return Err(GammonError::InvalidParameter(format!(
+                    return Err(GamrsError::InvalidParameter(format!(
                         "AdditivePredictor: term {j} expects column {c} but x has \
                          only {} columns",
                         x_new.ncols()
@@ -235,14 +235,14 @@ pub struct Additive {
 impl DesignStrategy for Additive {
     fn prepare(&self, x: ArrayView2<f64>) -> Result<PreparedDesign> {
         if self.terms.is_empty() {
-            return Err(GammonError::InvalidParameter(
+            return Err(GamrsError::InvalidParameter(
                 "Additive: terms list must be non-empty".into(),
             ));
         }
         for (j, t) in self.terms.iter().enumerate() {
             for c in t.cols() {
                 if c >= x.ncols() {
-                    return Err(GammonError::InvalidParameter(format!(
+                    return Err(GamrsError::InvalidParameter(format!(
                         "Additive term {j} reads column {c} but x has only {} columns",
                         x.ncols()
                     )));

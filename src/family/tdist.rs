@@ -31,7 +31,7 @@ pub struct TDist {
 
 /// Variance function for TDist (location-scale family). The "variance" is
 /// constant `ν·σ²/(ν-2)` for finite ν > 2, OR equivalently mgcv treats it
-/// as just `σ²` and folds `ν/(ν-2)` into the working weights. gammon mirrors
+/// as just `σ²` and folds `ν/(ν-2)` into the working weights. gamrs mirrors
 /// mgcv's convention: `V(μ) = σ²` and the PIRLS working weights use the
 /// t-specific `∂²L/∂μ²` directly via `Loss::d2_loss_dmu`.
 #[derive(Clone)]

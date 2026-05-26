@@ -1,4 +1,4 @@
-//! gammon — GAM core, v2 architecture experiment.
+//! gamrs — GAM core, v2 architecture experiment.
 //!
 //! Phase 0 scope (per `Projects/mgcv_rust/plans/mgcv_rust - v2 Architecture
 //! Plan 2026-05-22.md`): Gaussian + identity link + CR spline + sum-to-zero
@@ -37,7 +37,7 @@ pub use design::{
     combined_s, Additive, AdditivePredictor, Cr, CrPredictor, CrStable, CrStablePredictor,
     DesignStrategy, Predictor, PreparedDesign, Re, RePredictor, TermSpec,
 };
-pub use error::{GammonError, Result};
+pub use error::{GamrsError, Result};
 pub use family::{ocat_init_theta, OcatLoss, OcatVariance};
 pub use fit::{
     fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver,

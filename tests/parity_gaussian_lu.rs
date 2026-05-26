@@ -4,7 +4,7 @@
 //! Importance: the §C4-note Phase-5b hypothesis was that the residual
 //! 2.27e-6 `low_signal_n1000_k10` mgcv-parity gap was the Cholesky-vs-LU
 //! factor mismatch. This test invalidates that hypothesis empirically —
-//! the two backends agree to 1e-12 on the gammon side, so the residual
+//! the two backends agree to 1e-12 on the gamrs side, so the residual
 //! parity gap to mgcv lives upstream of the linear backend (likely
 //! v0.x's `Sl.initial.repara` rotation, not ported).
 //!
@@ -54,16 +54,16 @@ fn gaussian_low_signal_lu_matches_cholesky() {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
 
-    let fit_chol = gammon::fit_with_solver::<_, _, _, gammon::CholeskySolver>(
-        gammon::family::gaussian_identity(),
+    let fit_chol = gamrs::fit_with_solver::<_, _, _, gamrs::CholeskySolver>(
+        gamrs::family::gaussian_identity(),
         x.view(),
         y.view(),
         None,
         k,
     )
     .expect("Cholesky fit");
-    let fit_lu = gammon::fit_with_solver::<_, _, _, gammon::LuSolver>(
-        gammon::family::gaussian_identity(),
+    let fit_lu = gamrs::fit_with_solver::<_, _, _, gamrs::LuSolver>(
+        gamrs::family::gaussian_identity(),
         x.view(),
         y.view(),
         None,
@@ -127,16 +127,16 @@ fn gaussian_smooth_n500_lu_matches_cholesky() {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
 
-    let fit_chol = gammon::fit_with_solver::<_, _, _, gammon::CholeskySolver>(
-        gammon::family::gaussian_identity(),
+    let fit_chol = gamrs::fit_with_solver::<_, _, _, gamrs::CholeskySolver>(
+        gamrs::family::gaussian_identity(),
         x.view(),
         y.view(),
         None,
         k,
     )
     .expect("Cholesky fit");
-    let fit_lu = gammon::fit_with_solver::<_, _, _, gammon::LuSolver>(
-        gammon::family::gaussian_identity(),
+    let fit_lu = gamrs::fit_with_solver::<_, _, _, gamrs::LuSolver>(
+        gamrs::family::gaussian_identity(),
         x.view(),
         y.view(),
         None,
@@ -160,7 +160,7 @@ fn gaussian_smooth_n500_lu_matches_cholesky() {
 /// Same parity check via the canonical typed entry point.
 #[test]
 fn canonical_fit_with_solver_lu_matches_cholesky() {
-    use gammon::family::gaussian_identity;
+    use gamrs::family::gaussian_identity;
 
     let fx = load_fixture("1d_gaussian_smooth_n500_k10_cr");
     let x_vec: Vec<f64> = fx.inputs.x_train.iter().map(|r| r[0]).collect();
@@ -169,8 +169,8 @@ fn canonical_fit_with_solver_lu_matches_cholesky() {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
 
-    let fit_default = gammon::fit(gaussian_identity(), x.view(), y.view(), None, k).unwrap();
-    let fit_chol = gammon::fit_with_solver::<_, _, _, gammon::CholeskySolver>(
+    let fit_default = gamrs::fit(gaussian_identity(), x.view(), y.view(), None, k).unwrap();
+    let fit_chol = gamrs::fit_with_solver::<_, _, _, gamrs::CholeskySolver>(
         gaussian_identity(),
         x.view(),
         y.view(),
@@ -178,7 +178,7 @@ fn canonical_fit_with_solver_lu_matches_cholesky() {
         k,
     )
     .unwrap();
-    let fit_lu = gammon::fit_with_solver::<_, _, _, gammon::LuSolver>(
+    let fit_lu = gamrs::fit_with_solver::<_, _, _, gamrs::LuSolver>(
         gaussian_identity(),
         x.view(),
         y.view(),
@@ -191,11 +191,11 @@ fn canonical_fit_with_solver_lu_matches_cholesky() {
     assert_eq!(
         max_abs_diff(&fit_default.beta, &fit_chol.beta),
         0.0,
-        "gammon::fit(...) and gammon::fit_with_solver::<CholeskySolver>(...) must produce identical β̂",
+        "gamrs::fit(...) and gamrs::fit_with_solver::<CholeskySolver>(...) must produce identical β̂",
     );
     // LU must agree to 1e-10 with both.
     assert!(
         max_abs_diff(&fit_chol.beta, &fit_lu.beta) < 1e-10,
-        "gammon::fit_with_solver::<LuSolver>(...) should match Cholesky to ~1e-12",
+        "gamrs::fit_with_solver::<LuSolver>(...) should match Cholesky to ~1e-12",
     );
 }

@@ -1,16 +1,16 @@
 [package]
-name = "gammon"
+name = "gamrs"
 version = "0.1.0-alpha.1"
 edition = "2021"
 description = "Generalised Additive Models in Rust — 10 families, multi-smooth (y ~ s(x0) + s(x1)), tensor products te(x0, x1), Python bindings via PyO3."
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/AlekJaworski/gammon"
+repository = "https://github.com/AlekJaworski/gamrs"
 keywords = ["statistics", "regression", "gam", "smoothing", "mgcv"]
 categories = ["science", "mathematics"]
 
 [lib]
-name = "gammon"
+name = "gamrs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]

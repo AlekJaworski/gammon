@@ -1,4 +1,4 @@
-//! Canonical entry point — `gammon::fit(family, x, y, weights, k)`.
+//! Canonical entry point — `gamrs::fit(family, x, y, weights, k)`.
 //!
 //! Single typed function dispatches internally to the right driver based
 //! on the concrete `Family<L, K, V>` type. Per-family
@@ -8,8 +8,8 @@
 //! per-family `fit_*_cr_with_solver` wrapper.
 //!
 //! The `FamilyFit<K, V>` trait wraps `FamilyFitWithSolver<K, V,
-//! CholeskySolver>` via a blanket impl, so the no-solver `gammon::fit(...)`
-//! and the solver-parameterised `gammon::fit_with_solver::<_, _, _,
+//! CholeskySolver>` via a blanket impl, so the no-solver `gamrs::fit(...)`
+//! and the solver-parameterised `gamrs::fit_with_solver::<_, _, _,
 //! S>(...)` share exactly one dispatch implementation per family (no
 //! duplication).
 //!
@@ -24,7 +24,7 @@
 //!       L: FamilyFitWithSolver<K, V, CholeskySolver> {...}
 //! ```
 //!
-//! Calling `gammon::fit(gaussian_identity(), x, y, w, 10)` resolves to
+//! Calling `gamrs::fit(gaussian_identity(), x, y, w, 10)` resolves to
 //! `<Gaussian as FamilyFitWithSolver<_, _, CholeskySolver>>::
 //! fit_with_solver_canonical(...)` at compile time — zero-cost dispatch,
 //! no runtime branching, no string keys.
@@ -52,9 +52,9 @@ use super::FittedGam;
 // =============================================================================
 
 /// Sealed dispatch trait — each Loss impls this once for the (Link,
-/// Variance) pair it ships with. Drives `gammon::fit_with_design(...)`,
-/// `gammon::fit(...)` (via the blanket `FamilyFit` impl below) and
-/// `gammon::fit_with_solver::<_, _, _, S>(...)` at the type level — the
+/// Variance) pair it ships with. Drives `gamrs::fit_with_design(...)`,
+/// `gamrs::fit(...)` (via the blanket `FamilyFit` impl below) and
+/// `gamrs::fit_with_solver::<_, _, _, S>(...)` at the type level — the
 /// concrete `Family<L, K, V>` picks which family-specific body to
 /// execute without any runtime branching.
 ///
@@ -128,7 +128,7 @@ where
 // Public canonical API
 // =============================================================================
 
-/// Canonical typed entry point — `gammon::fit(family, x, y, weights, k)`.
+/// Canonical typed entry point — `gamrs::fit(family, x, y, weights, k)`.
 ///
 /// Dispatches to the appropriate internal driver at compile time based
 /// on the concrete `Family<L, K, V>` type:
@@ -147,18 +147,18 @@ where
 /// [`fit_with_solver`].
 ///
 /// Errors carry guidance (e.g. `"Gamma requires y > 0; got y=-0.3 at row
-/// 42"`); see `GammonError::InvalidParameter`.
+/// 42"`); see `GamrsError::InvalidParameter`.
 ///
 /// # Examples
 ///
 /// ```ignore
-/// use gammon::family::{gaussian_identity, tweedie_log};
+/// use gamrs::family::{gaussian_identity, tweedie_log};
 ///
 /// // Defaults — automatic dispatch on the family type.
-/// let fit = gammon::fit(gaussian_identity(), x.view(), y.view(), None, 10)?;
+/// let fit = gamrs::fit(gaussian_identity(), x.view(), y.view(), None, 10)?;
 ///
 /// // Shape-managed: initial p, φ live on the family.
-/// let fit = gammon::fit(tweedie_log(1.5, 1.0), x.view(), y.view(), None, 10)?;
+/// let fit = gamrs::fit(tweedie_log(1.5, 1.0), x.view(), y.view(), None, 10)?;
 /// ```
 pub fn fit<L, K, V>(
     family: Family<L, K, V>,
@@ -183,9 +183,9 @@ where
 /// closed-set library-controlled enum.
 ///
 /// ```ignore
-/// use gammon::{fit_with_design, design::{Cr, Re}, family::gaussian_identity};
+/// use gamrs::{fit_with_design, design::{Cr, Re}, family::gaussian_identity};
 ///
-/// // CR spline (same as `gammon::fit(...)`).
+/// // CR spline (same as `gamrs::fit(...)`).
 /// let fit = fit_with_design(gaussian_identity(), Cr { k: 10 },
 ///                            x.view(), y.view(), None)?;
 ///
@@ -216,7 +216,7 @@ where
 /// (`log_det_a`, `trace_a_inv`).
 ///
 /// ```ignore
-/// use gammon::{fit_with_solver, family::gaussian_identity, LuSolver};
+/// use gamrs::{fit_with_solver, family::gaussian_identity, LuSolver};
 ///
 /// // Use LAPACK LU instead of Cholesky for the per-probe factorisation.
 /// let fit = fit_with_solver::<_, _, _, LuSolver>(
@@ -298,7 +298,7 @@ impl FitWithProfile<IdentityLink, ConstantVariance, MgcvTwoSigmaProfile> for Gau
 /// compat for users who want to experiment with custom Profile impls.
 ///
 /// ```ignore
-/// use gammon::{fit_with, family::gaussian_identity, MgcvTwoSigmaProfile};
+/// use gamrs::{fit_with, family::gaussian_identity, MgcvTwoSigmaProfile};
 ///
 /// let fit = fit_with::<_, _, _, MgcvTwoSigmaProfile>(
 ///     gaussian_identity(), x.view(), y.view(), None, 10

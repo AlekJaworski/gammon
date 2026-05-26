@@ -41,7 +41,7 @@ impl VarianceFn for ConstantVariance {
     }
 }
 
-/// Phase 0 convenience constructor — the only Family in gammon so far.
+/// Phase 0 convenience constructor — the only Family in gamrs so far.
 pub fn gaussian_identity() -> Family<Gaussian, IdentityLink, ConstantVariance> {
     Family::new(Gaussian, IdentityLink, ConstantVariance)
 }

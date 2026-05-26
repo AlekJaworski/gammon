@@ -1,4 +1,4 @@
-//! Phase 10 (v0.2 port) smoke test: gammon fits a synthetic 1-D ordered-
+//! Phase 10 (v0.2 port) smoke test: gamrs fits a synthetic 1-D ordered-
 //! categorical GAM via the new `OcatInner` joint β + threshold solver,
 //! and recovers a monotone-in-η categorical pattern.
 //!
@@ -17,7 +17,7 @@
 //! - μ̂ (= η for identity link) is monotone increasing in x on a data
 //!   set generated from a monotone latent η.
 
-use gammon::family::{ocat_identity, ocat_init_theta};
+use gamrs::family::{ocat_identity, ocat_init_theta};
 use ndarray::{Array1, Array2};
 
 /// Deterministic pseudo-random category draw: pick the smallest k for
@@ -76,8 +76,8 @@ fn ocat_1d_recovers_monotone_smooth() {
     // Canonical entry: build the family with the default init θ that the
     // wrapper used to derive internally on `None`.
     let theta0 = ocat_init_theta(y.view(), n_cats);
-    let fit = gammon::fit(ocat_identity(theta0, n_cats), x.view(), y.view(), None, 10)
-        .expect("gammon::fit (Ocat) should not fail");
+    let fit = gamrs::fit(ocat_identity(theta0, n_cats), x.view(), y.view(), None, 10)
+        .expect("gamrs::fit (Ocat) should not fail");
 
     println!(
         "[ocat smoke] ρ̂ = {:.3}; iters = {}; edf = {:.2}; reml = {:.3}; converged = {}",
@@ -118,7 +118,7 @@ fn ocat_fit_rejects_invalid_y() {
     let y_bad = Array1::from_vec(vec![0.0, 2.0, 3.0]); // 0 is invalid
     let n_cats = 4usize;
     let theta0 = Array1::<f64>::zeros(n_cats - 2);
-    let res = gammon::fit(
+    let res = gamrs::fit(
         ocat_identity(theta0, n_cats),
         x.view(),
         y_bad.view(),

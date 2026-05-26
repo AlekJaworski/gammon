@@ -1,7 +1,7 @@
 //! Layer 6 — end-to-end orchestrator: data → DesignStrategy → Inner →
 //! Score → Outer → FittedGam → Predictor.
 //!
-//! The single public Rust entry point is `gammon::fit(family, x, y, w, k)`
+//! The single public Rust entry point is `gamrs::fit(family, x, y, w, k)`
 //! plus its `fit_with_design` / `fit_with_solver` / `fit_with` typed
 //! extensions. Dispatch is type-driven via the `FamilyFitWithSolver`
 //! trait — no string keys, no runtime branching, no per-family
@@ -38,7 +38,7 @@
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use crate::design::Predictor;
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 
 pub mod canonical;
 pub mod driver;
@@ -56,7 +56,7 @@ pub use canonical::{
 /// `predict_diff` can map between η (linear-predictor) and μ (response)
 /// scales without re-importing the family type at the call site.
 ///
-/// Closed-set enum (no `Box<dyn>`) — every family in gammon uses one of
+/// Closed-set enum (no `Box<dyn>`) — every family in gamrs uses one of
 /// these three canonical links. New families adopting a new link kind
 /// extend this enum (a library-controlled change).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,7 +195,7 @@ impl FittedGam {
         scale: PredictScale,
     ) -> Result<(Array1<f64>, Array1<f64>, Array1<f64>)> {
         if !(0.0 < level && level < 1.0) {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "level must be in (0, 1); got level={level}"
             )));
         }
@@ -250,7 +250,7 @@ impl FittedGam {
         level: f64,
     ) -> Result<(Array1<f64>, Array1<f64>, Array1<f64>)> {
         if !(0.0 < level && level < 1.0) {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "level must be in (0, 1); got level={level}"
             )));
         }
@@ -260,7 +260,7 @@ impl FittedGam {
         let (n_a, p_a) = (design_a.nrows(), design_a.ncols());
         let (n_b, p_b) = (design_b.nrows(), design_b.ncols());
         if p_a != p_b {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "predict_diff: design width mismatch (a={p_a}, b={p_b})"
             )));
         }
@@ -272,7 +272,7 @@ impl FittedGam {
         } else if n_b == 1 {
             n_a
         } else {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "predict_diff: row counts must match or one must be 1 (broadcast); got a={n_a}, b={n_b}"
             )));
         };
@@ -310,7 +310,7 @@ impl FittedGam {
 /// the central 0.99 of the distribution, plenty for Wald CIs (whose
 /// approximation error dominates anyway).
 ///
-/// Kept local (no extra crate dep) — gammon intentionally avoids a stats
+/// Kept local (no extra crate dep) — gamrs intentionally avoids a stats
 /// crate at this layer. Validates `0 < p < 1`; panics on out-of-range.
 fn normal_quantile(p: f64) -> f64 {
     assert!(
@@ -377,7 +377,7 @@ pub(crate) fn check_lengths(
 ) -> Result<()> {
     let n = x.nrows();
     if n != y.len() {
-        return Err(GammonError::InvalidParameter(format!(
+        return Err(GamrsError::InvalidParameter(format!(
             "x and y must have the same number of rows; got x.nrows()={}, y.len()={}",
             n,
             y.len()
@@ -385,7 +385,7 @@ pub(crate) fn check_lengths(
     }
     if let Some(w) = weights {
         if w.len() != n {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "prior_weights length must match x rows; got weights.len()={}, x.nrows()={}",
                 w.len(),
                 n
@@ -400,7 +400,7 @@ pub(crate) fn check_lengths(
 pub(crate) fn check_y_nonneg(y: ArrayView1<f64>, family_name: &str) -> Result<()> {
     for (i, &yi) in y.iter().enumerate() {
         if yi < 0.0 {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "{family_name} requires y ≥ 0; got y={yi} at row {i}"
             )));
         }
@@ -413,7 +413,7 @@ pub(crate) fn check_y_nonneg(y: ArrayView1<f64>, family_name: &str) -> Result<()
 pub(crate) fn check_y_positive(y: ArrayView1<f64>, family_name: &str) -> Result<()> {
     for (i, &yi) in y.iter().enumerate() {
         if yi <= 0.0 {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "{family_name} requires y > 0; got y={yi} at row {i}"
             )));
         }
@@ -425,7 +425,7 @@ pub(crate) fn check_y_positive(y: ArrayView1<f64>, family_name: &str) -> Result<
 pub(crate) fn check_y_in_unit(y: ArrayView1<f64>, family_name: &str) -> Result<()> {
     for (i, &yi) in y.iter().enumerate() {
         if !(0.0..=1.0).contains(&yi) {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "{family_name} requires y in [0, 1]; got y={yi} at row {i}"
             )));
         }

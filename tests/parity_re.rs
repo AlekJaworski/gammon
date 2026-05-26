@@ -1,7 +1,7 @@
 //! Smoke tests for the `Re` (random-effect) `DesignStrategy`.
 //!
 //! These are NOT mgcv-parity fixtures — they verify that
-//! `gammon::fit_with_design(family, Re, x, y, None)` produces sensible
+//! `gamrs::fit_with_design(family, Re, x, y, None)` produces sensible
 //! group-mean estimates on synthetic data with known groupings:
 //!
 //! 1. Per-group fitted μ̂ ≈ per-group y mean (with mild shrinkage from the
@@ -68,9 +68,9 @@ fn group_mean(y: &Array1<f64>, x: &Array1<f64>, group: f64) -> f64 {
 fn re_basis_recovers_group_means() {
     let (x, y, group_ids) = synth();
     let x2 = x.view().insert_axis(Axis(1));
-    let fit = gammon::fit_with_design(
-        gammon::family::gaussian_identity(),
-        gammon::Re,
+    let fit = gamrs::fit_with_design(
+        gamrs::family::gaussian_identity(),
+        gamrs::Re,
         x2,
         y.view(),
         None,
@@ -103,9 +103,9 @@ fn re_basis_recovers_group_means() {
 fn re_unseen_level_returns_intercept() {
     let (x, y, _group_ids) = synth();
     let x2 = x.view().insert_axis(Axis(1));
-    let fit = gammon::fit_with_design(
-        gammon::family::gaussian_identity(),
-        gammon::Re,
+    let fit = gamrs::fit_with_design(
+        gamrs::family::gaussian_identity(),
+        gamrs::Re,
         x2,
         y.view(),
         None,
@@ -133,9 +133,9 @@ fn re_unseen_level_returns_intercept() {
 fn re_predict_deriv_is_zero() {
     let (x, y, group_ids) = synth();
     let x2 = x.view().insert_axis(Axis(1));
-    let fit = gammon::fit_with_design(
-        gammon::family::gaussian_identity(),
-        gammon::Re,
+    let fit = gamrs::fit_with_design(
+        gamrs::family::gaussian_identity(),
+        gamrs::Re,
         x2,
         y.view(),
         None,
@@ -157,9 +157,9 @@ fn re_predict_deriv_is_zero() {
 fn re_predict_repeats_for_repeated_levels() {
     let (x, y, group_ids) = synth();
     let x2 = x.view().insert_axis(Axis(1));
-    let fit = gammon::fit_with_design(
-        gammon::family::gaussian_identity(),
-        gammon::Re,
+    let fit = gamrs::fit_with_design(
+        gamrs::family::gaussian_identity(),
+        gamrs::Re,
         x2,
         y.view(),
         None,

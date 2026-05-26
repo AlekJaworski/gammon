@@ -53,7 +53,7 @@ jobs:
           python -c "
           import numpy as np
           import pandas as pd
-          from gammon import Gam, CrTerm
+          from gamrs import Gam, CrTerm
           rng = np.random.default_rng(0)
           n = 200
           x = rng.uniform(0, 1, n)

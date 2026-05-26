@@ -1,5 +1,5 @@
-//! Phase 3 parity test: gammon `fit_poisson_cr` vs mgcv on 1-D Poisson + log
-//! fixture. mgcv's `predictions_train` is on the μ (count) scale; gammon's
+//! Phase 3 parity test: gamrs `fit_poisson_cr` vs mgcv on 1-D Poisson + log
+//! fixture. mgcv's `predictions_train` is on the μ (count) scale; gamrs's
 //! `predict` returns η (linear predictor / log-rate), so we exponentiate
 //! to compare.
 
@@ -64,17 +64,17 @@ fn poisson_log_n300_k10_cr() {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
 
-    let fit = gammon::fit(gammon::family::poisson_log(), x.view(), y.view(), None, k)
-        .expect("gammon::fit (Poisson) should not fail");
+    let fit = gamrs::fit(gamrs::family::poisson_log(), x.view(), y.view(), None, k)
+        .expect("gamrs::fit (Poisson) should not fail");
     assert!(fit.converged, "Poisson outer did not converge");
 
-    // gammon predict for Poisson returns η. mgcv's predictions_train is μ.
+    // gamrs predict for Poisson returns η. mgcv's predictions_train is μ.
     let eta = fit.predict(x.view()).expect("predict failed");
-    let mu_gammon: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
+    let mu_gamrs: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
 
-    let rel = max_rel_err(&mu_gammon, &fx.mgcv_output.predictions_train);
-    let abs_e = max_abs_err(&mu_gammon, &fx.mgcv_output.predictions_train);
-    let rmse_v = rmse(&mu_gammon, &fx.mgcv_output.predictions_train);
+    let rel = max_rel_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
+    let abs_e = max_abs_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
+    let rmse_v = rmse(&mu_gamrs, &fx.mgcv_output.predictions_train);
     println!(
         "[poisson n300 k10] max_rel = {rel:.3e}; max_abs = {abs_e:.3e}; rmse = {rmse_v:.3e}; \
          ρ̂ = {:.3}; iters = {}; edf = {:.2}",

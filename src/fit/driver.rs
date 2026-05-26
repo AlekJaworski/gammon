@@ -2,7 +2,7 @@
 //!
 //! Each driver is generic over `S: LinearSolver` (default `CholeskySolver`
 //! at the public-entry-point level). The S parameter flows from the
-//! caller's choice of `gammon::fit::<_, _, _, LuSolver>(...)` through to
+//! caller's choice of `gamrs::fit::<_, _, _, LuSolver>(...)` through to
 //! the inner solver and ultimately the emitted `GaussianInnerFit<S>`.
 
 use std::marker::PhantomData;
@@ -141,7 +141,7 @@ where
 
 /// Default-Cholesky-backend shorthand for `fit_pirls_envelope`. 99% of
 /// callers go through this; the explicit-S version exists for the
-/// `gammon::fit::<_, _, _, LuSolver>(...)` opt-in.
+/// `gamrs::fit::<_, _, _, LuSolver>(...)` opt-in.
 #[allow(dead_code)]
 pub(crate) fn fit_pirls_envelope_cholesky<L, K, V, M, P, SF>(
     prep: PreparedDesign,
@@ -216,7 +216,7 @@ where
 {
     // 94b: shape-aware is single-smooth only — see ShapeAwareEnvelopeScore docs.
     if prep.s_list.len() != 1 {
-        return Err(crate::error::GammonError::InvalidParameter(format!(
+        return Err(crate::error::GamrsError::InvalidParameter(format!(
             "shape-aware families (TDist/scat, NegBin, Tweedie, Ocat) are restricted \
              to single-smooth fits in 94b; got {} terms",
             prep.s_list.len()

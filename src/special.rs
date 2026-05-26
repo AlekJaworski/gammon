@@ -1,6 +1,6 @@
 //! Special functions — `log Γ(x)` (Lanczos), `ψ(x)` (digamma), `ψ'(x)` (trigamma).
 //!
-//! Ported from v0.x `src/pirls/mod.rs:756-963` so gammon doesn't depend on
+//! Ported from v0.x `src/pirls/mod.rs:756-963` so gamrs doesn't depend on
 //! v0.x and remains WASM-friendly (no native libm needed). Accuracy
 //! ~1e-13 across the practical range.
 
@@ -54,7 +54,7 @@ pub fn digamma(mut x: f64) -> f64 {
 }
 
 /// Trigamma `ψ'(x) = d²/dx² ln Γ(x)`. Recurrence to push x ≥ 6, then
-/// asymptotic. Ported verbatim from `src/pirls/mod.rs::trigamma` so gammon
+/// asymptotic. Ported verbatim from `src/pirls/mod.rs::trigamma` so gamrs
 /// matches v0.x byte-for-byte on the Gamma profile-φ Newton iteration.
 pub fn trigamma(mut x: f64) -> f64 {
     let mut result = 0.0;

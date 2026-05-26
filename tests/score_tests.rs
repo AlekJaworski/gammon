@@ -1,15 +1,15 @@
-//! Integration tests for `gammon::score` — envelope-gradient correctness
+//! Integration tests for `gamrs::score` — envelope-gradient correctness
 //! (FD oracle) and the Tweedie analytic-shape-gradient port verification.
 //! Lifted out of `src/score.rs` to keep that module under the project's
 //! >700-LOC threshold (architecture-assumptions.md §G).
 
 use approx::assert_relative_eq;
-use gammon::family::tweedie_log;
-use gammon::inner::PirlsOpts;
-use gammon::score::{
+use gamrs::family::tweedie_log;
+use gamrs::inner::PirlsOpts;
+use gamrs::score::{
     GaussianClosedFormScore, OwnedByLossProfile, PirlsInnerBuilder, ShapeAwareEnvelopeScore,
 };
-use gammon::traits::{Basis, CoordsKind, ScoreDerivatives};
+use gamrs::traits::{Basis, CoordsKind, ScoreDerivatives};
 use ndarray::{array, Array1, Array2};
 
 /// FD score with σ² FROZEN — the envelope-form gradient differentiates
@@ -20,10 +20,10 @@ fn score_value_at_fixed_sigma2(
     rho: f64,
     fixed_sigma2: f64,
 ) -> f64 {
-    use gammon::inner::{gaussian_inner_solve, CholeskySolver};
-    use gammon::traits::Loss;
+    use gamrs::inner::{gaussian_inner_solve, CholeskySolver};
+    use gamrs::traits::Loss;
     // Single-smooth test fixture — assemble S_total at this ρ.
-    let s_total = gammon::combined_s(&score.s_list, &ndarray::Array1::from_vec(vec![rho]));
+    let s_total = gamrs::combined_s(&score.s_list, &ndarray::Array1::from_vec(vec![rho]));
     let inner = gaussian_inner_solve::<CholeskySolver>(
         score.inner.x_design.view(),
         score.inner.y.view(),
@@ -75,8 +75,8 @@ fn envelope_gradient_matches_fixed_sigma2_fd() {
     // Phase-2b port: gradient envelope is at σ²_score = Dp/(n-Mp),
     // matching the score body's σ² convention exactly.
     let lambda = rho.exp();
-    let s_total = gammon::combined_s(&score.s_list, &array![rho]);
-    let inner = gammon::inner::gaussian_inner_solve::<gammon::inner::CholeskySolver>(
+    let s_total = gamrs::combined_s(&score.s_list, &array![rho]);
+    let inner = gamrs::inner::gaussian_inner_solve::<gamrs::inner::CholeskySolver>(
         score.inner.x_design.view(),
         score.inner.y.view(),
         None,
@@ -106,7 +106,7 @@ fn envelope_gradient_matches_fixed_sigma2_fd() {
 /// distinct (ρ, log φ, p_trans) points to cover both shape components.
 #[test]
 fn tweedie_analytic_shape_grad_matches_fd() {
-    use gammon::basis::CrSpline;
+    use gamrs::basis::CrSpline;
 
     // Synthetic small Tweedie data: y = max(0, x + ε).
     let n = 80;
@@ -127,7 +127,7 @@ fn tweedie_analytic_shape_grad_matches_fd() {
     let s = penalties[0].clone();
 
     let family_base = tweedie_log(1.5, 1.0);
-    let score: gammon::score::ShapeAwarePirlsScoreOwnedPhi<_, _, _> = ShapeAwareEnvelopeScore {
+    let score: gamrs::score::ShapeAwarePirlsScoreOwnedPhi<_, _, _> = ShapeAwareEnvelopeScore {
         x_design: x_design.clone(),
         y: y.clone(),
         prior_weights: None,
@@ -187,7 +187,7 @@ fn tweedie_analytic_shape_grad_matches_fd() {
 /// of a noisy gradient) but tight enough to catch a wiring bug.
 #[test]
 fn tweedie_analytic_hess_matches_fd_on_grad() {
-    use gammon::basis::CrSpline;
+    use gamrs::basis::CrSpline;
 
     let n = 80;
     let xs: Vec<f64> = (0..n).map(|i| (i as f64) / (n as f64)).collect();
@@ -206,7 +206,7 @@ fn tweedie_analytic_hess_matches_fd_on_grad() {
     let s = penalties[0].clone();
 
     let family_base = tweedie_log(1.5, 1.0);
-    let score: gammon::score::ShapeAwarePirlsScoreOwnedPhi<_, _, _> = ShapeAwareEnvelopeScore {
+    let score: gamrs::score::ShapeAwarePirlsScoreOwnedPhi<_, _, _> = ShapeAwareEnvelopeScore {
         x_design: x_design.clone(),
         y: y.clone(),
         prior_weights: None,
@@ -284,7 +284,7 @@ fn tweedie_analytic_hess_matches_fd_on_grad() {
 #[test]
 #[ignore]
 fn debug_tweedie_real_data_grad_walk() {
-    use gammon::basis::CrSpline;
+    use gamrs::basis::CrSpline;
     use std::path::PathBuf;
 
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -313,7 +313,7 @@ fn debug_tweedie_real_data_grad_walk() {
     let s = penalties[0].clone();
 
     let family_base = tweedie_log(1.5, 1.0);
-    let score: gammon::score::ShapeAwarePirlsScoreOwnedPhi<_, _, _> = ShapeAwareEnvelopeScore {
+    let score: gamrs::score::ShapeAwarePirlsScoreOwnedPhi<_, _, _> = ShapeAwareEnvelopeScore {
         x_design: x_design.clone(),
         y: y.clone(),
         prior_weights: None,

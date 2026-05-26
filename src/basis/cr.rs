@@ -11,7 +11,7 @@
 
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 use crate::traits::Basis;
 
 pub struct CrSpline {
@@ -23,7 +23,7 @@ impl CrSpline {
     pub fn new(knots: Array1<f64>) -> Result<Self> {
         let k = knots.len();
         if k < 3 {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "CR spline needs k ≥ 3 (got {})",
                 k
             )));
@@ -31,7 +31,7 @@ impl CrSpline {
         // Knots must be strictly increasing.
         for w in knots.as_slice().unwrap().windows(2) {
             if !(w[1] > w[0]) {
-                return Err(GammonError::InvalidParameter(
+                return Err(GamrsError::InvalidParameter(
                     "CR spline knots must be strictly increasing".into(),
                 ));
             }

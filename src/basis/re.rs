@@ -13,7 +13,7 @@
 //! contributes nothing for unseen groups — matches mgcv's behaviour).
 //!
 //! Verbatim port of v0.x `src/basis.rs::RandomEffectBasis` (lines 945-1025)
-//! into gammon's `Basis` trait shape.
+//! into gamrs's `Basis` trait shape.
 
 use ndarray::{Array2, ArrayView1, ArrayView2};
 

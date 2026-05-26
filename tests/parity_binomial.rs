@@ -1,6 +1,6 @@
-//! Phase 1 parity test: gammon's `fit_binomial_cr` vs mgcv on 1-D Bernoulli +
+//! Phase 1 parity test: gamrs's `fit_binomial_cr` vs mgcv on 1-D Bernoulli +
 //! logit fixtures. Mirrors `parity_gaussian.rs` but expects μ-scale
-//! predictions (gammon's `predict` returns η for the Bernoulli path; we
+//! predictions (gamrs's `predict` returns η for the Bernoulli path; we
 //! apply the inverse link to compare against mgcv's `predictions_train`,
 //! which is on the μ / probability scale).
 
@@ -73,8 +73,8 @@ fn fit_and_check(fixture_name: &str, max_rel_pred: f64) {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
 
-    let fit = gammon::fit(
-        gammon::family::bernoulli_logit(),
+    let fit = gamrs::fit(
+        gamrs::family::bernoulli_logit(),
         x.view(),
         y.view(),
         None,
@@ -83,16 +83,16 @@ fn fit_and_check(fixture_name: &str, max_rel_pred: f64) {
     .unwrap_or_else(|e| panic!("[{fixture_name}] fit failed: {e}"));
     assert!(fit.converged, "[{fixture_name}] outer did not converge");
 
-    // gammon's `predict` for Bernoulli returns η = X·β (link scale). mgcv's
+    // gamrs's `predict` for Bernoulli returns η = X·β (link scale). mgcv's
     // `predictions_train` is on the μ scale — apply inverse logit.
     let eta = fit
         .predict(x.view())
         .unwrap_or_else(|e| panic!("predict failed: {e}"));
-    let mu_gammon: Vec<f64> = eta.iter().map(|&e| logistic(e)).collect();
+    let mu_gamrs: Vec<f64> = eta.iter().map(|&e| logistic(e)).collect();
 
-    let rel = max_rel_err(&mu_gammon, &fx.mgcv_output.predictions_train);
-    let abs_e = max_abs_err(&mu_gammon, &fx.mgcv_output.predictions_train);
-    let rmse_v = rmse(&mu_gammon, &fx.mgcv_output.predictions_train);
+    let rel = max_rel_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
+    let abs_e = max_abs_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
+    let rmse_v = rmse(&mu_gamrs, &fx.mgcv_output.predictions_train);
     println!(
         "[{fixture_name}] max_rel = {rel:.3e}; max_abs = {abs_e:.3e}; rmse = {rmse_v:.3e}; ρ̂ = {:.3}; iters = {}; edf = {:.2}",
         fit.rho[0], fit.n_iters, fit.edf_total,
@@ -106,7 +106,7 @@ fn fit_and_check(fixture_name: &str, max_rel_pred: f64) {
 // Phase-1 bound: 2e-3 on μ-scale predictions. Observed worst case ~1e-3
 // (1d_bernoulli_logit_n300_k10_cr). Tighter than Gaussian's because
 // Bernoulli has fixed σ² = 1 — no profile/gradient inconsistency. The
-// remaining gap is PIRLS-Newton-outer micro-precision: gammon's ρ̂ lands
+// remaining gap is PIRLS-Newton-outer micro-precision: gamrs's ρ̂ lands
 // ~1e-2 short of mgcv's on these fixtures, scaled up by PIRLS μ
 // sensitivity ⇒ ~1e-3 in μ. Closing further needs analytic Hessian on
 // the outer or mgcv-exact PIRLS halving rules; deferred.

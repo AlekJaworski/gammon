@@ -1,4 +1,4 @@
-//! Canonical entry-point smoke tests: `gammon::fit(family, x, y, w, k)`
+//! Canonical entry-point smoke tests: `gamrs::fit(family, x, y, w, k)`
 //! must converge and produce sane output on Gaussian, Bernoulli,
 //! Tweedie, and Ocat — i.e. the type-driven dispatch reaches the right
 //! driver. Per-family parity vs mgcv lives in the dedicated `parity_*`
@@ -6,7 +6,7 @@
 
 use ndarray::{Array1, Axis};
 
-use gammon::family::{bernoulli_logit, gaussian_identity, ocat_identity, tweedie_log};
+use gamrs::family::{bernoulli_logit, gaussian_identity, ocat_identity, tweedie_log};
 
 fn logistic(z: f64) -> f64 {
     1.0 / (1.0 + (-z).exp())
@@ -28,14 +28,14 @@ fn canonical_fit_gaussian_converges() {
     let x: Array1<f64> = Array1::linspace(0.0, 1.0, n);
     let y: Array1<f64> = x.iter().map(|&xi| (2.0 * xi).sin()).collect();
 
-    let canon = gammon::fit(
+    let canon = gamrs::fit(
         gaussian_identity(),
         x.view().insert_axis(Axis(1)),
         y.view(),
         None,
         10,
     )
-    .expect("gammon::fit Gaussian should not fail");
+    .expect("gamrs::fit Gaussian should not fail");
 
     assert!(canon.converged);
     assert!(canon.scale.is_finite() && canon.scale > 0.0);
@@ -57,14 +57,14 @@ fn canonical_fit_bernoulli_converges() {
     let x = Array1::from_vec(xs);
     let y = Array1::from_vec(ys);
 
-    let canon = gammon::fit(
+    let canon = gamrs::fit(
         bernoulli_logit(),
         x.view().insert_axis(Axis(1)),
         y.view(),
         None,
         10,
     )
-    .expect("gammon::fit Bernoulli should not fail");
+    .expect("gamrs::fit Bernoulli should not fail");
 
     assert_eq!(canon.scale, 1.0, "Bernoulli σ² fixed at 1");
     assert!(canon.edf_total.is_finite() && canon.edf_total > 0.0);
@@ -97,14 +97,14 @@ fn canonical_fit_tweedie_dispatches_to_shape_aware_driver() {
 
     let init_p = 1.5;
     let init_phi = 1.0;
-    let canon = gammon::fit(
+    let canon = gamrs::fit(
         tweedie_log(init_p, init_phi),
         x.view().insert_axis(Axis(1)),
         y.view(),
         None,
         8,
     )
-    .expect("gammon::fit Tweedie should not fail");
+    .expect("gamrs::fit Tweedie should not fail");
 
     // scale = φ̂ (Tweedie convention).
     assert!(canon.scale.is_finite() && canon.scale > 0.0);
@@ -135,14 +135,14 @@ fn canonical_fit_ocat_dispatches() {
 
     let n_cats = 3;
     let theta0 = Array1::<f64>::zeros(n_cats - 2);
-    let canon = gammon::fit(
+    let canon = gamrs::fit(
         ocat_identity(theta0, n_cats),
         x.view().insert_axis(Axis(1)),
         y.view(),
         None,
         8,
     )
-    .expect("gammon::fit Ocat should not fail");
+    .expect("gamrs::fit Ocat should not fail");
 
     assert_eq!(canon.scale, 1.0, "Ocat dispersion is fixed at 1");
     assert!(canon.edf_total.is_finite() && canon.edf_total > 0.0);
@@ -152,14 +152,14 @@ fn canonical_fit_ocat_dispatches() {
 // Error-message ergonomics — the canonical API surface MUST emit
 // actionable, location-bearing errors (per the project ergonomic
 // directive). Each guard is exercised through the wrappers (which is
-// where `gammon::fit` ends up after dispatch).
+// where `gamrs::fit` ends up after dispatch).
 // ---------------------------------------------------------------------------
 
 #[test]
 fn error_bernoulli_y_out_of_unit_carries_row() {
     let x = Array1::from_vec(vec![0.1, 0.2, 0.3, 0.4]);
     let y = Array1::from_vec(vec![0.0, 1.0, 1.5, 0.0]); // bad at row 2
-    let err = match gammon::fit(
+    let err = match gamrs::fit(
         bernoulli_logit(),
         x.view().insert_axis(Axis(1)),
         y.view(),
@@ -186,8 +186,8 @@ fn error_quantile_tau_out_of_range_is_actionable() {
     // names the constraint AND the offending value.
     let x = Array1::from_vec(vec![0.0, 0.2, 0.4, 0.6, 0.8]);
     let y = Array1::from_vec(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
-    let err = match gammon::fit(
-        gammon::family::elf_identity(1.0, -1.0, -1.0),
+    let err = match gamrs::fit(
+        gamrs::family::elf_identity(1.0, -1.0, -1.0),
         x.view().insert_axis(Axis(1)),
         y.view(),
         None,

@@ -1,8 +1,8 @@
-//! Phase 2a/2b smoke test: gammon's existing `PirlsInner` + `EnvelopeScore`
+//! Phase 2a/2b smoke test: gamrs's existing `PirlsInner` + `EnvelopeScore`
 //! handle the stateful TDist Loss WITHOUT modification — the trait
 //! architecture's parametric promise validated.
 //!
-//! Strategy: generate noisy 1-D data with heavy-tailed t-noise, fit gammon
+//! Strategy: generate noisy 1-D data with heavy-tailed t-noise, fit gamrs
 //! with TDist (ν, σ²) FIXED at sensible values, and check that the fit
 //! recovers a sensible smooth shape. We can't compare to mgcv yet (that
 //! needs the joint outer Newton over (λ, σ², ν) which is Phase 2c+).
@@ -16,13 +16,13 @@
 
 use ndarray::{Array1, Array2, Axis};
 
-use gammon::family::tdist_identity;
+use gamrs::family::tdist_identity;
 
 #[test]
 fn tdist_pirls_runs_via_trait_stack() {
     // Synthetic 1-D data with heavy-tailed t-noise. True mean is sin(2π x);
-    // we fit gammon's stack with FIXED ν=4, σ²=0.04 (the data-generating
-    // process matches these but we don't tell gammon).
+    // we fit gamrs's stack with FIXED ν=4, σ²=0.04 (the data-generating
+    // process matches these but we don't tell gamrs).
     let n = 200;
     let xs: Vec<f64> = (0..n).map(|i| i as f64 / (n as f64 - 1.0)).collect();
     let ys: Vec<f64> = xs
@@ -46,10 +46,10 @@ fn tdist_pirls_runs_via_trait_stack() {
     // Wire the trait stack manually — no `fit_tdist_cr` exists yet (it
     // needs multi-θ outer optimisation for the shape params). For now we
     // smoke-test PIRLS alone with FIXED shape params.
-    use gammon::basis::CrSpline;
-    use gammon::inner::{PirlsInner, PirlsOpts};
-    use gammon::traits::{Basis, BasisTransform, InnerSolver};
-    use gammon::transform::SumToZero;
+    use gamrs::basis::CrSpline;
+    use gamrs::inner::{PirlsInner, PirlsOpts};
+    use gamrs::traits::{Basis, BasisTransform, InnerSolver};
+    use gamrs::transform::SumToZero;
 
     let k = 10;
     let cr = CrSpline::with_quantile_knots(x.view(), k).unwrap();
@@ -83,7 +83,7 @@ fn tdist_pirls_runs_via_trait_stack() {
     // PIRLS with TDist family — same struct that worked for Bernoulli,
     // now with TDist plugged in. The trait architecture's "single PIRLS
     // for every family" promise.
-    let pirls = PirlsInner::<_, _, _, gammon::CholeskySolver> {
+    let pirls = PirlsInner::<_, _, _, gamrs::CholeskySolver> {
         x_design: x_design.clone(),
         y: y.clone(),
         prior_weights: None,

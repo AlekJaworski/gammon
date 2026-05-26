@@ -19,7 +19,7 @@
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use ndarray_linalg::{Cholesky, UPLO};
 
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 
 pub mod armijo;
 pub mod closed_form;
@@ -48,7 +48,7 @@ pub use pirls::{PirlsInner, PirlsOpts};
 /// `A = X' diag(W) X + λS` — the score-derivative layer goes through
 /// [`GaussianInnerFit::log_det_a`] / [`GaussianInnerFit::trace_a_inv`]
 /// rather than touching the factor directly. Switching the backend
-/// (`gammon::fit::<_, _, _, LuSolver>(...)`) flips every consumer at the
+/// (`gamrs::fit::<_, _, _, LuSolver>(...)`) flips every consumer at the
 /// type level — no string keys, no runtime branching.
 pub struct GaussianInnerFit<S: LinearSolver = CholeskySolver> {
     pub beta: Array1<f64>,
@@ -109,7 +109,7 @@ pub struct GaussianInnerFit<S: LinearSolver = CholeskySolver> {
     ///   collapses to `-w[i]·(V'/V + 2·g''/g')/g'(μ)` when α≤0).
     /// - `lev_uw`: length n. Unweighted leverage `x_iᵀ A⁻¹ x_i`.
     /// - `x_for_eta1`: the design matrix (cloned reference) so the score
-    ///   can build `η₁ = X · b1` without re-importing it. gammon's PIRLS
+    ///   can build `η₁ = X · b1` without re-importing it. gamrs's PIRLS
     ///   already owns `self.x_design`; this is just a handle so the
     ///   score doesn't need a parallel field.
     pub tk_kkt_inputs: Option<TkKKTInputs>,
@@ -247,7 +247,7 @@ pub(crate) fn cholesky_with_safety_ridge(mut a: Array2<f64>, label: &str) -> Res
         a[[i, i]] += ridge;
     }
     a.cholesky(UPLO::Lower)
-        .map_err(|e| GammonError::SingularSystem(format!("{label} Cholesky: {e}")))
+        .map_err(|e| GamrsError::SingularSystem(format!("{label} Cholesky: {e}")))
 }
 
 /// Generic mgcv-style step-halving toward `beta_old`. Re-evaluates `(eta,

@@ -13,7 +13,7 @@
 use ndarray::{Array1, Array2};
 use ndarray_linalg::{Eigh, Solve, UPLO};
 
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 use crate::traits::{OuterFit, OuterSolver, ScoreDerivatives};
 
 pub struct NewtonOpts {
@@ -40,7 +40,7 @@ impl Default for NewtonOpts {
         // × 5 absolute on the score-relative gradient, `conv.tol=1e-7` on the
         // relative REML change. Tightening these to e.g. 1e-10 / 1e-12
         // doesn't close the residual ~1e-4 ρ̂ gap on hard fixtures (e.g.
-        // low_signal_n1000): gammon is already at a local minimum of its OWN
+        // low_signal_n1000): gamrs is already at a local minimum of its OWN
         // score at that point — the gap to mgcv comes from tiny linear-
         // algebra-assembly-order differences that shift the zero-gradient
         // location by ~1e-12 in tr(A⁻¹S), which scales up to ~1e-4 in ρ̂
@@ -168,7 +168,7 @@ impl OuterSolver for NewtonWithHalving {
             }
         }
 
-        Err(GammonError::NotConverged {
+        Err(GamrsError::NotConverged {
             iters: opts.max_iters,
             grad_norm: inf_norm(&g),
         })

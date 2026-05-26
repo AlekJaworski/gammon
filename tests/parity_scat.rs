@@ -1,11 +1,11 @@
-//! Phase 2 parity test: gammon's `fit_scat_cr` (TDist + identity link +
+//! Phase 2 parity test: gamrs's `fit_scat_cr` (TDist + identity link +
 //! joint outer Newton over `[log λ, log σ², log(ν-2)]`) vs mgcv on the
 //! `1d_scat_unweighted_n300_k10_cr` fixture.
 //!
 //! Bound is intentionally relaxed (~5e-2 on μ) — the joint shape-param
-//! outer is the hardest convergence regime in the gammon battery, and
+//! outer is the hardest convergence regime in the gamrs battery, and
 //! mgcv's fixture doesn't expose its internal ν/σ² so we can't seed
-//! gammon from the truth. We're asserting "the trait stack composes and
+//! gamrs from the truth. We're asserting "the trait stack composes and
 //! produces a sensible scat fit", not "byte-equivalent to mgcv".
 
 use std::path::PathBuf;
@@ -76,14 +76,14 @@ fn scat_unweighted_n300_k10_cr() {
         let var = y.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / (y.len() as f64);
         var
     };
-    let fit = gammon::fit(
-        gammon::family::tdist_identity(5.0, y_var * 0.1),
+    let fit = gamrs::fit(
+        gamrs::family::tdist_identity(5.0, y_var * 0.1),
         x.view(),
         y.view(),
         None,
         k,
     )
-    .expect("gammon::fit (scat/TDist) should not fail");
+    .expect("gamrs::fit (scat/TDist) should not fail");
     assert!(fit.converged, "scat outer did not converge");
 
     let pred = fit.predict(x.view()).expect("predict should not fail");

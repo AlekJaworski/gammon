@@ -28,7 +28,7 @@
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2, Axis};
 use ndarray_linalg::{Eigh, UPLO};
 
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 use crate::traits::{Basis, BasisTransform};
 
 pub struct SumToZero<B: Basis> {
@@ -130,7 +130,7 @@ impl<B: Basis> StableReparam<B> {
     pub fn from_inner_penalty(inner: B, inner_penalty: ArrayView2<f64>) -> Result<Self> {
         let k = inner.dim();
         if inner_penalty.nrows() != k || inner_penalty.ncols() != k {
-            return Err(GammonError::InvalidParameter(format!(
+            return Err(GamrsError::InvalidParameter(format!(
                 "StableReparam: inner_penalty must be ({k}, {k}); got ({}, {})",
                 inner_penalty.nrows(),
                 inner_penalty.ncols()
@@ -139,7 +139,7 @@ impl<B: Basis> StableReparam<B> {
         let s = inner_penalty.to_owned();
         let (eigvals_asc, v_asc) = s
             .eigh(UPLO::Lower)
-            .map_err(|e| GammonError::Linalg(format!("eigh failed in StableReparam: {e}")))?;
+            .map_err(|e| GamrsError::Linalg(format!("eigh failed in StableReparam: {e}")))?;
         // ndarray-linalg returns ascending; reverse to descending so the
         // range space sits at the top (matches v0.x `setup_initial_repara`
         // / mgcv `eigen()` convention).

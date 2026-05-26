@@ -3,7 +3,7 @@ requires = ["maturin>=1.0,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "gammon"
+name = "gamrs"
 version = "0.1.0a1"
 description = "GAM core (Rust) with sklearn-style Python bindings — alpha"
 readme = "README.md"
@@ -24,6 +24,6 @@ dependencies = [
 
 [tool.maturin]
 features = ["python"]
-module-name = "gammon._gammon_native"
+module-name = "gamrs._gamrs_native"
 python-source = "python"
 manifest-path = "Cargo.toml"

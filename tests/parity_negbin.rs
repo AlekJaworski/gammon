@@ -1,5 +1,5 @@
-//! Phase 6 parity test: gammon `fit_negbin_cr` vs mgcv `nb()` on 1-D NegBin
-//! + log. mgcv estimates θ via profile-likelihood; gammon does joint Newton
+//! Phase 6 parity test: gamrs `fit_negbin_cr` vs mgcv `nb()` on 1-D NegBin
+//! + log. mgcv estimates θ via profile-likelihood; gamrs does joint Newton
 //! on `[log λ, log θ]`. Compares μ predictions.
 
 use ndarray::{Array1, Array2};
@@ -51,8 +51,8 @@ fn nb_log_n300_k10_cr() {
     let x = Array2::from_shape_vec((n, 1), x_vec).unwrap();
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
-    let fit = gammon::fit(
-        gammon::family::negbin_log(/*init_theta=*/ 5.0),
+    let fit = gamrs::fit(
+        gamrs::family::negbin_log(/*init_theta=*/ 5.0),
         x.view(),
         y.view(),
         None,
@@ -61,11 +61,11 @@ fn nb_log_n300_k10_cr() {
     .unwrap();
     assert!(fit.converged, "NegBin outer did not converge");
     let eta = fit.predict(x.view()).unwrap();
-    let mu_gammon: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
-    let rel = max_rel_err(&mu_gammon, &fx.mgcv_output.predictions_train);
-    let abs_e = max_abs_err(&mu_gammon, &fx.mgcv_output.predictions_train);
+    let mu_gamrs: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
+    let rel = max_rel_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
+    let abs_e = max_abs_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
     println!(
-        "[nb n300 k10] max_rel = {rel:.3e}; max_abs = {abs_e:.3e}; θ̂ gammon = {:.3}; ρ̂ = {:.3}; iters = {}; edf = {:.2}",
+        "[nb n300 k10] max_rel = {rel:.3e}; max_abs = {abs_e:.3e}; θ̂ gamrs = {:.3}; ρ̂ = {:.3}; iters = {}; edf = {:.2}",
         fit.scale, fit.rho[0], fit.n_iters, fit.edf_total,
     );
     // Phase-6 bound: 1e-2 on μ. Joint θ optimisation is harder than

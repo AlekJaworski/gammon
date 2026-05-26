@@ -1,12 +1,12 @@
-//! Unit tests for `gammon::family` — Loss / Link / VarianceFn behaviour
+//! Unit tests for `gamrs::family` — Loss / Link / VarianceFn behaviour
 //! per family. Lifted out of `src/family.rs` to keep that module within
 //! the project's >700-LOC threshold (see `architecture-assumptions.md`
 //! §G). The math is unchanged; this is a pure relocation modulo two
 //! DRY helpers (`fd_oracle_d` for `analytic vs central FD` checks and
 //! `shape_roundtrip` for `set/get_shape_params` round-trip).
 
-use gammon::family::*;
-use gammon::traits::{Link, Loss, VarianceFn};
+use gamrs::family::*;
+use gamrs::traits::{Link, Loss, VarianceFn};
 
 // ─── DRY helpers ───────────────────────────────────────────────────────
 //

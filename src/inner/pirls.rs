@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 
 use ndarray::{Array1, Array2};
 
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 use crate::family::Family;
 use crate::traits::{InnerSolver, Link, Loss, VarianceFn};
 
@@ -160,8 +160,8 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
                 // log|H| / tr(H⁻¹S). See `gaussian_inner_solve`.
                 let (factor, b) =
                     factor_and_solve_with_ridge::<S>(&a, xtwz.view()).map_err(|e| match e {
-                        GammonError::SingularSystem(msg) => {
-                            GammonError::SingularSystem(format!("PIRLS factor: {msg}"))
+                        GamrsError::SingularSystem(msg) => {
+                            GamrsError::SingularSystem(format!("PIRLS factor: {msg}"))
                         }
                         other => other,
                     })?;
@@ -572,7 +572,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         s
     }
 
-    /// Generic (η, μ)-validity check — gammon's link-/family-agnostic analogue
+    /// Generic (η, μ)-validity check — gamrs's link-/family-agnostic analogue
     /// of mgcv's `family$valideta` and `family$validmu`. Defined in terms of
     /// the existing trait surface (no new "what family is this" dispatch):
     ///   - η: every entry finite (catches `link(μ)`-divergence; mgcv's

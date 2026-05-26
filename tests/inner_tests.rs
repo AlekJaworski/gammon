@@ -4,9 +4,9 @@
 //! (architecture-assumptions.md §G).
 
 use approx::assert_relative_eq;
-use gammon::family::bernoulli_logit;
-use gammon::inner::{gaussian_inner_solve, CholeskySolver, PirlsInner, PirlsOpts};
-use gammon::traits::InnerSolver;
+use gamrs::family::bernoulli_logit;
+use gamrs::inner::{gaussian_inner_solve, CholeskySolver, PirlsInner, PirlsOpts};
+use gamrs::traits::InnerSolver;
 use ndarray::{array, Array2};
 use std::marker::PhantomData;
 

@@ -1,6 +1,6 @@
 //! Parity tests for the `CrStable` `DesignStrategy` —
 //! `StableReparam<SumToZero<CrSpline>>` basis stack via
-//! `gammon::fit_with_design(family, CrStable { k }, x, y, None)`.
+//! `gamrs::fit_with_design(family, CrStable { k }, x, y, None)`.
 //!
 //! Two bars per fixture:
 //! 1. **`rel_pred_vs_mgcv`** — does the stable path's prediction match
@@ -71,9 +71,9 @@ fn fit_and_check_stable(fixture_name: &str, max_rel_pred: f64, max_invariance_ab
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
 
-    let fit_stable = gammon::fit_with_design(
-        gammon::family::gaussian_identity(),
-        gammon::CrStable { k },
+    let fit_stable = gamrs::fit_with_design(
+        gamrs::family::gaussian_identity(),
+        gamrs::CrStable { k },
         x.view(),
         y.view(),
         None,
@@ -87,8 +87,8 @@ fn fit_and_check_stable(fixture_name: &str, max_rel_pred: f64, max_invariance_ab
         .predict(x.view())
         .unwrap_or_else(|e| panic!("predict (stable) failed: {e}"));
 
-    let fit_unrot = gammon::fit(
-        gammon::family::gaussian_identity(),
+    let fit_unrot = gamrs::fit(
+        gamrs::family::gaussian_identity(),
         x.view(),
         y.view(),
         None,

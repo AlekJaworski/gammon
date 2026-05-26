@@ -1,7 +1,7 @@
 """Sklearn-style ``Gam`` wrapper — drop-in for ``mgcv_rust.Gam``.
 
 Mirrors the v0.x ``mgcv_rust.Gam`` API surface 1-1 for the basic
-single-smooth use case. See :mod:`gammon` for the full migration story
+single-smooth use case. See :mod:`gamrs` for the full migration story
 and the list of features that raise ``NotImplementedError`` (with a
 pointer back at v0.x for the ones not yet wired).
 """
@@ -13,8 +13,8 @@ from typing import Any, Iterable, Optional, Sequence, Union
 
 import numpy as np
 
-from . import _gammon_native
-from ._coerce import FAMILY_TO_GAMMON, to_1d_array, to_2d_with_columns
+from . import _gamrs_native
+from ._coerce import FAMILY_TO_GAMRS, to_1d_array, to_2d_with_columns
 from ._stubs import GamSummary, TermContributions  # noqa: F401
 
 ArrayLike = Any  # avoid hard dep on pandas/polars typing
@@ -26,7 +26,7 @@ ArrayLike = Any  # avoid hard dep on pandas/polars typing
 
 
 class Gam:
-    """Sklearn-style gammon GAM wrapper — drop-in replacement for
+    """Sklearn-style gamrs GAM wrapper — drop-in replacement for
     :class:`mgcv_rust.Gam` (single-smooth scope today)."""
 
     # ---- Class constants matching v0.x ------------------------------- #
@@ -59,14 +59,14 @@ class Gam:
         consider_categorical: bool = False,
         auto_k: bool = False,
         discrete: bool = False,
-        # gammon-only knob: which design strategy to use.
+        # gamrs-only knob: which design strategy to use.
         design: str = "cr",
         **kwargs: Any,
     ) -> None:
-        if family not in FAMILY_TO_GAMMON:
+        if family not in FAMILY_TO_GAMRS:
             raise ValueError(
-                f"family={family!r} is not supported by gammon; "
-                f"supported: {sorted(FAMILY_TO_GAMMON.keys())}"
+                f"family={family!r} is not supported by gamrs; "
+                f"supported: {sorted(FAMILY_TO_GAMRS.keys())}"
             )
         self.predictors: Optional[list[str]] = (
             list(predictors) if predictors is not None else None
@@ -99,12 +99,12 @@ class Gam:
             method = "fREML" if family in ("scat", "t-dist") else "REML"
         self.method = method
         self.family = family
-        gammon_family, canonical_link = FAMILY_TO_GAMMON[family]
-        self._gammon_family = gammon_family
+        gamrs_family, canonical_link = FAMILY_TO_GAMRS[family]
+        self._gamrs_family = gamrs_family
         self.link = link if link is not None else canonical_link
         if self.link != canonical_link:
             warnings.warn(
-                f"gammon currently uses the canonical link {canonical_link!r} for "
+                f"gamrs currently uses the canonical link {canonical_link!r} for "
                 f"family={family!r}; the requested link={self.link!r} is ignored.",
                 UserWarning,
                 stacklevel=2,
@@ -135,14 +135,14 @@ class Gam:
 
         if self.auto_k:
             warnings.warn(
-                "auto_k=True is not yet wired in gammon; using a single fit with "
+                "auto_k=True is not yet wired in gamrs; using a single fit with "
                 "k=k_default (or term_k_mapping). Drop auto_k to silence.",
                 UserWarning,
                 stacklevel=2,
             )
 
         # Forward-compat: stash unknown kwargs without erroring so a
-        # textual mgcv_rust → gammon substitution doesn't blow up at
+        # textual mgcv_rust → gamrs substitution doesn't blow up at
         # construction time.
         if kwargs:
             self._unknown_kwargs = kwargs
@@ -161,13 +161,13 @@ class Gam:
         return self._fitted
 
     def _family_kwargs_for_native(self) -> dict[str, Any]:
-        """Build the gammon-native ``fit(...)`` family-specific kwargs from
+        """Build the gamrs-native ``fit(...)`` family-specific kwargs from
         the v0.x constructor knobs (df, tweedie_p, negbin_theta, r, ...)."""
         out: dict[str, Any] = {}
         if self.family in ("negbin", "negative.binomial", "nb") and self.negbin_theta is not None:
             out["theta"] = float(self.negbin_theta)
         if self.family in ("t-dist", "scat") and self.df is not None:
-            # gammon's tdist takes nu (ν); df is its v0.x alias.
+            # gamrs's tdist takes nu (ν); df is its v0.x alias.
             out["nu"] = float(self.df)
         if self.family in ("tweedie", "tw", "Tweedie") and self.tweedie_p is not None:
             out["tweedie_p"] = float(self.tweedie_p)
@@ -181,7 +181,7 @@ class Gam:
         """Fit the GAM. Drop-in for ``mgcv_rust.Gam.fit``.
 
         ``X`` may be a DataFrame / 2-D ndarray / 1-D ndarray. For now
-        gammon is single-smooth — multi-column X raises
+        gamrs is single-smooth — multi-column X raises
         ``NotImplementedError``.
         """
         X_arr, cols = to_2d_with_columns(X, self.predictors)
@@ -192,9 +192,9 @@ class Gam:
             )
         if X_arr.shape[1] != 1:
             raise NotImplementedError(
-                f"gammon.Gam is single-smooth today — got {X_arr.shape[1]} "
+                f"gamrs.Gam is single-smooth today — got {X_arr.shape[1]} "
                 f"predictor columns ({cols}). For multi-smooth fits use the "
-                "v0.x mgcv_rust.Gam wrapper or wait for gammon's multi-smooth "
+                "v0.x mgcv_rust.Gam wrapper or wait for gamrs's multi-smooth "
                 "support."
             )
 
@@ -233,20 +233,20 @@ class Gam:
         elif bs_override in ("parametric", "linear"):
             raise NotImplementedError(
                 f"predictor_basis_map[{pname!r}]={bs_override!r} (parametric / "
-                "linear unsmoothed term) is not yet wired in gammon; use the v0.x "
+                "linear unsmoothed term) is not yet wired in gamrs; use the v0.x "
                 "mgcv_rust.Gam wrapper for parametric columns."
             )
         elif bs_override is not None and bs_override not in ("cr",):
             warnings.warn(
                 f"predictor_basis_map[{pname!r}]={bs_override!r} not yet "
-                f"supported by gammon; falling back to design={design!r}.",
+                f"supported by gamrs; falling back to design={design!r}.",
                 UserWarning,
                 stacklevel=2,
             )
 
         x_2d = np.ascontiguousarray(X_arr, dtype=np.float64)
-        self._fitted = _gammon_native.fit(
-            self._gammon_family,
+        self._fitted = _gamrs_native.fit(
+            self._gamrs_family,
             x_2d,
             y_arr,
             weights=self.sample_weight,
@@ -277,7 +277,7 @@ class Gam:
         ``'deviation'`` (subset-views only — raises here).
 
         ``type='terms'`` returns a :class:`TermContributions` — currently
-        raises ``NotImplementedError`` (gammon doesn't expose per-term
+        raises ``NotImplementedError`` (gamrs doesn't expose per-term
         indices yet).
         """
         f = self._require_fitted()
@@ -285,8 +285,8 @@ class Gam:
             raise ValueError(f"type must be None or 'terms', got {type!r}")
         if type == "terms":
             raise NotImplementedError(
-                "predict(type='terms') is not yet wired in gammon — "
-                "gammon doesn't expose per-term coef indices through the "
+                "predict(type='terms') is not yet wired in gamrs — "
+                "gamrs doesn't expose per-term coef indices through the "
                 "bindings layer. Use mgcv_rust.Gam for per-term breakdowns."
             )
         if scale not in ("response", "link", "deviation"):
@@ -296,7 +296,7 @@ class Gam:
         if scale == "deviation":
             raise ValueError(
                 "scale='deviation' is only meaningful on subset views; "
-                "gammon doesn't yet support subset views — use scale='link'."
+                "gamrs doesn't yet support subset views — use scale='link'."
             )
         x = self._coerce_predict_X(X)
         if scale == "link":
@@ -317,7 +317,7 @@ class Gam:
         """Pointwise CI for predictions. Drop-in for v0.x.
 
         Default returns ``(mean, lo, hi)``; legacy ``alpha=`` returns
-        ``(lo, hi)`` with a ``DeprecationWarning``. Computed via gammon's
+        ``(lo, hi)`` with a ``DeprecationWarning``. Computed via gamrs's
         cached vcov + Wald formula (closed-form, not posterior sampling
         — ``n_samples`` / ``seed`` / ``predictor`` are accepted for
         signature compat and ignored).
@@ -330,7 +330,7 @@ class Gam:
         if scale == "deviation":
             raise ValueError(
                 "scale='deviation' is only meaningful on subset views; "
-                "gammon doesn't yet support subset views — use scale='link'."
+                "gamrs doesn't yet support subset views — use scale='link'."
             )
 
         deprecated = alpha is not None
@@ -348,7 +348,7 @@ class Gam:
             effective_level = float(level)
 
         x = self._coerce_predict_X(X)
-        # gammon's native predict_ci returns (mean, lo, hi) on link OR response.
+        # gamrs's native predict_ci returns (mean, lo, hi) on link OR response.
         scale_arg = "link" if scale == "link" else "response"
         mean, lo, hi = f.predict_ci(x, effective_level, scale_arg)
         if deprecated:
@@ -404,7 +404,7 @@ class Gam:
                 )
 
         if level is None:
-            # Bare diff — call gammon's predict and subtract.
+            # Bare diff — call gamrs's predict and subtract.
             eta_to = np.asarray(f.predict(to_arr))
             eta_from = np.asarray(f.predict(from_arr))
             if eta_to.shape != eta_from.shape:
@@ -511,12 +511,12 @@ class Gam:
 
     @property
     def auto_k_trace_(self) -> Any:
-        """v0.x's auto-k trace. gammon doesn't run auto-k yet, so empty."""
+        """v0.x's auto-k trace. gamrs doesn't run auto-k yet, so empty."""
         return []
 
     @property
     def ocat_theta_(self) -> np.ndarray:
-        """v0.x: converged log-gap thresholds for ocat. gammon doesn't yet
+        """v0.x: converged log-gap thresholds for ocat. gamrs doesn't yet
         expose these through the bindings — returns an empty array."""
         if self.family != "ocat":
             raise AttributeError("ocat_theta_ is only available for family='ocat'")
@@ -535,24 +535,24 @@ class Gam:
 
     def get_design_matrix(self) -> np.ndarray:
         raise NotImplementedError(
-            "get_design_matrix() is not yet wired in gammon. Use "
+            "get_design_matrix() is not yet wired in gamrs. Use "
             "mgcv_rust.Gam.get_design_matrix() for now."
         )
 
     def get_edf_df(self) -> Any:
         raise NotImplementedError(
-            "get_edf_df() is not yet wired in gammon. Use "
+            "get_edf_df() is not yet wired in gamrs. Use "
             "mgcv_rust.Gam.get_edf_df() for now."
         )
 
     def evaluate_lpmatrix(self, X: ArrayLike) -> np.ndarray:
         """Build the design matrix for predict-X. Useful for custom
         prediction / posterior sampling pipelines."""
-        # The gammon FittedGam doesn't expose the design rebuilder
+        # The gamrs FittedGam doesn't expose the design rebuilder
         # directly via Python; we synthesise it by chaining
-        # gammon's `predict` with a unit β vector — too lossy. Raise.
+        # gamrs's `predict` with a unit β vector — too lossy. Raise.
         raise NotImplementedError(
-            "evaluate_lpmatrix() is not yet wired in gammon (the design "
+            "evaluate_lpmatrix() is not yet wired in gamrs (the design "
             "rebuilder isn't surfaced through PyO3). Use mgcv_rust.Gam."
         )
 
@@ -560,13 +560,13 @@ class Gam:
         self, X: ArrayLike, n_samples: int = 1000, seed: int = 42
     ) -> np.ndarray:
         raise NotImplementedError(
-            "get_posterior_samples() is not yet wired in gammon. Use "
+            "get_posterior_samples() is not yet wired in gamrs. Use "
             "mgcv_rust.Gam for posterior sampling."
         )
 
     def predict_proba(self, X: ArrayLike) -> np.ndarray:
         """Return ``(n, 2)`` probability matrix for binomial; ``(n, R)``
-        for ocat. gammon currently supports binomial only — ocat raises.
+        for ocat. gamrs currently supports binomial only — ocat raises.
         """
         if self.family not in ("binomial", "bernoulli"):
             raise NotImplementedError(
@@ -583,13 +583,13 @@ class Gam:
         level: Optional[float] = 0.95,
     ) -> Any:
         raise NotImplementedError(
-            "partial_effect() is not yet wired in gammon. Use "
+            "partial_effect() is not yet wired in gamrs. Use "
             "mgcv_rust.Gam.partial_effect() for the per-smooth plot data."
         )
 
     def plot(self, *args: Any, **kwargs: Any) -> Any:
         raise NotImplementedError(
-            "plot() is not yet wired in gammon. Use mgcv_rust.Gam.plot() or "
+            "plot() is not yet wired in gamrs. Use mgcv_rust.Gam.plot() or "
             "build a matplotlib figure from partial_effect data."
         )
 
@@ -620,12 +620,12 @@ class Gam:
         """Rebuild from native bytes only — wrapper-side metadata is
         defaulted. Use :meth:`Gam.load` for the metadata-aware path."""
         gam = cls.__new__(cls)  # bypass __init__; defaults below
-        gam._fitted = _gammon_native.FittedGam.deserialize(payload)
+        gam._fitted = _gamrs_native.FittedGam.deserialize(payload)
         gam.__dict__.update(
             predictors=None, _effective_predictors=None,
             _original_predictors=None, dropped_predictors_={},
             X=None, y=None, sample_weight=None, _k_used=None,
-            family="gaussian", link="identity", _gammon_family="gaussian",
+            family="gaussian", link="identity", _gamrs_family="gaussian",
             method="REML", target="y", design="cr",
             term_k_mapping={}, term_pc_mapping={}, predictor_basis_map={},
             consider_categorical=False, auto_k=False, discrete=False,
@@ -634,7 +634,7 @@ class Gam:
         return gam
 
     def save(self, path: Union[str, "os.PathLike[str]"]) -> None:
-        """Save to disk; see :mod:`gammon._persistence` for the format."""
+        """Save to disk; see :mod:`gamrs._persistence` for the format."""
         from ._persistence import save_gam
         save_gam(self, path)
 
@@ -663,10 +663,10 @@ class Gam:
         return 1.0 - ss_res / ss_tot
 
     def __getitem__(self, predictors: Union[str, Iterable[str]]) -> "Gam":
-        """v0.x subset-view support. gammon doesn't yet support these
+        """v0.x subset-view support. gamrs doesn't yet support these
         because it's single-smooth — raise with a hint."""
         raise NotImplementedError(
-            "Subset views (gam[name]) are not yet wired in gammon. gammon is "
+            "Subset views (gam[name]) are not yet wired in gamrs. gamrs is "
             "single-smooth today, so a subset view of one smooth is the "
             "whole model — call methods on the parent ``Gam`` directly."
         )
@@ -696,7 +696,7 @@ class GAMFitter(Gam):
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         warnings.warn(
-            "GAMFitter is a deprecated alias of gammon.Gam; rename to Gam.",
+            "GAMFitter is a deprecated alias of gamrs.Gam; rename to Gam.",
             DeprecationWarning,
             stacklevel=2,
         )

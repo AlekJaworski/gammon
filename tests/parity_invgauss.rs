@@ -1,4 +1,4 @@
-//! Phase 8 parity test: gammon `fit_inverse_gaussian_cr` vs mgcv.
+//! Phase 8 parity test: gamrs `fit_inverse_gaussian_cr` vs mgcv.
 
 use ndarray::{Array1, Array2};
 use serde::Deserialize;
@@ -50,8 +50,8 @@ fn invgauss_log_n300_k10_cr() {
     let x = Array2::from_shape_vec((n, 1), x_vec).unwrap();
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
-    let fit = gammon::fit(
-        gammon::family::inverse_gaussian_log(),
+    let fit = gamrs::fit(
+        gamrs::family::inverse_gaussian_log(),
         x.view(),
         y.view(),
         None,
@@ -59,13 +59,13 @@ fn invgauss_log_n300_k10_cr() {
     )
     .unwrap();
     let eta = fit.predict(x.view()).unwrap();
-    let mu_gammon: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
-    let rel = max_rel_err(&mu_gammon, &fx.mgcv_output.predictions_train);
-    let abs_e = max_abs_err(&mu_gammon, &fx.mgcv_output.predictions_train);
+    let mu_gamrs: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
+    let rel = max_rel_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
+    let abs_e = max_abs_err(&mu_gamrs, &fx.mgcv_output.predictions_train);
     let scale_rel = (fit.scale - fx.mgcv_output.scale).abs() / fx.mgcv_output.scale.max(1e-12);
     println!(
         "[invgauss n300 k10] max_rel = {rel:.3e}; max_abs = {abs_e:.3e}; \
-         φ̂ gammon = {:.4} vs mgcv = {:.4} (rel {scale_rel:.3e}); \
+         φ̂ gamrs = {:.4} vs mgcv = {:.4} (rel {scale_rel:.3e}); \
          ρ̂ = {:.3}; iters = {}; edf = {:.2}",
         fit.scale, fx.mgcv_output.scale, fit.rho[0], fit.n_iters, fit.edf_total,
     );

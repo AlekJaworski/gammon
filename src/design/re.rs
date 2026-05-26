@@ -9,7 +9,7 @@
 use ndarray::{Array2, ArrayView2};
 
 use crate::basis::RandomEffectsBasis;
-use crate::error::{GammonError, Result};
+use crate::error::{GamrsError, Result};
 use crate::traits::Basis;
 
 use super::{
@@ -48,7 +48,7 @@ impl RePredictor {
         let basis = RandomEffectsBasis::from_data(x_col);
         let levels = basis.levels.clone();
         if levels.is_empty() {
-            return Err(GammonError::InvalidParameter("Re basis: x is empty".into()));
+            return Err(GamrsError::InvalidParameter("Re basis: x is empty".into()));
         }
         let x_view = x.slice(ndarray::s![.., x_col_idx..x_col_idx + 1]);
         let raw = basis.evaluate(x_view);

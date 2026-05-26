@@ -1,9 +1,9 @@
-//! Diagnostic: compare gammon's fitted β coefficient-wise to mgcv's on the
+//! Diagnostic: compare gamrs's fitted β coefficient-wise to mgcv's on the
 //! worst-case parity fixture. Sign-flips in the centring basis cancel in
 //! predictions but show up in β — so this test isolates *where* the gap is.
 //!
 //! Not part of the parity bar; uses `#[ignore]` so it runs only on demand
-//! via `cargo test -p gammon --test diag_low_signal -- --ignored --nocapture`.
+//! via `cargo test -p gamrs --test diag_low_signal -- --ignored --nocapture`.
 
 use std::path::PathBuf;
 
@@ -43,8 +43,8 @@ fn diag_low_signal_beta_coefficientwise() {
     let x = Array2::from_shape_vec((n, 1), x_vec).unwrap();
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let k = fx.inputs.k[0];
-    let fit = gammon::fit(
-        gammon::family::gaussian_identity(),
+    let fit = gamrs::fit(
+        gamrs::family::gaussian_identity(),
         x.view(),
         y.view(),
         None,
@@ -56,17 +56,17 @@ fn diag_low_signal_beta_coefficientwise() {
 
     println!("\n=== low_signal_n1000 ===");
     let rho_scalar = fit.rho[0];
-    println!("gammon ρ̂   = {:.10}", rho_scalar);
+    println!("gamrs ρ̂   = {:.10}", rho_scalar);
     println!("mgcv ρ   = {:.10}", rho_mgcv);
     println!("Δρ       = {:.3e}", rho_scalar - rho_mgcv);
     println!();
     println!(
-        "scale: gammon={:.10e} mgcv={:.10e}",
+        "scale: gamrs={:.10e} mgcv={:.10e}",
         fit.scale, fx.mgcv_output.scale
     );
     println!();
     println!("β coefficient-wise:");
-    println!("  idx | gammon                | mgcv                | Δ");
+    println!("  idx | gamrs                | mgcv                | Δ");
     for i in 0..fit.beta.len() {
         let c = fit.beta[i];
         let m = fx.mgcv_output.beta[i];
@@ -88,7 +88,7 @@ fn diag_low_signal_beta_coefficientwise() {
     println!("max pred rel err = {:.3e}", max_pred_err);
     println!();
 
-    // If predictions differ but X·β_gammon is identical to gammon's prediction
+    // If predictions differ but X·β_gamrs is identical to gamrs's prediction
     // (sanity), the gap is in the basis or β itself.
     // Sanity: predict reproduces fit.beta · design.
     let p0 = pred[0];
