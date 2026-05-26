@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Install OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev gfortran
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test (release)
+        run: cargo test --release
+
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install OpenBLAS
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev gfortran
+      - name: Install maturin + deps
+        run: python -m pip install --upgrade pip maturin numpy pandas pytest
+      - name: maturin develop
+        run: maturin develop --release --features python
+      - name: Python smoke test
+        run: |
+          python -c "
+          import numpy as np
+          import pandas as pd
+          from gammon import Gam, CrTerm
+          rng = np.random.default_rng(0)
+          n = 200
+          x = rng.uniform(0, 1, n)
+          y = np.sin(2 * np.pi * x) + rng.normal(0, 0.2, n)
+          df = pd.DataFrame({'x': x, 'y': y})
+          g = Gam(terms=[CrTerm('x', k=10)])
+          g.fit(df, 'y')
+          mu = g.predict(df)
+          assert mu.shape == (n,)
+          print('python smoke OK')
+          "

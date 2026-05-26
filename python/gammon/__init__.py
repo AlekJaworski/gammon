@@ -1,0 +1,67 @@
+"""gammon — Rust GAM core with a Python API that mirrors
+:mod:`mgcv_rust` 1-1 for the basic single-smooth use case.
+
+Drop-in goal: replacing ``from mgcv_rust import Gam`` with
+``from gammon import Gam`` should work for code that fits a single-smooth
+Gaussian / Bernoulli / Poisson / Gamma / NegBin / Tweedie / TDist GAM
+and uses the standard sklearn-style API (``fit``, ``predict``,
+``predict_ci``, ``predict_diff``, ``vcov_``, ``coef_``, ``lambda_``,
+…). Calls that exercise features gammon doesn't yet wire (multi-smooth
+fits, subset views, ``predict(type='terms')``, ``partial_effect``,
+``plot``, ``serialize``, ``predict_proba`` for ocat, posterior
+sampling, ``evaluate_lpmatrix``) raise ``NotImplementedError`` with a
+pointer back at :mod:`mgcv_rust`.
+
+Layers (mirrors v0.x's mgcv_rust shape exactly):
+
+1. **High-level wrapper** (:class:`gammon.Gam`) — sklearn-style class.
+   See :mod:`gammon._fitter` for the full constructor / method surface.
+2. **Low-level coercion facade** (:class:`gammon.GAM`) — minimal
+   shape / dtype coercion over the native :func:`gammon._gammon_native.fit`
+   function. See :mod:`gammon._low_level`.
+
+Plus 1-1 names matching v0.x's exports:
+- :class:`gammon.GAMFitter` — deprecated alias of :class:`Gam` (emits
+  ``DeprecationWarning``).
+- :class:`gammon.TermContributions`, :class:`gammon.GamSummary`,
+  :class:`gammon.GamPredictor` — shape-matching stubs that error with a
+  clear message when invoked, so consumer code that imports them by
+  name doesn't blow up at import time.
+
+The native PyO3 module is :mod:`gammon._gammon_native` with:
+- ``fit(family_name, x, y, weights=None, k=10, design='cr', ...)`` →
+  :class:`gammon._gammon_native.FittedGam`.
+- :class:`gammon._gammon_native.FittedGam` exposing ``beta``, ``rho``,
+  ``scale``, ``edf_total``, ``n_iters``, ``converged``, ``reml_value``
+  getters and ``predict``, ``predict_response``, ``predict_ci``,
+  ``predict_diff``, ``vcov`` methods.
+"""
+
+from ._low_level import (
+    GAM,
+    CrStableTerm,
+    CrTerm,
+    ReTerm,
+    TeTerm,
+    Term,
+    fit_additive,
+)
+from ._fitter import Gam, GAMFitter
+from ._predictor import GamPredictor
+from ._stubs import GamSummary, TermContributions
+
+__all__ = [
+    "Gam",
+    "GAMFitter",
+    "GAM",
+    "GamPredictor",
+    "GamSummary",
+    "TermContributions",
+    # Multi-smooth typed terms + helper (94b/94c).
+    "CrTerm",
+    "CrStableTerm",
+    "ReTerm",
+    "TeTerm",
+    "Term",
+    "fit_additive",
+]

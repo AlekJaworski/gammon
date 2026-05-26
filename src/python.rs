@@ -1,0 +1,667 @@
+//! PyO3 bindings — `gammon._gammon_native` Python extension module.
+//!
+//! Wraps gammon's canonical typed Rust API (`gammon::fit{,_with_design}` +
+//! `FittedGam`) behind a single `fit(family, ...)` function that takes
+//! string family / design names at the Python boundary and dispatches to
+//! the typed `gammon::fit_with_design(...)` call internally. This is the
+//! only place strings cross into the type layer — the Rust core stays
+//! fully typed (project standard: zero-string config in Rust).
+//!
+//! Surface (mirrors v0.x's `mgcv_rust.GAM` shape where it makes sense):
+//!
+//! - `fit(family_name, x, y, weights=None, k=10, design="cr")` →
+//!   `PyFittedGam`.
+//! - `PyFittedGam` exposes `beta`, `rho`, `scale`, `edf_total`,
+//!   `n_iters`, `converged`, `reml_value` as getters; `predict(x)`,
+//!   `predict_ci(x, level, scale)`, `predict_diff(x_a, x_b, level)`,
+//!   `vcov()` as methods.
+//!
+//! Errors map gammon's `GammonError::InvalidParameter` (which already carries
+//! row-aware guidance — "Gamma requires y > 0; got y=-0.3 at row 42") to
+//! Python's `ValueError`, so callers see actionable messages.
+
+use ndarray::{Array1, ArrayView1, ArrayView2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyType};
+use pyo3::wrap_pyfunction;
+use pyo3::Bound;
+
+use crate::design::{Additive, Cr, CrStable, DesignStrategy, MarginKind, Re, TermSpec};
+use crate::error::GammonError;
+use crate::family::{
+    bernoulli_logit, elf_identity, gamma_log, gaussian_identity, inverse_gaussian_log,
+    negbin_log, ocat_identity, poisson_log, quasibinomial_logit, quasipoisson_log,
+    tdist_identity, tweedie_log,
+};
+use crate::fit::{FamilyFit, FittedGam, PredictScale};
+
+// =============================================================================
+// Error mapping — GammonError → PyValueError / PyRuntimeError.
+// =============================================================================
+
+fn map_err(e: GammonError) -> PyErr {
+    match e {
+        GammonError::InvalidParameter(msg) => PyValueError::new_err(msg),
+        GammonError::SingularSystem(msg) => {
+            PyRuntimeError::new_err(format!("singular system: {msg}"))
+        }
+        other => PyRuntimeError::new_err(other.to_string()),
+    }
+}
+
+// =============================================================================
+// PyFittedGam — Python-visible wrapper around the Rust `FittedGam`.
+// =============================================================================
+
+#[pyclass(name = "FittedGam", module = "gammon._gammon_native")]
+pub struct PyFittedGam {
+    inner: FittedGam,
+}
+
+#[pymethods]
+impl PyFittedGam {
+    #[getter]
+    fn beta<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.beta.clone().into_pyarray(py)
+    }
+
+    /// Fitted log smoothing parameters (one per term). Returns a 1-D
+    /// float64 ndarray of length `n_terms` — `len 1` for single-smooth
+    /// fits (`Cr` / `Re` / `CrStable`), `len T` for `Additive { terms }`.
+    #[getter]
+    fn rho<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.rho.clone().into_pyarray(py)
+    }
+
+    /// Fitted smoothing parameters `λ_j = exp(ρ_j)` per term. 1-D float64
+    /// ndarray of length `n_terms`.
+    #[getter]
+    fn lambda<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.lambda.clone().into_pyarray(py)
+    }
+
+    /// Per-term effective degrees of freedom. 1-D float64 ndarray of
+    /// length `n_terms`. Sums to `edf_total - 1` (excluding intercept).
+    #[getter]
+    fn edf_per_term<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.edf_per_term.clone().into_pyarray(py)
+    }
+
+    #[getter]
+    fn scale(&self) -> f64 {
+        self.inner.scale
+    }
+
+    #[getter]
+    fn edf_total(&self) -> f64 {
+        self.inner.edf_total
+    }
+
+    #[getter]
+    fn n(&self) -> usize {
+        self.inner.n
+    }
+
+    #[getter]
+    fn n_iters(&self) -> usize {
+        self.inner.n_iters
+    }
+
+    #[getter]
+    fn converged(&self) -> bool {
+        self.inner.converged
+    }
+
+    #[getter]
+    fn reml_value(&self) -> f64 {
+        self.inner.reml_value
+    }
+
+    /// Posterior covariance of β̂ — `σ̂² · A⁻¹`. Returns a `(p, p)`
+    /// float64 ndarray.
+    fn vcov<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        self.inner.vcov.clone().into_pyarray(py)
+    }
+
+    /// Predict η (linear predictor) on new x. `x_new` is a 2-D float64
+    /// ndarray of shape `(n_new, n_input_dims)`. Returns a 1-D float64
+    /// ndarray of length `n_new`.
+    fn predict<'py>(
+        &self,
+        py: Python<'py>,
+        x_new: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let x_view: ArrayView2<f64> = x_new.as_array();
+        let eta = self.inner.predict(x_view).map_err(map_err)?;
+        Ok(eta.into_pyarray(py))
+    }
+
+    /// Predict μ (response scale) by inverse-linking η elementwise.
+    fn predict_response<'py>(
+        &self,
+        py: Python<'py>,
+        x_new: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let x_view: ArrayView2<f64> = x_new.as_array();
+        let eta = self.inner.predict(x_view).map_err(map_err)?;
+        let link = self.inner.link_kind;
+        let mu: Array1<f64> = eta.mapv(|e| link.inverse(e));
+        Ok(mu.into_pyarray(py))
+    }
+
+    /// Wald-style CI for predictions at `x_new`. Returns `(mean, lo, hi)`
+    /// as three 1-D float64 arrays on the requested scale.
+    ///
+    /// `scale` accepts `"link"` (η) or `"response"` (μ).
+    #[pyo3(signature = (x_new, level=0.95, scale="response"))]
+    fn predict_ci<'py>(
+        &self,
+        py: Python<'py>,
+        x_new: PyReadonlyArray2<'py, f64>,
+        level: f64,
+        scale: &str,
+    ) -> PyResult<(
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<f64>>,
+    )> {
+        let x_view: ArrayView2<f64> = x_new.as_array();
+        let s = match scale {
+            "link" => PredictScale::Link,
+            "response" => PredictScale::Response,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "scale must be 'link' or 'response', got {other:?}"
+                )))
+            }
+        };
+        let (mean, lo, hi) = self
+            .inner
+            .predict_ci(x_view, level, s)
+            .map_err(map_err)?;
+        Ok((
+            mean.into_pyarray(py),
+            lo.into_pyarray(py),
+            hi.into_pyarray(py),
+        ))
+    }
+
+    /// Serialize the fit to a length-framed binary buffer (magic +
+    /// version + JSON body). Round-trips bit-for-bit through
+    /// :meth:`deserialize` — predictions are FP-identical after a
+    /// reload. See `crates/gammon/src/fit/persistence.rs` for the wire
+    /// format.
+    fn serialize<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self.inner.serialize().map_err(map_err)?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Classmethod: rebuild a :class:`FittedGam` from the bytes produced
+    /// by :meth:`serialize`. Raises ``ValueError`` (mapped from
+    /// ``GammonError::InvalidParameter``) on a bad magic / version /
+    /// truncated body / unparseable JSON.
+    #[classmethod]
+    fn deserialize(_cls: &Bound<'_, PyType>, bytes: &[u8]) -> PyResult<Self> {
+        let inner = FittedGam::deserialize(bytes).map_err(map_err)?;
+        Ok(Self { inner })
+    }
+
+    /// Python pickle protocol — `pickle.dumps(fit)` / `pickle.loads(...)`
+    /// work transparently by routing through :meth:`serialize` /
+    /// :meth:`deserialize`. Returns ``(_reconstruct, (bytes,))`` so the
+    /// pickle stream is the same compact binary frame.
+    fn __reduce__<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(Py<PyAny>, (Bound<'py, PyBytes>,))> {
+        let bytes = self.inner.serialize().map_err(map_err)?;
+        let cls = py.get_type::<PyFittedGam>();
+        let reconstruct = cls.getattr("deserialize")?.unbind();
+        Ok((reconstruct, (PyBytes::new(py, &bytes),)))
+    }
+
+    /// Wald CI for the contrast `Δ = predict(x_a) - predict(x_b)` on the
+    /// η scale. Returns `(diff, lo, hi)` as three 1-D float64 arrays.
+    /// Broadcasts when one of the arrays has a single element.
+    #[pyo3(signature = (x_a, x_b, level=0.95))]
+    fn predict_diff<'py>(
+        &self,
+        py: Python<'py>,
+        x_a: PyReadonlyArray2<'py, f64>,
+        x_b: PyReadonlyArray2<'py, f64>,
+        level: f64,
+    ) -> PyResult<(
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<f64>>,
+    )> {
+        let a: ArrayView2<f64> = x_a.as_array();
+        let b: ArrayView2<f64> = x_b.as_array();
+        let (diff, lo, hi) = self
+            .inner
+            .predict_diff(a, b, level)
+            .map_err(map_err)?;
+        Ok((
+            diff.into_pyarray(py),
+            lo.into_pyarray(py),
+            hi.into_pyarray(py),
+        ))
+    }
+}
+
+// =============================================================================
+// Internal helpers — design-strategy dispatch and a per-family fit macro.
+// =============================================================================
+
+/// Run `gammon::fit_with_design` for a typed family using one of the
+/// canonical design strategies, with the string `design` keyword
+/// mediated at this single boundary.
+fn fit_dispatch_design<L, K, V>(
+    family: crate::family::Family<L, K, V>,
+    x: ArrayView2<f64>,
+    y: ArrayView1<f64>,
+    weights: Option<ArrayView1<f64>>,
+    design_name: &str,
+    k: usize,
+) -> PyResult<FittedGam>
+where
+    L: FamilyFit<K, V>,
+    K: crate::traits::Link + Clone,
+    V: crate::traits::VarianceFn + Clone,
+{
+    let prep = match design_name {
+        "cr" => Cr { k }.prepare(x).map_err(map_err)?,
+        "re" => Re.prepare(x).map_err(map_err)?,
+        "cr_stable" => CrStable { k }.prepare(x).map_err(map_err)?,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "design must be 'cr', 're', or 'cr_stable'; got {other:?}"
+            )))
+        }
+    };
+    L::fit_from_prep(family, prep, x, y, weights).map_err(map_err)
+}
+
+// =============================================================================
+// The single string→type dispatch boundary — `fit(family_name, ...)`.
+// =============================================================================
+
+/// Fit a gammon GAM. The only string-keyed entry into the typed core.
+///
+/// `family_name` accepts the v0.x-compatible names:
+/// - `"gaussian"` → `gaussian_identity()`
+/// - `"bernoulli"` / `"binomial"` → `bernoulli_logit()`
+/// - `"poisson"` → `poisson_log()`
+/// - `"quasipoisson"` → `quasipoisson_log()`
+/// - `"quasibinomial"` → `quasibinomial_logit()`
+/// - `"gamma"` → `gamma_log()`
+/// - `"inverse_gaussian"` / `"inverse.gaussian"` → `inverse_gaussian_log()`
+/// - `"negbin"` / `"nb"` → `negbin_log(theta=2.0)` (or user-passed theta)
+/// - `"tdist"` / `"scat"` → `tdist_identity(nu=5, sigma2=1)`
+/// - `"tweedie"` / `"tw"` → `tweedie_log(p=1.5, phi=1)`
+/// - `"ocat"` → `ocat_identity(n_cats=r)` — requires `r`.
+/// - `"elf"` / `"quantile"` → `elf_identity(tau=0.5, sigma=0, lambda=0)`
+///   (auto-tuned warm start).
+///
+/// `design` accepts `"cr"` (default), `"re"`, or `"cr_stable"`.
+#[pyfunction]
+#[pyo3(signature = (
+    family_name,
+    x,
+    y,
+    weights=None,
+    k=10,
+    design="cr",
+    theta=None,
+    nu=None,
+    sigma2=None,
+    tweedie_p=None,
+    tweedie_phi=None,
+    r=None,
+    tau=None,
+    elf_sigma=None,
+    elf_lambda=None,
+))]
+fn fit<'py>(
+    _py: Python<'py>,
+    family_name: &str,
+    x: PyReadonlyArray2<'py, f64>,
+    y: PyReadonlyArray1<'py, f64>,
+    weights: Option<PyReadonlyArray1<'py, f64>>,
+    k: usize,
+    design: &str,
+    theta: Option<f64>,
+    nu: Option<f64>,
+    sigma2: Option<f64>,
+    tweedie_p: Option<f64>,
+    tweedie_phi: Option<f64>,
+    r: Option<usize>,
+    tau: Option<f64>,
+    elf_sigma: Option<f64>,
+    elf_lambda: Option<f64>,
+) -> PyResult<PyFittedGam> {
+    let x_view: ArrayView2<f64> = x.as_array();
+    let y_view: ArrayView1<f64> = y.as_array();
+    let w_owned: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
+    let w_view: Option<ArrayView1<f64>> = w_owned.as_ref().map(|a| a.view());
+
+    let fitted: FittedGam = match family_name {
+        "gaussian" => {
+            fit_dispatch_design(gaussian_identity(), x_view, y_view, w_view, design, k)?
+        }
+        "bernoulli" | "binomial" => {
+            fit_dispatch_design(bernoulli_logit(), x_view, y_view, w_view, design, k)?
+        }
+        "poisson" => fit_dispatch_design(poisson_log(), x_view, y_view, w_view, design, k)?,
+        "quasipoisson" => {
+            fit_dispatch_design(quasipoisson_log(), x_view, y_view, w_view, design, k)?
+        }
+        "quasibinomial" => {
+            fit_dispatch_design(quasibinomial_logit(), x_view, y_view, w_view, design, k)?
+        }
+        "gamma" => fit_dispatch_design(gamma_log(), x_view, y_view, w_view, design, k)?,
+        "inverse_gaussian" | "inverse.gaussian" => fit_dispatch_design(
+            inverse_gaussian_log(),
+            x_view,
+            y_view,
+            w_view,
+            design,
+            k,
+        )?,
+        "negbin" | "nb" => {
+            let theta_val = theta.unwrap_or(2.0);
+            if theta_val <= 0.0 {
+                return Err(PyValueError::new_err(format!(
+                    "negbin theta must be > 0; got theta={theta_val}"
+                )));
+            }
+            fit_dispatch_design(
+                negbin_log(theta_val),
+                x_view,
+                y_view,
+                w_view,
+                design,
+                k,
+            )?
+        }
+        "tdist" | "scat" => {
+            let nu_val = nu.unwrap_or(5.0);
+            let sigma2_val = sigma2.unwrap_or(1.0);
+            fit_dispatch_design(
+                tdist_identity(nu_val, sigma2_val),
+                x_view,
+                y_view,
+                w_view,
+                design,
+                k,
+            )?
+        }
+        "tweedie" | "tw" => {
+            let p_val = tweedie_p.unwrap_or(1.5);
+            let phi_val = tweedie_phi.unwrap_or(1.0);
+            if !(1.0 < p_val && p_val < 2.0) {
+                return Err(PyValueError::new_err(format!(
+                    "tweedie p must be in (1, 2); got tweedie_p={p_val}"
+                )));
+            }
+            fit_dispatch_design(
+                tweedie_log(p_val, phi_val),
+                x_view,
+                y_view,
+                w_view,
+                design,
+                k,
+            )?
+        }
+        "ocat" => {
+            let n_cats = r.ok_or_else(|| {
+                PyValueError::new_err(
+                    "family='ocat' requires r=K (number of ordered categories, K >= 3)",
+                )
+            })?;
+            if n_cats < 3 {
+                return Err(PyValueError::new_err(format!(
+                    "ocat requires r >= 3, got r={n_cats}"
+                )));
+            }
+            let thresholds = Array1::<f64>::zeros(n_cats - 2);
+            fit_dispatch_design(
+                ocat_identity(thresholds, n_cats),
+                x_view,
+                y_view,
+                w_view,
+                design,
+                k,
+            )?
+        }
+        "elf" | "quantile" => {
+            let tau_val = tau.unwrap_or(0.5);
+            if !(0.0 < tau_val && tau_val < 1.0) {
+                return Err(PyValueError::new_err(format!(
+                    "elf/quantile tau must be in (0, 1); got tau={tau_val}"
+                )));
+            }
+            let sigma_val = elf_sigma.unwrap_or(0.0);
+            let lambda_val = elf_lambda.unwrap_or(0.0);
+            fit_dispatch_design(
+                elf_identity(tau_val, sigma_val, lambda_val),
+                x_view,
+                y_view,
+                w_view,
+                design,
+                k,
+            )?
+        }
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unknown family {other:?}; supported: gaussian, bernoulli, poisson, \
+                 quasipoisson, quasibinomial, gamma, inverse_gaussian, negbin, tdist, \
+                 tweedie, ocat, elf"
+            )))
+        }
+    };
+
+    Ok(PyFittedGam { inner: fitted })
+}
+
+// =============================================================================
+// Module entry point. The name must match the `[lib].name = "gammon"` in
+// Cargo.toml, prefixed with an underscore so Python imports it as
+// `gammon._gammon_native` after the `python/gammon/` package layer re-exports.
+// =============================================================================
+
+// =============================================================================
+// fit_additive — multi-smooth `y ~ s(x_{c_0}) + s(x_{c_1}) + …` entry point.
+//
+// Python boundary: `terms` is a list of `(col, basis_name, k)` tuples
+// (k ignored for `bs="re"`). The string `basis_name` is converted to the
+// typed `TermSpec` enum at this FFI boundary and never leaks into the Rust
+// core — matches the project rule "strings ok at the Python FFI only".
+// =============================================================================
+
+fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<TermSpec>> {
+    let mut out: Vec<TermSpec> = Vec::with_capacity(terms.len());
+    for (j, item) in terms.iter().enumerate() {
+        let tup: &Bound<'_, pyo3::types::PyTuple> = item
+            .downcast::<pyo3::types::PyTuple>()
+            .map_err(|_| {
+                PyValueError::new_err(format!(
+                    "fit_additive: term {j} must be a tuple; got {item:?}"
+                ))
+            })?;
+        if tup.len() < 2 {
+            return Err(PyValueError::new_err(format!(
+                "fit_additive: term {j} tuple must have at least 2 elements"
+            )));
+        }
+        // Tensor terms use a sentinel basis name "te" with a 2-tuple of
+        // columns and (optionally) a 2-tuple of k values:
+        //   (cols_tuple, "te", k_tuple)
+        // where cols_tuple = (col_a, col_b) and k_tuple = (k_a, k_b).
+        let first = tup.get_item(0)?;
+        let basis: String = tup.get_item(1)?.extract()?;
+        let term = if basis == "te" {
+            let cols_tup: &Bound<'_, pyo3::types::PyTuple> =
+                first.downcast::<pyo3::types::PyTuple>().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "fit_additive: tensor term {j} first element must be a (col_a, col_b) tuple"
+                    ))
+                })?;
+            if cols_tup.len() != 2 {
+                return Err(PyValueError::new_err(format!(
+                    "fit_additive: tensor term {j} cols tuple must have exactly 2 elements"
+                )));
+            }
+            let col_a: usize = cols_tup.get_item(0)?.extract()?;
+            let col_b: usize = cols_tup.get_item(1)?.extract()?;
+            let (k_a, k_b): (usize, usize) = if tup.len() >= 3 {
+                let k_item = tup.get_item(2)?;
+                let k_tup = k_item.downcast::<pyo3::types::PyTuple>().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "fit_additive: tensor term {j} k must be a (k_a, k_b) tuple"
+                    ))
+                })?;
+                if k_tup.len() != 2 {
+                    return Err(PyValueError::new_err(format!(
+                        "fit_additive: tensor term {j} k tuple must have exactly 2 elements"
+                    )));
+                }
+                (k_tup.get_item(0)?.extract()?, k_tup.get_item(1)?.extract()?)
+            } else {
+                (10, 10)
+            };
+            TermSpec::Tensor {
+                col_a,
+                col_b,
+                k_a,
+                k_b,
+                bs_a: MarginKind::Cr,
+                bs_b: MarginKind::Cr,
+            }
+        } else {
+            // Univariate term — first element is a single column index.
+            let col: usize = first.extract().map_err(|_| {
+                PyValueError::new_err(format!(
+                    "fit_additive: univariate term {j} first element must be an integer column index"
+                ))
+            })?;
+            match basis.as_str() {
+                "cr" => {
+                    let k: usize = if tup.len() >= 3 {
+                        tup.get_item(2)?.extract()?
+                    } else {
+                        10
+                    };
+                    TermSpec::Cr { col, k }
+                }
+                "cr_stable" => {
+                    let k: usize = if tup.len() >= 3 {
+                        tup.get_item(2)?.extract()?
+                    } else {
+                        10
+                    };
+                    TermSpec::CrStable { col, k }
+                }
+                "re" => TermSpec::Re { col },
+                other => {
+                    return Err(PyValueError::new_err(format!(
+                        "fit_additive: term {j} basis must be 'cr', 'cr_stable', 're', or 'te'; \
+                         got {other:?}"
+                    )))
+                }
+            }
+        };
+        out.push(term);
+    }
+    if out.is_empty() {
+        return Err(PyValueError::new_err(
+            "fit_additive: terms list must be non-empty",
+        ));
+    }
+    Ok(out)
+}
+
+/// Run `gammon::fit_with_design(..., Additive { terms })` for a typed family.
+/// String dispatch on `family_name` happens here at the FFI boundary.
+fn fit_additive_dispatch<L, K, V>(
+    family: crate::family::Family<L, K, V>,
+    x: ArrayView2<f64>,
+    y: ArrayView1<f64>,
+    weights: Option<ArrayView1<f64>>,
+    terms: Vec<TermSpec>,
+) -> PyResult<FittedGam>
+where
+    L: FamilyFit<K, V>,
+    K: crate::traits::Link + Clone,
+    V: crate::traits::VarianceFn + Clone,
+{
+    let prep = Additive { terms }.prepare(x).map_err(map_err)?;
+    L::fit_from_prep(family, prep, x, y, weights).map_err(map_err)
+}
+
+/// Fit a multi-smooth additive gammon GAM: `y ~ s(x_{c_0}) + s(x_{c_1}) + …`.
+///
+/// `terms` is a Python list of `(col, basis_name, k)` tuples — one tuple
+/// per smoothing term. `basis_name` is one of `"cr"`, `"cr_stable"`, or
+/// `"re"`. The `k` element is required for `"cr"`/`"cr_stable"` and ignored
+/// for `"re"`. Strings live ONLY at this FFI boundary — the typed
+/// `TermSpec` enum flows into the Rust core.
+///
+/// `family_name` accepts the same set as `fit(...)` minus families that
+/// require single-smooth (shape-aware: tdist, scat, negbin, tweedie, ocat,
+/// elf, quantile — those error out at the fit driver with a clear message
+/// directing the user back to `gammon.fit(...)`).
+#[pyfunction]
+#[pyo3(signature = (family_name, x, y, terms, weights=None))]
+fn fit_additive<'py>(
+    _py: Python<'py>,
+    family_name: &str,
+    x: PyReadonlyArray2<'py, f64>,
+    y: PyReadonlyArray1<'py, f64>,
+    terms: Bound<'py, pyo3::types::PyList>,
+    weights: Option<PyReadonlyArray1<'py, f64>>,
+) -> PyResult<PyFittedGam> {
+    let x_view: ArrayView2<f64> = x.as_array();
+    let y_view: ArrayView1<f64> = y.as_array();
+    let w_owned: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
+    let w_view: Option<ArrayView1<f64>> = w_owned.as_ref().map(|a| a.view());
+    let term_specs = build_term_specs(&terms)?;
+
+    let fitted: FittedGam = match family_name {
+        "gaussian" => fit_additive_dispatch(gaussian_identity(), x_view, y_view, w_view, term_specs)?,
+        "bernoulli" | "binomial" => {
+            fit_additive_dispatch(bernoulli_logit(), x_view, y_view, w_view, term_specs)?
+        }
+        "poisson" => fit_additive_dispatch(poisson_log(), x_view, y_view, w_view, term_specs)?,
+        "quasipoisson" => {
+            fit_additive_dispatch(quasipoisson_log(), x_view, y_view, w_view, term_specs)?
+        }
+        "quasibinomial" => {
+            fit_additive_dispatch(quasibinomial_logit(), x_view, y_view, w_view, term_specs)?
+        }
+        "gamma" => fit_additive_dispatch(gamma_log(), x_view, y_view, w_view, term_specs)?,
+        "inverse_gaussian" | "inverse.gaussian" => {
+            fit_additive_dispatch(inverse_gaussian_log(), x_view, y_view, w_view, term_specs)?
+        }
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "fit_additive: family {other:?} is shape-managed and restricted to \
+                 single-smooth in 94b; use gammon.fit(family={other:?}, …) or wait for \
+                 multi-smooth shape-aware support. Supported additive families: \
+                 gaussian, bernoulli/binomial, poisson, quasipoisson, quasibinomial, \
+                 gamma, inverse_gaussian"
+            )))
+        }
+    };
+    Ok(PyFittedGam { inner: fitted })
+}
+
+#[pymodule]
+fn _gammon_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyFittedGam>()?;
+    m.add_function(wrap_pyfunction!(fit, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_additive, m)?)?;
+    Ok(())
+}
