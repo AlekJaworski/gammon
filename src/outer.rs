@@ -179,6 +179,55 @@ fn inf_norm(v: &Array1<f64>) -> f64 {
     v.iter().fold(0.0_f64, |a, &b| a.max(b.abs()))
 }
 
+fn make_psd(h: &Array2<f64>, floor: f64) -> Array2<f64> {
+    let d = h.nrows();
+    if d == 0 {
+        return h.clone();
+    }
+    if d == 1 {
+        let mut out = h.clone();
+        if out[[0, 0]] < floor {
+            out[[0, 0]] = floor;
+        }
+        return out;
+    }
+    // Symmetrise (kills FD-induced asymmetry that would otherwise make
+    // eigh use only the lower triangle).
+    let mut sym = h.clone();
+    for i in 0..d {
+        for j in i + 1..d {
+            let avg = 0.5 * (sym[[i, j]] + sym[[j, i]]);
+            sym[[i, j]] = avg;
+            sym[[j, i]] = avg;
+        }
+    }
+    let (eigs, vecs) = match sym.eigh(UPLO::Lower) {
+        Ok(p) => p,
+        Err(_) => {
+            // Fallback: diagonal floor only.
+            let mut out = sym;
+            for i in 0..d {
+                if out[[i, i]] < floor {
+                    out[[i, i]] = floor;
+                }
+            }
+            return out;
+        }
+    };
+    let mut floored = Array2::<f64>::zeros((d, d));
+    for k in 0..d {
+        let lam = eigs[k].max(floor);
+        let v = vecs.column(k);
+        // floored += lam · v vᵀ
+        for i in 0..d {
+            for j in 0..d {
+                floored[[i, j]] += lam * v[i] * v[j];
+            }
+        }
+    }
+    floored
+}
+
 /// Project the symmetric Hessian onto the positive-definite cone by
 /// flooring its eigenvalues at `floor`. Matches mgcv's
 /// `gam.fit3.r:1397-1417` approach: if `H = Q diag(λ_i) Q'`, return
@@ -256,53 +305,4 @@ mod tests {
         assert!((sorted[0] - 1e-8).abs() < 1e-12, "small eig {}", sorted[0]);
         assert!((sorted[1] - 2.0).abs() < 1e-12, "large eig {}", sorted[1]);
     }
-}
-
-fn make_psd(h: &Array2<f64>, floor: f64) -> Array2<f64> {
-    let d = h.nrows();
-    if d == 0 {
-        return h.clone();
-    }
-    if d == 1 {
-        let mut out = h.clone();
-        if out[[0, 0]] < floor {
-            out[[0, 0]] = floor;
-        }
-        return out;
-    }
-    // Symmetrise (kills FD-induced asymmetry that would otherwise make
-    // eigh use only the lower triangle).
-    let mut sym = h.clone();
-    for i in 0..d {
-        for j in i + 1..d {
-            let avg = 0.5 * (sym[[i, j]] + sym[[j, i]]);
-            sym[[i, j]] = avg;
-            sym[[j, i]] = avg;
-        }
-    }
-    let (eigs, vecs) = match sym.eigh(UPLO::Lower) {
-        Ok(p) => p,
-        Err(_) => {
-            // Fallback: diagonal floor only.
-            let mut out = sym;
-            for i in 0..d {
-                if out[[i, i]] < floor {
-                    out[[i, i]] = floor;
-                }
-            }
-            return out;
-        }
-    };
-    let mut floored = Array2::<f64>::zeros((d, d));
-    for k in 0..d {
-        let lam = eigs[k].max(floor);
-        let v = vecs.column(k);
-        // floored += lam · v vᵀ
-        for i in 0..d {
-            for j in 0..d {
-                floored[[i, j]] += lam * v[i] * v[j];
-            }
-        }
-    }
-    floored
 }

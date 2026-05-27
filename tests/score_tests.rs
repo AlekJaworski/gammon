@@ -150,7 +150,7 @@ fn tweedie_analytic_shape_grad_matches_fd() {
         let (_v, g) = score.value_and_grad(&theta).unwrap();
 
         let h = 1e-5;
-        let mut g_fd = vec![0.0_f64; 3];
+        let mut g_fd = [0.0_f64; 3];
         for i in 0..3 {
             let mut t_plus = theta.clone();
             let mut t_minus = theta.clone();
@@ -340,7 +340,7 @@ fn debug_tweedie_real_data_grad_walk() {
         let theta = Array1::from_vec(theta_init.to_vec());
         let (v_val, g) = score.value_and_grad(&theta).unwrap();
         let h = 1e-5;
-        let mut g_fd = vec![0.0_f64; 3];
+        let mut g_fd = [0.0_f64; 3];
         for i in 0..3 {
             let mut t_plus = theta.clone();
             let mut t_minus = theta.clone();

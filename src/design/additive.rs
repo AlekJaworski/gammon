@@ -166,7 +166,7 @@ impl AdditivePredictor {
         let mut d = Array2::<f64>::zeros((n, p));
         for (j, pred) in self.term_predictors.iter().enumerate() {
             let cols = &self.cols_used[j];
-            if !cols.iter().any(|&c| c == axis) {
+            if !cols.contains(&axis) {
                 continue;
             }
             let sub_d1 = invoke_sub_design_deriv(pred, x_new, cols, axis)?;
