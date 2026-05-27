@@ -97,7 +97,11 @@ jobs:
           path: dist
 
   publish-pypi:
-    needs: [linux, macos, sdist]
+    # macOS aarch64 wheel job is informational until #106 lands —
+    # publish proceeds on Linux + sdist alone (mac users can `pip
+    # install gamrs` against the sdist as long as they have Rust +
+    # OpenBLAS, falling back to source compile).
+    needs: [linux, sdist]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
