@@ -123,14 +123,31 @@ impl<S: LinearSolver> OcatInner<S> {
                 working_response[i] = eta[i] - dmu[i] / denom;
             }
 
-            // `(X' diag(w) X + λS) β = X' diag(w) z`.
-            // Backend-agnostic factor+solve via the LinearSolver trait.
+            // `(X' diag(w) X + λS + ridge·I) β = X' diag(w) z`.
+            // v0.x-style adaptive ridge — `1e-5 · (1 + √n_pen) · max(|diag(X'WX)|)`
+            // (mgcv_rust `pirls/setup.rs::pirls_ridge_scale`,
+            // `build_penalised_a_with_ridge`). Regularises the linear
+            // system when one λ_j saturates and X'WX + λS becomes
+            // near-singular on the saturated subspace; without it the
+            // solve drifts β toward an over-saturated optimum (closes
+            // the 5.9% multi-smooth ocat parity gap, 2026-05-27).
             let (beta_trial, factor_trial) = {
                 let xtw = weighted_xt(&self.x_design, &working_weights);
                 let xtwx = xtw.dot(&self.x_design);
                 let xtwz = xtw.dot(&working_response);
+                let n_pen = self.s_list.len() as f64;
+                let ridge_scale = 1.0e-5 * (1.0 + n_pen.sqrt());
+                let max_diag = xtwx
+                    .diag()
+                    .iter()
+                    .map(|x| x.abs())
+                    .fold(1.0_f64, f64::max);
+                let ridge = ridge_scale * max_diag;
                 let mut a = xtwx;
                 add_penalty(&mut a, &s_total, lambda);
+                for i in 0..p {
+                    a[[i, i]] += ridge;
+                }
                 let factor = S::factorize(a)?;
                 let b = S::solve(&factor, xtwz.view());
                 (b, factor)
@@ -181,8 +198,21 @@ impl<S: LinearSolver> OcatInner<S> {
                     break;
                 }
             } else {
+                // Halving failed within `halve_until_valid`'s budget.
+                // v0.x recipe (`pirls/mod.rs:2192-2197`): revert THIS step
+                // to β_old, recompute η at the reverted β, and **continue**
+                // the outer PIRLS loop. The next iter rebuilds (w, z) at
+                // the reverted η — often producing a feasible step. Do
+                // NOT break: breaking here aborted PIRLS at iter 1–2,
+                // leaving β ≈ 0 and the term's smooth at edf ≈ 1 (this
+                // was the 5.9% multi-smooth ocat parity gap, 2026-05-27).
+                beta = beta_old;
+                eta = self.x_design.dot(&beta);
+                dev_total = self.ocat_deviance(&eta, &prior_w);
+                pdev = dev_total + lambda * beta_sbeta(&s_total, &beta);
                 iters_used = it + 1;
-                break;
+                // Don't update a_factor_opt — keep the previous successful
+                // factor for vcov consumers.
             }
         }
 
@@ -201,18 +231,31 @@ impl<S: LinearSolver> OcatInner<S> {
         }
         // μ = η for identity link.
         let mu = eta.clone();
-        let a_factor = match a_factor_opt {
-            Some(f) => f,
-            None => {
-                // Defensive: never-accepted step. Rebuild A at converged β
-                // (effectively zero) and factor it.
-                let xtw = weighted_xt(&self.x_design, &working_weights);
-                let xtwx = xtw.dot(&self.x_design);
-                let mut a = xtwx;
-                add_penalty(&mut a, &s_total, lambda);
-                S::factorize(a)?
+        // FINAL-PASS factor: rebuild `A = X' diag(w_final) X + λS + ridge·I`
+        // using `working_weights` AT THE CONVERGED η. v0.x does this in
+        // `reml_criterion_ocat_proper`'s caller (`pirls/mod.rs:2231-2249`
+        // → `evaluate_reml_ocat_proper_at` rebuilds A from w_final).
+        // The factor stashed during the PIRLS loop was built from the
+        // PREVIOUS iter's w (one η-step stale); using it for log|H| in
+        // the score caused the +30 score drift on saturated-λ ocat
+        // multi-smooth fits (parity report 2026-05-27).
+        let a_factor = {
+            let xtw = weighted_xt(&self.x_design, &working_weights);
+            let xtwx = xtw.dot(&self.x_design);
+            let n_pen = self.s_list.len() as f64;
+            let ridge_scale = 1.0e-5 * (1.0 + n_pen.sqrt());
+            let max_diag = xtwx.diag().iter().map(|x| x.abs()).fold(1.0_f64, f64::max);
+            let ridge = ridge_scale * max_diag;
+            let mut a = xtwx;
+            add_penalty(&mut a, &s_total, lambda);
+            for i in 0..p {
+                a[[i, i]] += ridge;
             }
+            S::factorize(a)?
         };
+        // The during-loop factor is no longer used after the final-pass
+        // refactor — drop it explicitly so the variable's purpose is clear.
+        let _ = a_factor_opt;
         Ok(GaussianInnerFit::<S> {
             beta,
             eta,
