@@ -21,6 +21,36 @@ from ._stubs import GamSummary, TermContributions  # noqa: F401
 ArrayLike = Any  # avoid hard dep on pandas/polars typing
 
 
+def _normal_quantile(p: float) -> float:
+    """Φ⁻¹(p) without a scipy dependency. Beasley-Springer-Moro
+    rational approximation (Moro 1995) — accurate to ~7 sig figs in
+    (0, 1), good enough for Wald-CI z-scores."""
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"p must be in (0, 1), got {p}")
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+    plow = 0.02425
+    phigh = 1.0 - plow
+    if p < plow:
+        q = (-2.0 * np.log(p)) ** 0.5
+        return (((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+               ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
+    if p > phigh:
+        q = (-2.0 * np.log(1.0 - p)) ** 0.5
+        return -(((((c[0]*q + c[1])*q + c[2])*q + c[3])*q + c[4])*q + c[5]) / \
+                ((((d[0]*q + d[1])*q + d[2])*q + d[3])*q + 1.0)
+    q = p - 0.5
+    r = q * q
+    return (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q / \
+           (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1.0)
+
+
 # =============================================================================
 # Gam — sklearn-style wrapper. Mirrors mgcv_rust.Gam.
 # =============================================================================
@@ -709,22 +739,46 @@ class Gam:
     def get_posterior_samples(
         self, X: ArrayLike, n_samples: int = 1000, seed: int = 42
     ) -> np.ndarray:
-        raise NotImplementedError(
-            "get_posterior_samples() is not yet wired in gamrs. Use "
-            "mgcv_rust.Gam for posterior sampling."
-        )
+        """Draw `n_samples` posterior η predictions at X.
+
+        β draws ~ N(β̂, vcov) → η_s = lp · β_s for each draw. Returns shape
+        ``(n_samples, n_rows)``. Use for posterior intervals on derived
+        quantities, calibrated uncertainty propagation, etc.
+        """
+        f = self._require_fitted()
+        x = self._coerce_predict_X(X)
+        lp = np.asarray(f.evaluate_lpmatrix(x))
+        beta = np.asarray(f.beta)
+        vcov = np.asarray(f.vcov())
+        rng = np.random.default_rng(seed)
+        beta_samples = rng.multivariate_normal(beta, vcov, size=int(n_samples))
+        return beta_samples @ lp.T  # (n_samples, n_rows)
 
     def predict_proba(self, X: ArrayLike) -> np.ndarray:
         """Return ``(n, 2)`` probability matrix for binomial; ``(n, R)``
-        for ocat. gamrs currently supports binomial only — ocat raises.
+        for ocat (one column per ordered category).
         """
-        if self.family not in ("binomial", "bernoulli"):
-            raise NotImplementedError(
-                f"predict_proba() is currently only wired for "
-                f"family='binomial'/'bernoulli'; got family={self.family!r}."
-            )
-        p = self.predict(X, scale="response")
-        return np.column_stack([1.0 - p, p])
+        if self.family in ("binomial", "bernoulli"):
+            p = self.predict(X, scale="response")
+            return np.column_stack([1.0 - p, p])
+        if self.family == "ocat":
+            # ocat: predict returns η, the thresholds in native_state give
+            # P(Y <= k). We expose them via the native FittedGam's beta /
+            # ocat_theta — but the cleanest path is to ask the native
+            # for inv-linked μ which already encodes the per-category
+            # probabilities. gamrs's ocat predict_response returns the
+            # (n, R) matrix directly — see native python.rs.
+            f = self._require_fitted()
+            x = self._coerce_predict_X(X)
+            # The ocat native predict_response returns flat (n*R,); reshape.
+            r = int(self.r)
+            mu = np.asarray(f.predict_response(x))
+            if mu.ndim == 1 and mu.size % r == 0:
+                mu = mu.reshape(-1, r)
+            return mu
+        raise NotImplementedError(
+            f"predict_proba() is not wired for family={self.family!r}."
+        )
 
     def partial_effect(
         self,
@@ -732,9 +786,63 @@ class Gam:
         grid_n: int = 100,
         level: Optional[float] = 0.95,
     ) -> Any:
-        raise NotImplementedError(
-            "partial_effect() is not yet wired in gamrs. Use "
-            "mgcv_rust.Gam.partial_effect() for the per-smooth plot data."
+        """Marginal effect of one smooth on a grid.
+
+        Returns a pandas DataFrame with columns ``['x', 'mean']`` (and
+        ``['lo', 'hi']`` if ``level`` is given). The grid spans the
+        training range of the requested predictor; other predictors are
+        held at their training medians. The mean is on the η scale
+        (the subset view drops the intercept, matching ``scale='deviation'``).
+        """
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "partial_effect() needs pandas; install with `pip install pandas`."
+            ) from exc
+        self._require_fitted()
+        if predictor not in (self._effective_predictors or []):
+            raise KeyError(
+                f"unknown predictor {predictor!r}; known: {self._effective_predictors!r}"
+            )
+        if self.X is None:
+            raise RuntimeError(
+                "partial_effect needs the training X to span the grid + median "
+                "other predictors; not retained on this Gam (e.g. after a "
+                "deserialize). Refit and retry."
+            )
+
+        col_idx = self._effective_predictors.index(predictor)  # type: ignore[union-attr]
+        x_col = self.X[:, col_idx]
+        x_grid = np.linspace(float(np.min(x_col)), float(np.max(x_col)), int(grid_n))
+        # Build a (grid_n, n_features) X with the grid in `col_idx` and the
+        # training median in every other column.
+        medians = np.median(self.X, axis=0)
+        X_grid = np.tile(medians, (int(grid_n), 1))
+        X_grid[:, col_idx] = x_grid
+
+        view = self[[predictor]]
+        mean = view.predict(X_grid, scale="deviation")
+
+        if level is None:
+            return pd.DataFrame({"x": x_grid, "mean": mean})
+
+        if not 0.0 < level < 1.0:
+            raise ValueError(f"level must be in (0, 1), got {level}")
+
+        # CI via Wald on the masked lpmatrix: var(η_subset) =
+        # (lp_masked · vcov · lp_masked.T).diag()
+        f = self._fitted
+        lp = np.asarray(f.evaluate_lpmatrix(X_grid))
+        ranges = f.term_col_ranges()
+        masked = view._apply_subset_mask(lp, ranges, scale="deviation")
+        vcov = np.asarray(f.vcov())
+        # diagonal of lp_masked · vcov · lp_masked.T, vectorised
+        var_eta = np.einsum("ij,jk,ik->i", masked, vcov, masked)
+        z = _normal_quantile(0.5 + 0.5 * level)
+        sd = np.sqrt(np.maximum(var_eta, 0.0))
+        return pd.DataFrame(
+            {"x": x_grid, "mean": mean, "lo": mean - z * sd, "hi": mean + z * sd}
         )
 
     def plot(self, *args: Any, **kwargs: Any) -> Any:
