@@ -619,12 +619,27 @@ where
 /// for `"re"`. Strings live ONLY at this FFI boundary — the typed
 /// `TermSpec` enum flows into the Rust core.
 ///
-/// `family_name` accepts the same set as `fit(...)` minus families that
-/// require single-smooth (shape-aware: tdist, scat, negbin, tweedie, ocat,
-/// elf, quantile — those error out at the fit driver with a clear message
-/// directing the user back to `gamrs.fit(...)`).
+/// `family_name` accepts the same set as `fit(...)`. Shape-aware
+/// families (tdist/scat, negbin, tweedie, ocat, elf) take the same
+/// shape kwargs as `fit(...)` and run the multi-smooth outer Newton
+/// over `[ρ_1, …, ρ_T, shape_params]`.
 #[pyfunction]
-#[pyo3(signature = (family_name, x, y, terms, weights=None))]
+#[pyo3(signature = (
+    family_name,
+    x,
+    y,
+    terms,
+    weights=None,
+    theta=None,
+    nu=None,
+    sigma2=None,
+    tweedie_p=None,
+    tweedie_phi=None,
+    r=None,
+    tau=None,
+    elf_sigma=None,
+    elf_lambda=None,
+))]
 fn fit_additive<'py>(
     _py: Python<'py>,
     family_name: &str,
@@ -632,6 +647,15 @@ fn fit_additive<'py>(
     y: PyReadonlyArray1<'py, f64>,
     terms: Bound<'py, pyo3::types::PyList>,
     weights: Option<PyReadonlyArray1<'py, f64>>,
+    theta: Option<f64>,
+    nu: Option<f64>,
+    sigma2: Option<f64>,
+    tweedie_p: Option<f64>,
+    tweedie_phi: Option<f64>,
+    r: Option<usize>,
+    tau: Option<f64>,
+    elf_sigma: Option<f64>,
+    elf_lambda: Option<f64>,
 ) -> PyResult<PyFittedGam> {
     let x_view: ArrayView2<f64> = x.as_array();
     let y_view: ArrayView1<f64> = y.as_array();
@@ -657,13 +681,84 @@ fn fit_additive<'py>(
         "inverse_gaussian" | "inverse.gaussian" => {
             fit_additive_dispatch(inverse_gaussian_log(), x_view, y_view, w_view, term_specs)?
         }
+        "negbin" | "nb" => {
+            let theta_val = theta.unwrap_or(2.0);
+            if theta_val <= 0.0 {
+                return Err(PyValueError::new_err(format!(
+                    "negbin theta must be > 0; got theta={theta_val}"
+                )));
+            }
+            fit_additive_dispatch(negbin_log(theta_val), x_view, y_view, w_view, term_specs)?
+        }
+        "tdist" | "scat" => {
+            let nu_val = nu.unwrap_or(5.0);
+            let sigma2_val = sigma2.unwrap_or(1.0);
+            fit_additive_dispatch(
+                tdist_identity(nu_val, sigma2_val),
+                x_view,
+                y_view,
+                w_view,
+                term_specs,
+            )?
+        }
+        "tweedie" | "tw" => {
+            let p_val = tweedie_p.unwrap_or(1.5);
+            let phi_val = tweedie_phi.unwrap_or(1.0);
+            if !(1.0 < p_val && p_val < 2.0) {
+                return Err(PyValueError::new_err(format!(
+                    "tweedie p must be in (1, 2); got tweedie_p={p_val}"
+                )));
+            }
+            fit_additive_dispatch(
+                tweedie_log(p_val, phi_val),
+                x_view,
+                y_view,
+                w_view,
+                term_specs,
+            )?
+        }
+        "ocat" => {
+            let n_cats = r.ok_or_else(|| {
+                PyValueError::new_err(
+                    "family='ocat' requires r=K (number of ordered categories, K >= 3)",
+                )
+            })?;
+            if n_cats < 3 {
+                return Err(PyValueError::new_err(format!(
+                    "ocat requires r >= 3, got r={n_cats}"
+                )));
+            }
+            let thresholds = Array1::<f64>::zeros(n_cats - 2);
+            fit_additive_dispatch(
+                ocat_identity(thresholds, n_cats),
+                x_view,
+                y_view,
+                w_view,
+                term_specs,
+            )?
+        }
+        "elf" | "quantile" => {
+            let tau_val = tau.unwrap_or(0.5);
+            if !(0.0 < tau_val && tau_val < 1.0) {
+                return Err(PyValueError::new_err(format!(
+                    "elf/quantile tau must be in (0, 1); got tau={tau_val}"
+                )));
+            }
+            let sigma_val = elf_sigma.unwrap_or(0.0);
+            let lambda_val = elf_lambda.unwrap_or(0.0);
+            fit_additive_dispatch(
+                elf_identity(tau_val, sigma_val, lambda_val),
+                x_view,
+                y_view,
+                w_view,
+                term_specs,
+            )?
+        }
         other => {
             return Err(PyValueError::new_err(format!(
-                "fit_additive: family {other:?} is shape-managed and restricted to \
-                 single-smooth in 94b; use gamrs.fit(family={other:?}, …) or wait for \
-                 multi-smooth shape-aware support. Supported additive families: \
-                 gaussian, bernoulli/binomial, poisson, quasipoisson, quasibinomial, \
-                 gamma, inverse_gaussian"
+                "unknown family {other:?}; supported: gaussian, bernoulli, poisson, \
+                 quasipoisson, quasibinomial, gamma, inverse_gaussian, negbin, tdist, \
+                 tweedie, ocat, elf"
             )))
         }
     };

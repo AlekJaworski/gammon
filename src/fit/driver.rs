@@ -215,14 +215,9 @@ where
     RF: FnOnce(&Array1<f64>) -> Family<L, K, V>,
     SF: FnOnce(&Family<L, K, V>, &GaussianInnerFit<S>, &Array1<f64>) -> f64,
 {
-    // 94b: shape-aware is single-smooth only — see ShapeAwareEnvelopeScore docs.
-    if prep.s_list.len() != 1 {
-        return Err(crate::error::GamrsError::InvalidParameter(format!(
-            "shape-aware families (TDist/scat, NegBin, Tweedie, Ocat) are restricted \
-             to single-smooth fits in 94b; got {} terms",
-            prep.s_list.len()
-        )));
-    }
+    // 0.2: multi-smooth — outer Newton joint-optimises [ρ_1, …, ρ_T, shape_params]
+    // via ShapeAwareEnvelopeScore. The inner solvers (PirlsInner / OcatInner)
+    // already accept arbitrary-length rho.
     let prior = prior_weights.map(|w| w.to_owned());
     let n = x.nrows();
 
@@ -249,7 +244,8 @@ where
     // exactly the same solver settings as every outer probe (closes audit
     // §79 / §B4). Each family's constructor signature differs, so the
     // caller still supplies `rebuild_final_family`.
-    let rho_hat = outer.theta[0];
+    let n_terms = prep.s_list.len();
+    let rho_hat: Array1<f64> = outer.theta.slice(ndarray::s![..n_terms]).to_owned();
     let family_final = rebuild_final_family(&outer.theta);
     let final_inner = score.inner_builder.build(
         family_final.clone(),
@@ -259,29 +255,28 @@ where
         prep.s_list.clone(),
         PirlsOpts::default(),
     );
-    let final_fit: GaussianInnerFit<S> = final_inner.fit(&Array1::from_vec(vec![rho_hat]))?;
+    let final_fit: GaussianInnerFit<S> = final_inner.fit(&rho_hat)?;
 
     let edf = compute_edf(&prep.x_design, &final_fit.working_weights, &final_fit);
     let scale = scale_fn(&family_final, &final_fit, &outer.theta);
     let vcov = compute_vcov(&final_fit, scale);
-    let rho_vec = Array1::from_vec(vec![rho_hat]);
-    let lambda_vec = Array1::from_vec(vec![rho_hat.exp()]);
+    let lambda_vec: Array1<f64> = rho_hat.iter().map(|&r| r.exp()).collect();
     let edf_per_term =
-        compute_edf_per_term(&prep.s_list, &rho_vec, prep.x_design.ncols(), &final_fit);
+        compute_edf_per_term(&prep.s_list, &rho_hat, prep.x_design.ncols(), &final_fit);
 
-    // outer.theta layout for shape-aware families is `[rho, shape₁, shape₂, …]`
-    // (see ShapeAwareEnvelopeScore). Capture the trailing shape slice so
-    // callers can read off the fitted shape params (ocat thresholds, t-dist
-    // ν / σ², etc.) without re-deriving them.
-    let shape_params = if outer.theta.len() > 1 {
-        outer.theta.slice(ndarray::s![1..]).to_owned()
+    // outer.theta layout for shape-aware families (0.2 multi-smooth):
+    // `[ρ_1, …, ρ_T, shape_1, shape_2, …]`. The trailing shape slice
+    // gives us the fitted family-specific shape params (ocat thresholds,
+    // t-dist ν / σ², tweedie p / phi, …).
+    let shape_params = if outer.theta.len() > n_terms {
+        outer.theta.slice(ndarray::s![n_terms..]).to_owned()
     } else {
         Array1::<f64>::zeros(0)
     };
 
     Ok(FittedGam {
         beta: final_fit.beta,
-        rho: rho_vec,
+        rho: rho_hat,
         lambda: lambda_vec,
         scale,
         edf_total: edf,

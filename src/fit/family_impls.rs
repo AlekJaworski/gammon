@@ -261,7 +261,10 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, NegBinVariance, S> for NegBin
         }
         check_y_nonneg(y, "NegBin")?;
 
-        let theta0 = Array1::from_vec(vec![0.0, init_theta.ln()]);
+        let n_terms = prep.s_list.len();
+        let mut theta0_vec = vec![0.0_f64; n_terms];
+        theta0_vec.push(init_theta.ln());
+        let theta0 = Array1::from_vec(theta0_vec);
 
         fit_shape_aware::<_, _, _, _, _, S, _, _>(
             prep,
@@ -272,9 +275,9 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, NegBinVariance, S> for NegBin
             theta0,
             PirlsInnerBuilder,
             FixedAtOneProfile,
-            |theta| {
+            move |theta| {
                 let mut f = negbin_log(init_theta);
-                f.set_shape_params(&[theta[1]]);
+                f.set_shape_params(&[theta[n_terms]]);
                 f
             },
             |family, _fit, _theta| family.loss.theta,
@@ -306,7 +309,11 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, TVariance, S> for TDist 
             )));
         }
 
-        let theta0 = Array1::from_vec(vec![0.0, init_sigma2.ln(), (init_nu - 2.0).ln()]);
+        let n_terms = prep.s_list.len();
+        let mut theta0_vec = vec![0.0_f64; n_terms];
+        theta0_vec.push(init_sigma2.ln());
+        theta0_vec.push((init_nu - 2.0).ln());
+        let theta0 = Array1::from_vec(theta0_vec);
 
         fit_shape_aware::<_, _, _, _, _, S, _, _>(
             prep,
@@ -317,12 +324,12 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, TVariance, S> for TDist 
             theta0,
             PirlsInnerBuilder,
             FixedAtOneProfile,
-            |theta| {
+            move |theta| {
                 let mut f = tdist_identity(init_nu, init_sigma2);
-                f.set_shape_params(&[theta[1], theta[2]]);
+                f.set_shape_params(&[theta[n_terms], theta[n_terms + 1]]);
                 f
             },
-            |_family, _fit, theta| theta[1].exp(),
+            move |_family, _fit, theta| theta[n_terms].exp(),
             LinkKind::Identity,
         )
     }
@@ -354,8 +361,12 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, TweedieVariance, S> for Tweed
         }
         check_y_nonneg(y, "Tweedie")?;
 
+        let n_terms = prep.s_list.len();
         let p_t = ((init_p - 1.0) / (2.0 - init_p)).ln();
-        let theta0 = Array1::from_vec(vec![0.0, init_phi.ln(), p_t]);
+        let mut theta0_vec = vec![0.0_f64; n_terms];
+        theta0_vec.push(init_phi.ln());
+        theta0_vec.push(p_t);
+        let theta0 = Array1::from_vec(theta0_vec);
 
         fit_shape_aware::<_, _, _, _, _, S, _, _>(
             prep,
@@ -366,9 +377,9 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, TweedieVariance, S> for Tweed
             theta0,
             PirlsInnerBuilder,
             OwnedByLossProfile,
-            |theta| {
+            move |theta| {
                 let mut f = tweedie_log(init_p, init_phi);
-                f.set_shape_params(&[theta[1], theta[2]]);
+                f.set_shape_params(&[theta[n_terms], theta[n_terms + 1]]);
                 f
             },
             // scale = φ̂ from the converged family.
@@ -418,13 +429,8 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             )));
         }
 
-        // 94b: shape-aware (ocat) is single-smooth only.
-        if prep.s_list.len() != 1 {
-            return Err(GamrsError::InvalidParameter(format!(
-                "ocat is restricted to single-smooth fits in 94b; got {} terms",
-                prep.s_list.len()
-            )));
-        }
+        // 0.2: multi-smooth — θ = [ρ_1, …, ρ_T, θ₁, …, θ_{R-2}].
+        let n_terms = prep.s_list.len();
 
         let family_base = ocat_identity(theta0_shape.clone(), n_cats);
         let score = ShapeAwareEnvelopeScore::<
@@ -450,17 +456,16 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             _solver: PhantomData,
         };
 
-        // θ₀ = [log λ₀, θ₁, …, θ_{R-2}]
-        let mut theta0 = Array1::<f64>::zeros(1 + theta0_shape.len());
-        theta0[0] = 0.0;
+        // θ₀ = [ρ_1=0, …, ρ_T=0, θ₁, …, θ_{R-2}]
+        let mut theta0 = Array1::<f64>::zeros(n_terms + theta0_shape.len());
         for (i, &t) in theta0_shape.iter().enumerate() {
-            theta0[1 + i] = t;
+            theta0[n_terms + i] = t;
         }
         let outer_solver = NewtonWithHalving::new(NewtonOpts::default());
         let outer = outer_solver.minimize(&score, theta0)?;
 
-        let rho_hat = outer.theta[0];
-        let theta_hat: Array1<f64> = outer.theta.slice(ndarray::s![1..]).to_owned();
+        let rho_hat: Array1<f64> = outer.theta.slice(ndarray::s![..n_terms]).to_owned();
+        let theta_hat: Array1<f64> = outer.theta.slice(ndarray::s![n_terms..]).to_owned();
         let family_final: Family<OcatLoss, IdentityLink, OcatVariance> =
             ocat_identity(theta_hat.clone(), n_cats);
         let final_inner = ShapeInnerBuilder::<OcatLoss, IdentityLink, OcatVariance, S>::build(
@@ -472,18 +477,17 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             prep.s_list.clone(),
             PirlsOpts::default(),
         );
-        let final_fit: GaussianInnerFit<S> = final_inner.fit(&Array1::from_vec(vec![rho_hat]))?;
+        let final_fit: GaussianInnerFit<S> = final_inner.fit(&rho_hat)?;
 
         let edf = compute_edf(&prep.x_design, &final_fit.working_weights, &final_fit);
         let vcov = compute_vcov(&final_fit, 1.0);
-        let rho_vec = Array1::from_vec(vec![rho_hat]);
-        let lambda_vec = Array1::from_vec(vec![rho_hat.exp()]);
+        let lambda_vec: Array1<f64> = rho_hat.iter().map(|&r| r.exp()).collect();
         let edf_per_term =
-            super::compute_edf_per_term(&prep.s_list, &rho_vec, prep.x_design.ncols(), &final_fit);
+            super::compute_edf_per_term(&prep.s_list, &rho_hat, prep.x_design.ncols(), &final_fit);
 
         Ok(FittedGam {
             beta: final_fit.beta,
-            rho: rho_vec,
+            rho: rho_hat,
             lambda: lambda_vec,
             scale: 1.0, // ocat has no dispersion
             edf_total: edf,

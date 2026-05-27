@@ -26,13 +26,18 @@ use super::profile::{FixedAtOneProfile, OwnedByLossProfile, Profile};
 
 /// Frozen-β̂ context shared between `eval_grad_with_fit` and
 /// `eval_grad_frozen_beta`. Holds the converged-inner quantities that
-/// stay constant across ±h shape probes — `bsb`, `tr(H⁻¹S)`, `deviance`,
-/// `phi_center`, `n_minus_mp`. The fit itself (β̂, μ̂, factor, p, n) is
-/// passed alongside.
+/// stay constant across ±h shape probes.
+///
+/// Per-term vectors (`bsb_per_term`, `tr_hinv_s_per_term`, length T) feed
+/// the per-ρ_j envelope gradient at frozen β̂; `bsb_total = Σ_j λ_j · bsb_j`
+/// feeds the φ formula / shape gradient (where the family sees the
+/// penalty contribution aggregated). `deviance`, `phi_center`,
+/// `n_minus_mp` are scalars.
 #[derive(Clone)]
 struct FrozenBetaCtx {
-    bsb: f64,
-    tr_hinv_s: f64,
+    bsb_per_term: Vec<f64>,
+    tr_hinv_s_per_term: Vec<f64>,
+    bsb_total: f64,
     phi_center: f64,
     n_minus_mp: f64,
     deviance: f64,
@@ -167,17 +172,14 @@ where
     pub x_design: Array2<f64>,
     pub y: Array1<f64>,
     pub prior_weights: Option<Array1<f64>>,
-    /// Per-term penalty blocks. 94b restricts shape-aware families
-    /// (TDist/scat, NegBin, Tweedie, Ocat) to **single-smooth**:
-    /// `s_list.len() == 1`. A multi-smooth shape-aware port requires
-    /// adding per-term ρ_j to the joint outer-Newton's θ layout
-    /// (currently `[ρ, shape_0, …, shape_{n_shape-1}]`) — tracked as a
-    /// follow-up.
+    /// Per-term penalty blocks. Multi-smooth in 0.2 — joint outer-Newton
+    /// optimises `θ = [ρ₁, …, ρ_T, shape_0, …, shape_{n_shape-1}]` where
+    /// `T = s_list.len()`. The shape-aware drivers (TDist/scat, NegBin,
+    /// Tweedie, Ocat) all flow through this score type unchanged.
     pub s_list: Vec<Array2<f64>>,
     /// "Base" family — cloned per probe, then shape params updated from θ.
     pub family_base: Family<L, K, V>,
-    /// Per-term rank, must have `len() == 1` for shape-aware families
-    /// (see `s_list` docs).
+    /// Per-term rank, length `T = s_list.len()`.
     pub rank_s_list: Vec<usize>,
     pub mp: usize,
     pub log_pseudo_det_s_list: Vec<f64>,
@@ -217,13 +219,8 @@ where
     S: LinearSolver,
 {
     fn dim(&self) -> usize {
-        // 94b: shape-aware is single-smooth only; theta = [ρ, shape...].
-        debug_assert_eq!(
-            self.s_list.len(),
-            1,
-            "ShapeAwareEnvelopeScore restricted to single-smooth (s_list.len() == 1)"
-        );
-        1 + self.family_base.n_shape_params()
+        // 0.2: multi-smooth — θ = [ρ_1, …, ρ_T, shape_0, …, shape_{n_shape-1}].
+        self.s_list.len() + self.family_base.n_shape_params()
     }
 
     fn coords(&self) -> CoordsKind {
@@ -265,14 +262,15 @@ where
     /// can read `loss.saturated_log_lik` / `loss.fixed_dispersion`
     /// consistent with the params).
     fn fit_inner_at(&self, theta: &Array1<f64>) -> Result<(GaussianInnerFit<S>, Family<L, K, V>)> {
+        let n_terms = self.s_list.len();
         let n_shape = self.family_base.n_shape_params();
         debug_assert_eq!(
             theta.len(),
-            1 + n_shape,
+            n_terms + n_shape,
             "θ has wrong length for shape-aware score"
         );
-        let rho = theta[0];
-        let shape_slice: Vec<f64> = theta.iter().skip(1).copied().collect();
+        let rho_slice: Array1<f64> = theta.slice(ndarray::s![..n_terms]).to_owned();
+        let shape_slice: Vec<f64> = theta.iter().skip(n_terms).copied().collect();
 
         let mut family = self.family_base.clone();
         if n_shape > 0 {
@@ -286,7 +284,7 @@ where
             self.s_list.clone(),
             self.pirls_opts.clone(),
         );
-        let fit = inner.fit(&Array1::from_vec(vec![rho]))?;
+        let fit = inner.fit(&rho_slice)?;
         Ok((fit, family))
     }
 
@@ -300,25 +298,42 @@ where
     /// `OcatLoss::saturated_log_lik = 0`, so the formula collapses to
     /// `D/2 + log|H|/2 - log|λS|+/2 - Mp/2·log(2π)` — the same formula
     /// `ShapeAwareOcatScore` used pre-unification.
-    fn score_value(&self, fit: &GaussianInnerFit<S>, family: &Family<L, K, V>, rho: f64) -> f64 {
-        let lambda = rho.exp();
-        let s_beta = self.s_list[0].dot(&fit.beta);
-        let bsb: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
-        let dp = fit.deviance + lambda * bsb;
+    fn score_value(
+        &self,
+        fit: &GaussianInnerFit<S>,
+        family: &Family<L, K, V>,
+        rho_slice: &[f64],
+    ) -> f64 {
+        let n_terms = self.s_list.len();
+        debug_assert_eq!(rho_slice.len(), n_terms);
+
+        // Per-term bsb_j = β'S_j β + aggregate via λ_j. dp = D + Σ_j λ_j β'S_jβ.
+        let mut bsb_total = 0.0_f64;
+        let mut log_det_lambda_s = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = self.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            let lambda_j = rho_slice[j].exp();
+            bsb_total += lambda_j * bsb_j;
+            log_det_lambda_s +=
+                (self.rank_s_list[j] as f64) * rho_slice[j] + self.log_pseudo_det_s_list[j];
+        }
+        let dp = fit.deviance + bsb_total;
         // tr(H⁻¹X'WX) for the Profile signature — unused by both
         // FixedAtOneProfile and OwnedByLossProfile in the shape-aware
         // path, so the cheap `p` upper-bound is fine.
         let tr_hinv_xtwx = fit.p as f64;
+        // Profile sees aggregated `bsb_total` with `lambda = 1` (matches
+        // EnvelopeScore convention — envelope.rs:266-273).
         let phi =
             match self
                 .profile
-                .dispersion(&family.loss, fit, lambda, bsb, tr_hinv_xtwx, self.mp)
+                .dispersion(&family.loss, fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
             {
                 Some(p) => p,
                 None => return 1e12,
             };
         let log_det_h = fit.log_det_a();
-        let log_det_lambda_s = (self.rank_s_list[0] as f64) * rho + self.log_pseudo_det_s_list[0];
         let ls_sum: f64 = self
             .y
             .iter()
@@ -332,37 +347,48 @@ where
     }
 
     fn compute_value(&self, theta: &Array1<f64>) -> Result<f64> {
+        let n_terms = self.s_list.len();
         let (fit, family) = self.fit_inner_at(theta)?;
-        Ok(self.score_value(&fit, &family, theta[0]))
+        let rho_slice = theta.slice(ndarray::s![..n_terms]).to_vec();
+        Ok(self.score_value(&fit, &family, &rho_slice))
     }
 
     fn compute_value_grad(&self, theta: &Array1<f64>) -> Result<(f64, Array1<f64>)> {
         let (fit, family) = self.fit_inner_at(theta)?;
-        let rho = theta[0];
-        let lambda = rho.exp();
-        let v = self.score_value(&fit, &family, rho);
+        let n_terms = self.s_list.len();
+        let n_shape = family.n_shape_params();
+        let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
+        let v = self.score_value(&fit, &family, &rho_slice);
 
-        // Analytic envelope gradient component for log λ.
-        let s_beta = self.s_list[0].dot(&fit.beta);
-        let bsb: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
-        let tr_hinv_s = fit.trace_a_inv(self.s_list[0].view());
+        // Per-term bsb_j, tr_hinv_s_j → envelope ∂REML/∂ρ_j.
+        let mut bsb_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut tr_hinv_s_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut bsb_total = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = self.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            let tr_hinv_s_j = fit.trace_a_inv(self.s_list[j].view());
+            bsb_per_term.push(bsb_j);
+            tr_hinv_s_per_term.push(tr_hinv_s_j);
+            bsb_total += rho_slice[j].exp() * bsb_j;
+        }
         let tr_hinv_xtwx = fit.p as f64;
         let phi = self
             .profile
-            .dispersion(&family.loss, &fit, lambda, bsb, tr_hinv_xtwx, self.mp)
+            .dispersion(&family.loss, &fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
             .unwrap_or(1.0);
-        // ∂REML/∂(log λ) = λβ'Sβ/(2φ) + λ·tr(H⁻¹S)/2 - rank_s/2
-        let g_rho = lambda * bsb / (2.0 * phi) + 0.5 * lambda * tr_hinv_s
-            - 0.5 * (self.rank_s_list[0] as f64);
-
-        // Shape-param gradient: try analytic first; fall back to central FD.
-        let n_shape = family.n_shape_params();
-        let mut g = Array1::<f64>::zeros(1 + n_shape);
-        g[0] = g_rho;
+        // ∂REML/∂(log λ_j) = λ_j β'S_jβ / (2φ) + λ_j · tr(H⁻¹S_j) / 2 - rank_j / 2
+        let mut g = Array1::<f64>::zeros(n_terms + n_shape);
+        for j in 0..n_terms {
+            let lambda_j = rho_slice[j].exp();
+            g[j] = lambda_j * bsb_per_term[j] / (2.0 * phi)
+                + 0.5 * lambda_j * tr_hinv_s_per_term[j]
+                - 0.5 * (self.rank_s_list[j] as f64);
+        }
 
         if n_shape > 0 {
             let n_minus_mp = (fit.n as f64) - (self.mp as f64);
-            let dp = fit.deviance + lambda * bsb;
+            let dp = fit.deviance + bsb_total;
             if let Some(analytic) = family.loss.analytic_shape_score_gradient(
                 self.y.view(),
                 fit.mu.view(),
@@ -376,7 +402,7 @@ where
                     "analytic_shape_score_gradient returned wrong length"
                 );
                 for k in 0..n_shape {
-                    g[1 + k] = analytic[k];
+                    g[n_terms + k] = analytic[k];
                 }
             } else {
                 // FD fallback (Phase-2 default — TDist, NegBin, ocat).
@@ -384,11 +410,11 @@ where
                 for k in 0..n_shape {
                     let mut t_plus = theta.clone();
                     let mut t_minus = theta.clone();
-                    t_plus[1 + k] += h;
-                    t_minus[1 + k] -= h;
+                    t_plus[n_terms + k] += h;
+                    t_minus[n_terms + k] -= h;
                     let v_plus = self.compute_value(&t_plus)?;
                     let v_minus = self.compute_value(&t_minus)?;
-                    g[1 + k] = (v_plus - v_minus) / (2.0 * h);
+                    g[n_terms + k] = (v_plus - v_minus) / (2.0 * h);
                 }
             }
         }
@@ -415,8 +441,9 @@ where
         theta: &Array1<f64>,
     ) -> Result<(f64, Array1<f64>, Array2<f64>)> {
         let (fit, family) = self.fit_inner_at(theta)?;
-        let rho = theta[0];
-        let value = self.score_value(&fit, &family, rho);
+        let n_terms = self.s_list.len();
+        let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
+        let value = self.score_value(&fit, &family, &rho_slice);
         let (g_center, ctx) = self.eval_grad_with_fit(theta, &fit, &family)?;
 
         let n_shape = family.n_shape_params();
@@ -438,25 +465,22 @@ where
             self.hess_via_fd_on_grad(theta)?
         };
 
-        // Optional family-supplied closed-form shape×shape block.
+        // Optional family-supplied closed-form shape×shape block. Lives
+        // at hess[n_terms..n_terms+n_shape, n_terms..n_terms+n_shape].
         // Currently `None` for every gamrs family — hook for future ports.
         if n_shape > 0 {
-            let lambda = rho.exp();
-            let s_beta = self.s_list[0].dot(&fit.beta);
-            let bsb: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
-            let dp = fit.deviance + lambda * bsb;
-            let n_minus_mp = (fit.n as f64) - (self.mp as f64);
+            let dp = fit.deviance + ctx.bsb_total;
             if let Some(block) = family.loss.analytic_shape_score_hessian(
                 self.y.view(),
                 fit.mu.view(),
                 dp,
-                n_minus_mp,
+                ctx.n_minus_mp,
                 ctx.phi_center,
             ) {
                 debug_assert_eq!(block.shape(), &[n_shape, n_shape]);
                 for j in 0..n_shape {
                     for k in 0..n_shape {
-                        hess[[1 + j, 1 + k]] = block[[j, k]];
+                        hess[[n_terms + j, n_terms + k]] = block[[j, k]];
                     }
                 }
             }
@@ -493,21 +517,24 @@ where
         ctx: &FrozenBetaCtx,
     ) -> Result<Array2<f64>> {
         let d = theta.len();
+        let n_terms = self.s_list.len();
         let mut hess = Array2::<f64>::zeros((d, d));
-        // Re-converge for log-λ direction (i == 0).
+        // Re-converge for each log-λ direction (i ∈ 0..n_terms).
         let eps_rho = 1.0e-4;
-        let mut t_plus = theta.clone();
-        let mut t_minus = theta.clone();
-        t_plus[0] += eps_rho;
-        t_minus[0] -= eps_rho;
-        let (_, g_plus_rho) = self.compute_value_grad(&t_plus)?;
-        let (_, g_minus_rho) = self.compute_value_grad(&t_minus)?;
-        for j in 0..d {
-            hess[[j, 0]] = (g_plus_rho[j] - g_minus_rho[j]) / (2.0 * eps_rho);
+        for i in 0..n_terms {
+            let mut t_plus = theta.clone();
+            let mut t_minus = theta.clone();
+            t_plus[i] += eps_rho;
+            t_minus[i] -= eps_rho;
+            let (_, g_plus_rho) = self.compute_value_grad(&t_plus)?;
+            let (_, g_minus_rho) = self.compute_value_grad(&t_minus)?;
+            for j in 0..d {
+                hess[[j, i]] = (g_plus_rho[j] - g_minus_rho[j]) / (2.0 * eps_rho);
+            }
         }
-        // Frozen-β̂ for shape directions (i ≥ 1).
+        // Frozen-β̂ for shape directions (i ∈ n_terms..d).
         let eps_shape = 1.0e-5;
-        for i in 1..d {
+        for i in n_terms..d {
             let mut t_plus = theta.clone();
             let mut t_minus = theta.clone();
             t_plus[i] += eps_shape;
@@ -569,26 +596,37 @@ where
         fit: &GaussianInnerFit<S>,
         family: &Family<L, K, V>,
     ) -> Result<(Array1<f64>, FrozenBetaCtx)> {
-        let rho = theta[0];
-        let lambda = rho.exp();
-        let s_beta = self.s_list[0].dot(&fit.beta);
-        let bsb: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
-        let tr_hinv_s = fit.trace_a_inv(self.s_list[0].view());
+        let n_terms = self.s_list.len();
+        let n_shape = family.n_shape_params();
+        let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
+
+        let mut bsb_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut tr_hinv_s_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut bsb_total = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = self.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            let tr_hinv_s_j = fit.trace_a_inv(self.s_list[j].view());
+            bsb_per_term.push(bsb_j);
+            tr_hinv_s_per_term.push(tr_hinv_s_j);
+            bsb_total += rho_slice[j].exp() * bsb_j;
+        }
         let tr_hinv_xtwx = fit.p as f64;
         let phi_center = self
             .profile
-            .dispersion(&family.loss, fit, lambda, bsb, tr_hinv_xtwx, self.mp)
+            .dispersion(&family.loss, fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
             .unwrap_or(1.0);
 
-        let g_rho = lambda * bsb / (2.0 * phi_center) + 0.5 * lambda * tr_hinv_s
-            - 0.5 * (self.rank_s_list[0] as f64);
-
-        let n_shape = family.n_shape_params();
-        let mut g = Array1::<f64>::zeros(1 + n_shape);
-        g[0] = g_rho;
+        let mut g = Array1::<f64>::zeros(n_terms + n_shape);
+        for j in 0..n_terms {
+            let lambda_j = rho_slice[j].exp();
+            g[j] = lambda_j * bsb_per_term[j] / (2.0 * phi_center)
+                + 0.5 * lambda_j * tr_hinv_s_per_term[j]
+                - 0.5 * (self.rank_s_list[j] as f64);
+        }
         if n_shape > 0 {
             let n_minus_mp = (fit.n as f64) - (self.mp as f64);
-            let dp = fit.deviance + lambda * bsb;
+            let dp = fit.deviance + bsb_total;
             if let Some(analytic) = family.loss.analytic_shape_score_gradient(
                 self.y.view(),
                 fit.mu.view(),
@@ -598,30 +636,28 @@ where
             ) {
                 debug_assert_eq!(analytic.len(), n_shape);
                 for k in 0..n_shape {
-                    g[1 + k] = analytic[k];
+                    g[n_terms + k] = analytic[k];
                 }
             } else {
                 // FD fallback (TDist, NegBin, ocat): runs PIRLS at θ ± h.
-                // Cost-wise this matches the old path for the gradient eval
-                // (those families don't have analytic gradients to speed
-                // up); the Hessian still wins via frozen-β̂ FD.
                 let h = 1.0e-5;
                 for k in 0..n_shape {
                     let mut t_plus = theta.clone();
                     let mut t_minus = theta.clone();
-                    t_plus[1 + k] += h;
-                    t_minus[1 + k] -= h;
+                    t_plus[n_terms + k] += h;
+                    t_minus[n_terms + k] -= h;
                     let v_plus = self.compute_value(&t_plus)?;
                     let v_minus = self.compute_value(&t_minus)?;
-                    g[1 + k] = (v_plus - v_minus) / (2.0 * h);
+                    g[n_terms + k] = (v_plus - v_minus) / (2.0 * h);
                 }
             }
         }
         Ok((
             g,
             FrozenBetaCtx {
-                bsb,
-                tr_hinv_s,
+                bsb_per_term,
+                tr_hinv_s_per_term,
+                bsb_total,
                 phi_center,
                 n_minus_mp: (fit.n as f64) - (self.mp as f64),
                 deviance: fit.deviance,
@@ -646,32 +682,40 @@ where
         fit: &GaussianInnerFit<S>,
         ctx: &FrozenBetaCtx,
     ) -> Result<Array1<f64>> {
+        let n_terms = self.s_list.len();
         let n_shape = self.family_base.n_shape_params();
-        debug_assert_eq!(theta.len(), 1 + n_shape);
-        let rho = theta[0];
-        let lambda = rho.exp();
-        let shape_slice: Vec<f64> = theta.iter().skip(1).copied().collect();
+        debug_assert_eq!(theta.len(), n_terms + n_shape);
+        debug_assert_eq!(ctx.bsb_per_term.len(), n_terms);
+        let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
+        let shape_slice: Vec<f64> = theta.iter().skip(n_terms).copied().collect();
 
         let mut family = self.family_base.clone();
         if n_shape > 0 {
             family.set_shape_params(&shape_slice);
         }
 
+        // bsb_total at perturbed ρ but frozen-β bsb_j per term.
+        let bsb_total: f64 = (0..n_terms)
+            .map(|j| rho_slice[j].exp() * ctx.bsb_per_term[j])
+            .sum();
+
         // φ at the perturbed family — OwnedByLossProfile (Tweedie) reads
         // `loss.phi`; FixedAtOneProfile stays at 1. Either way the
-        // frozen-fit handles (bsb, tr_hinv_s) are reused.
+        // frozen-fit handles (bsb_per_term, tr_hinv_s_per_term) are reused.
         let phi = self
             .profile
-            .dispersion(&family.loss, fit, lambda, ctx.bsb, fit.p as f64, self.mp)
+            .dispersion(&family.loss, fit, 1.0, bsb_total, fit.p as f64, self.mp)
             .unwrap_or(ctx.phi_center);
 
-        let g_rho = lambda * ctx.bsb / (2.0 * phi) + 0.5 * lambda * ctx.tr_hinv_s
-            - 0.5 * (self.rank_s_list[0] as f64);
-
-        let mut g = Array1::<f64>::zeros(1 + n_shape);
-        g[0] = g_rho;
+        let mut g = Array1::<f64>::zeros(n_terms + n_shape);
+        for j in 0..n_terms {
+            let lambda_j = rho_slice[j].exp();
+            g[j] = lambda_j * ctx.bsb_per_term[j] / (2.0 * phi)
+                + 0.5 * lambda_j * ctx.tr_hinv_s_per_term[j]
+                - 0.5 * (self.rank_s_list[j] as f64);
+        }
         if n_shape > 0 {
-            let dp = ctx.deviance + lambda * ctx.bsb;
+            let dp = ctx.deviance + bsb_total;
             let analytic = family
                 .loss
                 .analytic_shape_score_gradient(
@@ -688,7 +732,7 @@ where
                 );
             debug_assert_eq!(analytic.len(), n_shape);
             for k in 0..n_shape {
-                g[1 + k] = analytic[k];
+                g[n_terms + k] = analytic[k];
             }
         }
         Ok(g)

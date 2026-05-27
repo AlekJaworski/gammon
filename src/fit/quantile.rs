@@ -131,13 +131,7 @@ pub(crate) fn fit_quantile_from_prep<S: LinearSolver>(
     }
 
     let n = x.nrows();
-    // 94b: ELF is single-smooth only.
-    if prep.s_list.len() != 1 {
-        return Err(GamrsError::InvalidParameter(format!(
-            "ELF/quantile is restricted to single-smooth fits in 94b; got {} terms",
-            prep.s_list.len()
-        )));
-    }
+    let n_terms = prep.s_list.len();
     let (beta_init, sigma2_hat) = qgam_warm_start(&prep, y, tau)?;
     let (sigma, lambda_elf) = derive_elf_sigma_lambda(init_sigma, init_lambda, sigma2_hat, tau);
 
@@ -169,7 +163,7 @@ pub(crate) fn fit_quantile_from_prep<S: LinearSolver>(
     );
 
     let outer_solver = NewtonWithHalving::new(NewtonOpts::default());
-    let outer = outer_solver.minimize(&score, Array1::from_vec(vec![0.0]))?;
+    let outer = outer_solver.minimize(&score, Array1::<f64>::zeros(n_terms))?;
 
     let final_fit: GaussianInnerFit<S> = score.inner.fit(&outer.theta)?;
     let edf = compute_edf(&prep.x_design, &final_fit.working_weights, &final_fit);
