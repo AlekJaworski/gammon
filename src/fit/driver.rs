@@ -136,6 +136,7 @@ where
         predictor: prep.predictor,
         vcov,
         link_kind,
+        shape_params: Array1::zeros(0),
     })
 }
 
@@ -268,6 +269,16 @@ where
     let edf_per_term =
         compute_edf_per_term(&prep.s_list, &rho_vec, prep.x_design.ncols(), &final_fit);
 
+    // outer.theta layout for shape-aware families is `[rho, shape₁, shape₂, …]`
+    // (see ShapeAwareEnvelopeScore). Capture the trailing shape slice so
+    // callers can read off the fitted shape params (ocat thresholds, t-dist
+    // ν / σ², etc.) without re-deriving them.
+    let shape_params = if outer.theta.len() > 1 {
+        outer.theta.slice(ndarray::s![1..]).to_owned()
+    } else {
+        Array1::<f64>::zeros(0)
+    };
+
     Ok(FittedGam {
         beta: final_fit.beta,
         rho: rho_vec,
@@ -282,5 +293,6 @@ where
         predictor: prep.predictor,
         vcov,
         link_kind,
+        shape_params,
     })
 }

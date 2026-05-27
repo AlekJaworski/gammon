@@ -462,7 +462,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         let rho_hat = outer.theta[0];
         let theta_hat: Array1<f64> = outer.theta.slice(ndarray::s![1..]).to_owned();
         let family_final: Family<OcatLoss, IdentityLink, OcatVariance> =
-            ocat_identity(theta_hat, n_cats);
+            ocat_identity(theta_hat.clone(), n_cats);
         let final_inner = ShapeInnerBuilder::<OcatLoss, IdentityLink, OcatVariance, S>::build(
             &score.inner_builder,
             family_final.clone(),
@@ -495,6 +495,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             predictor: prep.predictor,
             vcov,
             link_kind: LinkKind::Identity,
+            shape_params: theta_hat,
         })
     }
 }

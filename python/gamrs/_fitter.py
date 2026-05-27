@@ -8,6 +8,7 @@ pointer back at v0.x for the ones not yet wired).
 
 from __future__ import annotations
 
+import math
 import warnings
 from typing import Any, Iterable, Optional, Sequence, Union
 
@@ -168,14 +169,6 @@ class Gam:
         # When both are passed, terms= wins and the others are ignored.
         self.terms: Optional[list[Term]] = list(terms) if terms is not None else None
 
-        if self.auto_k:
-            warnings.warn(
-                "auto_k=True is not yet wired in gamrs; using a single fit with "
-                "k=k_default (or term_k_mapping). Drop auto_k to silence.",
-                UserWarning,
-                stacklevel=2,
-            )
-
         # Forward-compat: stash unknown kwargs without erroring so a
         # textual mgcv_rust → gamrs substitution doesn't blow up at
         # construction time.
@@ -191,6 +184,10 @@ class Gam:
         # Set by __getitem__; consulted by predict() to mask un-selected
         # term blocks of the lpmatrix.
         self._subset_mask: Optional[set] = None
+        # Auto-k diagnostics. _auto_k_trace records (iteration, predictor,
+        # k, edf, k_index, grew) per inner refit; exposed via auto_k_trace_.
+        self._auto_k_iterations: int = 0
+        self._auto_k_trace: list[dict[str, Any]] = []
 
     # ------------------------ helpers --------------------------------- #
 
@@ -253,24 +250,35 @@ class Gam:
             self.sample_weight = None
 
         x_2d = np.ascontiguousarray(X_arr, dtype=np.float64)
-        family_kw = self._family_kwargs_for_native()
 
         # Build the term list — either from self.terms (typed API) or
         # derived from columns + predictor_basis_map (v0.x API).
         if self.terms is not None:
             term_objs = list(self.terms)
-            self._k_used = [
-                t.k if isinstance(t, (CrTerm, CrStableTerm)) else
-                (t.k[0] * t.k[1] if isinstance(t, TeTerm) else 0)
-                for t in term_objs
-            ]
         else:
             term_objs = self._build_terms_from_columns(X_arr, cols)
-            self._k_used = [
-                t.k if isinstance(t, (CrTerm, CrStableTerm)) else 0
-                for t in term_objs
-            ]
 
+        if self.auto_k:
+            self._auto_fit_k(x_2d, y_arr, term_objs)
+        else:
+            self._auto_k_iterations = 0
+            self._auto_k_trace = []
+            self._single_fit(x_2d, y_arr, term_objs)
+        return self
+
+    # ---- single-fit + auto-k helpers --------------------------------- #
+
+    def _single_fit(
+        self, x_2d: np.ndarray, y_arr: np.ndarray, term_objs: list[Term]
+    ) -> None:
+        """Run one native fit at the given term list. Updates `_fitted`
+        and `_k_used`; doesn't mutate `_auto_k_*`."""
+        family_kw = self._family_kwargs_for_native()
+        self._k_used = [
+            t.k if isinstance(t, (CrTerm, CrStableTerm)) else
+            (t.k[0] * t.k[1] if isinstance(t, TeTerm) else 0)
+            for t in term_objs
+        ]
         # Single-smooth → fast path (preserves byte-equivalence with
         # pre-multi-smooth fits + the existing parity tests).
         if len(term_objs) == 1 and isinstance(term_objs[0], (CrTerm, ReTerm, CrStableTerm)):
@@ -290,8 +298,7 @@ class Gam:
                 design=design,
                 **family_kw,
             )
-            return self
-
+            return
         # Multi-smooth → additive dispatch.
         term_tuples = [_term_to_tuple(t) for t in term_objs]
         self._fitted = _gamrs_native.fit_additive(
@@ -302,7 +309,104 @@ class Gam:
             weights=self.sample_weight,
             **family_kw,
         )
-        return self
+
+    @staticmethod
+    def _k_index(x_col: np.ndarray, resid: np.ndarray) -> float:
+        """mgcv's `k.check` statistic: sort residuals by `x_col` and form
+
+            k_index = Σ (r_(i+1) − r_(i))² / (2 · Var(r) · (n − 1))
+
+        Under the null (residuals i.i.d. given the smooth) `E[diff²] =
+        2·Var(r)` and the statistic converges to 1. Values below 1 mean
+        consecutive residuals (after sorting by x) are more similar than
+        chance — i.e. leftover structure → basis is too small. See Wood
+        (2017) §5.9. Returns 1.0 when Var(r) ≈ 0 (perfect fit).
+        """
+        n = int(resid.size)
+        if n < 2:
+            return 1.0
+        var_r = float(np.var(resid))
+        if var_r < 1e-12:
+            return 1.0
+        order = np.argsort(x_col, kind="stable")
+        diffs = np.diff(resid[order])
+        return float(np.sum(diffs ** 2) / (2.0 * var_r * (n - 1)))
+
+    def _auto_fit_k(
+        self,
+        x_2d: np.ndarray,
+        y_arr: np.ndarray,
+        term_objs: list[Term],
+    ) -> None:
+        """Iteratively refit, growing `k` for any CR smooth whose
+        residuals still show structure along its predictor's axis.
+
+        Per non-frozen CR term j, each iteration:
+        1. Compute residual k-index (see `_k_index`).
+        2. If `k_index < 1 − k_index_margin`, grow
+           `k_j ← ceil(k_j · knots_increase_ratio)`, capped at
+           `min(n_unique(x_j) − 1, max_k_auto)`.
+
+        Stops when no term grew, every term hit its cap, or
+        `auto_k_max_iter` iterations have run.
+
+        ReTerm / TeTerm and any term whose user-name is in
+        `term_k_mapping` are treated as frozen — k-index still recorded
+        in the trace for diagnostics, never grown.
+        """
+        preds = self._effective_predictors or []
+        # Per-CR-term cap = min(n_unique − 1, max_k_auto), floored at min_k.
+        caps: list[int] = []
+        for t in term_objs:
+            if isinstance(t, (CrTerm, CrStableTerm)):
+                col = t.col if isinstance(t.col, int) else preds.index(t.col)
+                n_unique = int(np.unique(x_2d[:, col]).size)
+                caps.append(min(max(n_unique - 1, self.min_k), self.max_k_auto))
+            else:
+                caps.append(0)  # frozen (re / te) — never grown
+
+        threshold = 1.0 - self.k_index_margin
+        self._auto_k_trace = []
+        current: list[Term] = list(term_objs)
+        for iteration in range(self.auto_k_max_iter):
+            self._single_fit(x_2d, y_arr, current)
+            fitted = np.asarray(self._fitted.predict(x_2d), dtype=float)
+            resid = y_arr - fitted
+
+            grew = False
+            all_capped = True
+            for j, t in enumerate(current):
+                user_name = preds[j] if j < len(preds) else f"term_{j}"
+                frozen = (
+                    not isinstance(t, (CrTerm, CrStableTerm))
+                    or user_name in self.term_k_mapping
+                )
+                if not isinstance(t, (CrTerm, CrStableTerm)):
+                    continue  # k_index not meaningful for re / te bases
+                col = t.col if isinstance(t.col, int) else preds.index(t.col)
+                k_idx = self._k_index(x_2d[:, col], resid)
+                k_before = t.k
+                term_grew = False
+                if not frozen and k_idx < threshold:
+                    new_k = math.ceil(k_before * self.knots_increase_ratio)
+                    capped_k = min(new_k, caps[j])
+                    if capped_k > k_before:
+                        current[j] = type(t)(col=t.col, k=int(capped_k))
+                        term_grew = True
+                        grew = True
+                if not frozen and t.k < caps[j]:
+                    all_capped = False
+                self._auto_k_trace.append({
+                    "iteration": iteration,
+                    "predictor": user_name,
+                    "k": k_before,
+                    "k_index": k_idx,
+                    "grew": term_grew,
+                })
+
+            self._auto_k_iterations = iteration + 1
+            if not grew or all_capped:
+                break
 
     def _build_terms_from_columns(
         self, X_arr: np.ndarray, cols: Sequence[str]
@@ -659,16 +763,41 @@ class Gam:
 
     @property
     def auto_k_trace_(self) -> Any:
-        """v0.x's auto-k trace. gamrs doesn't run auto-k yet, so empty."""
-        return []
+        """Per-(iteration, predictor) trace of the auto-k loop.
+
+        Returns a pandas DataFrame with columns
+        ``['iteration', 'predictor', 'k', 'k_index', 'grew']`` (one row
+        per term per iteration). Empty when ``auto_k=False`` or no
+        CR smooths were grown. Use to diagnose runaway / no-growth
+        regimes when tuning ``k_index_margin`` /
+        ``knots_increase_ratio`` / ``max_k_auto``.
+        """
+        if not self._auto_k_trace:
+            return []
+        try:
+            import pandas as pd
+        except ImportError:
+            return list(self._auto_k_trace)
+        return pd.DataFrame(self._auto_k_trace)
 
     @property
     def ocat_theta_(self) -> np.ndarray:
-        """v0.x: converged log-gap thresholds for ocat. gamrs doesn't yet
-        expose these through the bindings — returns an empty array."""
+        """Converged log-gap thresholds for ocat. Length `r - 2` — one
+        threshold per gap between adjacent categories above the first.
+        The full `r + 1` category boundary vector is
+        `α = [-∞, -1, -1 + exp(θ₀), -1 + exp(θ₀) + exp(θ₁), …, +∞]`.
+        """
         if self.family != "ocat":
             raise AttributeError("ocat_theta_ is only available for family='ocat'")
-        return np.array([])
+        return np.asarray(self._require_fitted().shape_params)
+
+    @property
+    def shape_params_(self) -> np.ndarray:
+        """Family-specific fitted shape parameters. Empty for fixed-shape
+        families (Gaussian, Bernoulli, Poisson, etc.). See family docs
+        for the per-family layout (ocat → log-gap θ, t-dist → [log ν, log σ²]).
+        """
+        return np.asarray(self._require_fitted().shape_params)
 
     # ----------------------- Methods that match v0.x ----------------- #
 
@@ -852,15 +981,56 @@ class Gam:
         )
 
     def summary(self) -> GamSummary:
+        """Compact mgcv-style fit summary. Returns a :class:`GamSummary`
+        with the per-smooth table and top-level fit metadata. ``repr()``
+        formats it in a mgcv-style block. Gaussian fits also populate
+        ``scale``, ``deviance``, and adjusted ``r_squared``.
+        """
         f = self._require_fitted()
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "summary() requires pandas. pip install pandas"
+            ) from exc
+
+        names = self._effective_predictors or [f"term_{i}" for i in range(len(self.edf_))]
+        smooths_df = pd.DataFrame(
+            {
+                "predictor": list(names),
+                "k": list(self.k_),
+                "edf": list(self.edf_),
+                "lambda": list(self.lambda_),
+            }
+        )
+
+        # Gaussian-only fit metrics, computed from fitted μ at training X.
+        scale = float("nan")
+        deviance = float("nan")
+        r_sq = float("nan")
+        if self.family == "gaussian" and self.X is not None and self.y is not None:
+            x_train = np.ascontiguousarray(self.X, dtype=np.float64)
+            fitted = np.asarray(f.predict_response(x_train), dtype=float)
+            resid = self.y - fitted
+            deviance = float(np.sum(resid ** 2))
+            total_edf = float(self.edf_.sum()) + 1.0  # +1 for intercept
+            dof = max(len(self.y) - total_edf, 1.0)
+            scale = deviance / dof
+            ss_tot = float(np.sum((self.y - self.y.mean()) ** 2))
+            if ss_tot > 0:
+                r_sq = 1.0 - (deviance / ss_tot) * ((len(self.y) - 1.0) / dof)
+
         return GamSummary(
             family=self.family,
             link=self.link,
-            n=int(f.n),
-            intercept=float(f.beta[0]),
-            scale=float(f.scale),
+            n_obs=int(f.n),
+            intercept=float(self.intercept_),
+            intercept_response=float(self.intercept_response_),
+            smooths=smooths_df,
+            scale=scale,
+            deviance=deviance,
+            r_squared=r_sq,
             edf_total=float(f.edf_total),
-            lambda_=self.lambda_,
             converged=bool(f.converged),
             n_iters=int(f.n_iters),
         )
@@ -888,6 +1058,7 @@ class Gam:
             term_k_mapping={}, term_pc_mapping={}, predictor_basis_map={},
             consider_categorical=False, auto_k=False, discrete=False,
             df=None, tweedie_p=None, negbin_theta=None, r=None,
+            terms=None, _subset_mask=None,
         )
         return gam
 

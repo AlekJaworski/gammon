@@ -30,43 +30,67 @@ class TermContributions:
 
 
 class GamSummary:
-    """Stub matching v0.x's ``GamSummary`` shape (intercept, scale, edf, λ).
+    """Compact summary of a fitted :class:`gamrs.Gam`.
 
-    gamrs surfaces the scalar values via :meth:`gamrs.Gam.summary`; the
-    per-term breakdown that v0.x's summary depends on is not yet wired
-    here, but the dataclass-style attribute names match exactly so
-    callers can read them off without code changes.
+    Returned by :meth:`Gam.summary`. Includes the per-smooth DataFrame
+    (``smooths``) and top-level fit metadata. Pretty-prints in an
+    mgcv-style block via ``repr()``. Shape matches v0.x's GamSummary
+    1-1 so consumer code reading these fields off doesn't need to
+    branch on which wrapper produced the summary.
     """
 
     def __init__(
         self,
         family: str,
         link: str,
-        n: int,
+        n_obs: int,
         intercept: float,
+        intercept_response: float,
+        smooths: Any,
         scale: float,
+        deviance: float,
+        r_squared: float,
         edf_total: float,
-        lambda_: np.ndarray,
         converged: Optional[bool],
         n_iters: Optional[int],
     ):
         self.family = family
         self.link = link
-        self.n = n
+        self.n_obs = n_obs
         self.intercept = intercept
+        self.intercept_response = intercept_response
+        self.smooths = smooths  # pd.DataFrame
         self.scale = scale
+        self.deviance = deviance
+        self.r_squared = r_squared
         self.edf_total = edf_total
-        self.lambda_ = lambda_
         self.converged = converged
         self.n_iters = n_iters
 
     def __repr__(self) -> str:  # pragma: no cover — exercised manually
-        return (
-            f"GamSummary(family={self.family!r}, link={self.link!r}, n={self.n}, "
-            f"intercept={self.intercept:.4g}, scale={self.scale:.4g}, "
-            f"edf_total={self.edf_total:.4g}, lambda={self.lambda_}, "
-            f"converged={self.converged}, n_iters={self.n_iters})"
-        )
+        lines = [
+            f"Gam summary  family={self.family}  link={self.link}  n_obs={self.n_obs}",
+            f"  intercept (link)     = {self.intercept:.6g}",
+            f"  intercept (response) = {self.intercept_response:.6g}",
+            f"  edf_total            = {self.edf_total:.4g}",
+            f"  converged={self.converged}  n_iters={self.n_iters}",
+        ]
+        if not np.isnan(self.scale):
+            lines.append(f"  scale (σ²)           = {self.scale:.6g}")
+        if not np.isnan(self.deviance):
+            lines.append(f"  deviance             = {self.deviance:.6g}")
+        if not np.isnan(self.r_squared):
+            lines.append(f"  R² (adj)             = {self.r_squared:.4f}")
+        lines.append("  smooths:")
+        try:
+            for _, row in self.smooths.iterrows():
+                lines.append(
+                    f"    s({row['predictor']:>12s})  k={int(row['k']):>3d}  "
+                    f"edf={row['edf']:>6.2f}  λ={row['lambda']:.3e}"
+                )
+        except Exception:  # pragma: no cover
+            lines.append(f"    {self.smooths!r}")
+        return "\n".join(lines)
 
 
 # GamPredictor moved to `gamrs._predictor` — the fleshed-out, fit-time

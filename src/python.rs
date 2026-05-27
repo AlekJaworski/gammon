@@ -124,6 +124,15 @@ impl PyFittedGam {
         self.inner.vcov.clone().into_pyarray(py)
     }
 
+    /// Family-specific fitted shape parameters. Empty for families without
+    /// any (Gaussian, Bernoulli, Poisson, …). For Ocat: the `R − 2` log-gap
+    /// thresholds `θ_j` that map to the `R + 1` category boundaries (mgcv
+    /// convention). For TDist: `[log_nu, log_sigma2]`.
+    #[getter]
+    fn shape_params<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.shape_params.clone().into_pyarray(py)
+    }
+
     /// Per-term column ranges into the lpmatrix `[1 | C_1 | C_2 | …]`.
     /// Returns a list of `(first, last_exclusive)` tuples — one per term
     /// for an Additive fit, or a single `[(1, p)]` for a single-smooth fit.

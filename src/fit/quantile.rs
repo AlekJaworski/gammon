@@ -195,5 +195,6 @@ pub(crate) fn fit_quantile_from_prep<S: LinearSolver>(
         predictor: prep.predictor,
         vcov,
         link_kind: LinkKind::Identity,
+        shape_params: Array1::zeros(0),
     })
 }

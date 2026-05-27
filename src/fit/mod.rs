@@ -148,6 +148,14 @@ pub struct FittedGam {
     /// Link kind for the fitted family. Used by `predict_ci` and
     /// `predict_diff` to map between η and μ scales.
     pub link_kind: LinkKind,
+    /// Family-specific shape parameters fit jointly with β / ρ. Empty
+    /// for families that don't profile shape parameters (Gaussian,
+    /// Bernoulli, Poisson, …). For Ocat: the `R − 2` log-gap thresholds
+    /// (`θ_j`) that map to the `R + 1` category boundaries. For TDist:
+    /// `[log_nu, log_sigma2]`. Older serialized models default to an
+    /// empty array (via `#[serde(default)]`).
+    #[cfg_attr(feature = "persistence", serde(default))]
+    pub shape_params: Array1<f64>,
 }
 
 impl FittedGam {
