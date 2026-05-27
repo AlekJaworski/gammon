@@ -41,6 +41,24 @@ pub trait BasisTransform {
     fn matrix(&self) -> ArrayView2<'_, f64>;
 }
 
+/// Per-observation Level-1 shape derivatives — the family-specific
+/// payload the shape-aware envelope score consumes when computing its
+/// analytic θ-gradient (mgcv's `reml_grad_ocat_theta_block_analytic`
+/// recipe, generalised). Returned by `Loss::level1_shape_derivatives`.
+///
+/// Shapes:
+/// - `dmu3`: `(n,)` — `∂³D / ∂μ³`.
+/// - `dth`:  `(n, n_θ)` — `∂D / ∂θ_k`.
+/// - `dmuth`: `(n, n_θ)` — `∂(∂D/∂μ) / ∂θ_k`.
+/// - `dmu2th`: `(n, n_θ)` — `∂(∂²D/∂μ²) / ∂θ_k`.
+#[derive(Clone)]
+pub struct Level1ShapeDerivs {
+    pub dmu3: ndarray::Array1<f64>,
+    pub dth: ndarray::Array2<f64>,
+    pub dmuth: ndarray::Array2<f64>,
+    pub dmu2th: ndarray::Array2<f64>,
+}
+
 /// Layer 2a — `D(y, μ)` per observation, plus first/second derivatives in
 /// μ. PIRLS uses `d_loss_dmu` / `d2_loss_dmu` to build working weights and
 /// working response; the score body uses `deviance_per_obs` and
@@ -123,6 +141,23 @@ pub trait Loss {
     /// gaps for ocat). Families with tighter clamps override.
     fn shape_axis_bounds(&self) -> Vec<(f64, f64)> {
         vec![(-10.0, 10.0); self.n_shape_params()]
+    }
+
+    /// Optional Level-1 shape derivatives — used by the shape-aware
+    /// envelope score's analytic θ-gradient path. Returns `None` to opt
+    /// out (score falls back to FD on score values). When `Some`, the
+    /// score uses the IFT-based gradient assembly from mgcv's
+    /// `reml_grad_ocat_theta_block_analytic` (ocat) and equivalents.
+    ///
+    /// Convention: all four arrays exclude prior-weights — caller multiplies
+    /// `wt[i]` into the per-θ assembly step (mgcv efam.r:2814-2832).
+    fn level1_shape_derivatives(
+        &self,
+        _y: ndarray::ArrayView1<f64>,
+        _eta: ndarray::ArrayView1<f64>,
+        _prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<Level1ShapeDerivs> {
+        None
     }
 
     /// Analytic contribution to the score's gradient w.r.t. THIS loss's

@@ -409,6 +409,8 @@ where
         if n_shape > 0 {
             let n_minus_mp = (fit.n as f64) - (self.mp as f64);
             let dp = fit.deviance + bsb_total;
+            // First try the analytic envelope-gradient (Tweedie has one
+            // closed-form path; Loss::analytic_shape_score_gradient).
             if let Some(analytic) = family.loss.analytic_shape_score_gradient(
                 self.y.view(),
                 fit.mu.view(),
@@ -424,8 +426,21 @@ where
                 for k in 0..n_shape {
                     g[n_terms + k] = analytic[k];
                 }
+            } else if let Some(level1) = family
+                .loss
+                .level1_shape_derivatives(self.y.view(), fit.eta.view(), self.prior_weights.as_ref().map(|w| w.view()))
+            {
+                // IFT-based analytic θ-gradient — ports v0.x's
+                // `reml_grad_ocat_theta_block_analytic` (ocat_joint.rs:123-236)
+                // generalised to any Loss that supplies Level-1 derivatives.
+                let shape_grad =
+                    self.analytic_shape_grad_via_ift(&fit, &level1, n_terms)?;
+                debug_assert_eq!(shape_grad.len(), n_shape);
+                for k in 0..n_shape {
+                    g[n_terms + k] = shape_grad[k];
+                }
             } else {
-                // FD fallback (Phase-2 default — TDist, NegBin, ocat).
+                // FD fallback (no analytic path — scat, NegBin).
                 let h = 1.0e-5;
                 for k in 0..n_shape {
                     let mut t_plus = theta.clone();
@@ -439,6 +454,85 @@ where
             }
         }
         Ok((v, g))
+    }
+
+    /// IFT-based analytic θ-gradient assembly from Level-1 derivatives.
+    /// Ports v0.x's `reml_grad_ocat_theta_block_analytic` mathematical core.
+    ///
+    /// For each θ_k:
+    /// - `g_k = 0.5·Σᵢ Dth[i,k] + 0.5·tr(H⁻¹ · ∂H/∂θ_k)`
+    /// - `∂H/∂θ_k = X' · diag(½·∂Dmu²/∂θ_k) · X` with chain through β:
+    ///   `s_ki = ½·(Dmu2th[i,k] + Dmu3[i] · (X · dβ/dθ_k)[i])`
+    /// - `dβ/dθ_k = −H⁻¹ · X' · Dmuth[:,k] / 2` (IFT on score equation).
+    /// - `tr(H⁻¹ · dH/dθ_k) ≈ Σᵢ s_ki · h_diag[i]` where `h_diag[i] = X_i' H⁻¹ X_i`.
+    fn analytic_shape_grad_via_ift(
+        &self,
+        fit: &GaussianInnerFit<S>,
+        level1: &crate::traits::Level1ShapeDerivs,
+        _n_terms_for_layout: usize,
+    ) -> Result<Array1<f64>> {
+        let n = fit.n;
+        let p = fit.p;
+        let n_theta = level1.dth.ncols();
+        debug_assert_eq!(level1.dth.nrows(), n);
+        debug_assert_eq!(level1.dmuth.shape(), level1.dth.shape());
+        debug_assert_eq!(level1.dmu2th.shape(), level1.dth.shape());
+        debug_assert_eq!(level1.dmu3.len(), n);
+
+        // dβ/dθ_k = −H⁻¹ · X' · Dmuth[:, k] / 2 via the fit's factor.
+        // We solve column-by-column to avoid materialising H⁻¹.
+        let mut dbeta_dtheta = Array2::<f64>::zeros((p, n_theta));
+        for k in 0..n_theta {
+            let dmuth_k = level1.dmuth.column(k);
+            let rhs: Array1<f64> = self.x_design.t().dot(&dmuth_k) * 0.5;
+            let v = S::solve(&fit.a_factor, rhs.view());
+            for r in 0..p {
+                dbeta_dtheta[[r, k]] = -v[r];
+            }
+        }
+
+        // h_diag[i] = X_i' H⁻¹ X_i.  v0.x materialises H⁻¹ once and does
+        // O(np²) per row; we do the same but via the fit's factor with
+        // column solves of H⁻¹·X' (still O(np²) on dense X, p small).
+        // Build A_inv·X' by solving column-wise.
+        let mut a_inv_xt = Array2::<f64>::zeros((p, n));
+        for i in 0..n {
+            let xi = self.x_design.row(i).to_owned();
+            let col = S::solve(&fit.a_factor, xi.view());
+            for r in 0..p {
+                a_inv_xt[[r, i]] = col[r];
+            }
+        }
+        let mut h_diag = Array1::<f64>::zeros(n);
+        for i in 0..n {
+            let mut s = 0.0_f64;
+            for r in 0..p {
+                s += self.x_design[[i, r]] * a_inv_xt[[r, i]];
+            }
+            h_diag[i] = s;
+        }
+
+        let mut grad = Array1::<f64>::zeros(n_theta);
+        for k in 0..n_theta {
+            // Envelope: Σᵢ Dth[i, k] = ∂(D + P)/∂θ_k (no β-chain at converged β).
+            let mut sum_dth_k = 0.0_f64;
+            for i in 0..n {
+                sum_dth_k += level1.dth[[i, k]];
+            }
+
+            // tr(H⁻¹ ∂H/∂θ_k) = Σᵢ ½ (Dmu2th[i,k] + Dmu3[i] · (X·dβ/dθ_k)[i]) · h_diag[i]
+            let mut trace_term = 0.0_f64;
+            for i in 0..n {
+                let mut x_db_i = 0.0_f64;
+                for j in 0..p {
+                    x_db_i += self.x_design[[i, j]] * dbeta_dtheta[[j, k]];
+                }
+                let s_ki = 0.5 * (level1.dmu2th[[i, k]] + level1.dmu3[i] * x_db_i);
+                trace_term += s_ki * h_diag[i];
+            }
+            grad[k] = 0.5 * sum_dth_k + 0.5 * trace_term;
+        }
+        Ok(grad)
     }
 
     /// Coupled `(value, grad, hess)` — replaces v0.1's

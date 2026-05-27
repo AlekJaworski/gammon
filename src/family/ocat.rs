@@ -202,6 +202,28 @@ impl Loss for OcatLoss {
     fn get_shape_params(&self) -> Vec<f64> {
         self.thresholds.to_vec()
     }
+
+    /// Provide Level-1 derivatives (`Dmu3, Dth, Dmuth, Dmu2th`) to the
+    /// shape-aware score's analytic θ-gradient assembly. Ports v0.x's
+    /// `ocat_dd` at `OcatDerivLevel::Level1`. The score uses these to
+    /// compute `∂REML/∂θ_k` via IFT — closes the 5.9% multi-smooth ocat
+    /// parity gap (2026-05-27 parity report).
+    fn level1_shape_derivatives(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        eta: ndarray::ArrayView1<f64>,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<crate::traits::Level1ShapeDerivs> {
+        let thresholds_vec: Vec<f64> = self.thresholds.iter().copied().collect();
+        let (dmu3, dth, dmuth, dmu2th) =
+            ocat_dd_level1(y, eta, &thresholds_vec, self.n_cats, prior_w);
+        Some(crate::traits::Level1ShapeDerivs {
+            dmu3,
+            dth,
+            dmuth,
+            dmu2th,
+        })
+    }
 }
 
 impl OcatLoss {
@@ -231,6 +253,22 @@ impl OcatLoss {
         let ex2 = ex * ex;
         h * (ex - ex2) / (ex1 * ex1 * ex1)
     }
+
+    /// `cj = (-ex³ + 4·ex² − ex) / (ex+1)⁴` per v0.x `ocat::abcd` level 1.
+    /// Third derivative of F, used by the analytic θ gradient (Dmu3).
+    #[inline]
+    pub(crate) fn abcd_c(x: f64) -> f64 {
+        if !x.is_finite() {
+            return 0.0;
+        }
+        let h = if x > 0.0 { -1.0 } else { 1.0 };
+        let ex = (x * h).exp();
+        let ex1 = ex + 1.0;
+        let ex2 = ex * ex;
+        let ex3 = ex2 * ex;
+        let ex1_pow4 = ex1 * ex1 * ex1 * ex1;
+        (-ex3 + 4.0 * ex2 - ex) / ex1_pow4
+    }
 }
 
 impl VarianceFn for OcatVariance {
@@ -240,6 +278,121 @@ impl VarianceFn for OcatVariance {
         1.0
     }
     // No shape-param sync needed — variance is μ- and threshold-free.
+}
+
+/// Per-row Level-1 ocat derivatives — port of v0.x `ocat::ocat_dd` at
+/// `OcatDerivLevel::Level1`. Returns `(Dmu3, Dth, Dmuth, Dmu2th)` evaluated
+/// at the converged η at the current θ. Required by the analytic θ_ocat
+/// gradient (`reml_grad_ocat_theta_block_analytic` port; closes the 5.9%
+/// multi-smooth ocat parity gap, 2026-05-27).
+///
+/// Convention: derivatives are computed WITHOUT prior-weights — caller
+/// multiplies in `wt[i]` at the per-θ assembly step (mgcv efam.r:2814-2832).
+///
+/// Returns `Dth, Dmuth, Dmu2th` as `(n × n_θ)` matrices (where `n_θ = r-2`)
+/// and `Dmu3` as a length-n vector.
+pub fn ocat_dd_level1(
+    y: ndarray::ArrayView1<f64>,
+    eta: ndarray::ArrayView1<f64>,
+    thresholds: &[f64],
+    n_cats: usize,
+    prior_w: Option<ndarray::ArrayView1<f64>>,
+) -> (
+    ndarray::Array1<f64>,
+    ndarray::Array2<f64>,
+    ndarray::Array2<f64>,
+    ndarray::Array2<f64>,
+) {
+    use ndarray::{Array1, Array2};
+    let n = y.len();
+    let r = n_cats;
+    let n_theta = r.saturating_sub(2);
+    let alpha = {
+        // Inline alpha computation — same shape as OcatLoss::alpha. α has
+        // length r+1: [α_0=-∞, α_1=-1, α_{k+1} = α_k + exp(θ_{k-1})]; the
+        // boundary handling above mirrors `OcatLoss::alpha`.
+        let mut a = vec![0.0_f64; r + 1];
+        a[0] = f64::NEG_INFINITY;
+        a[1] = -1.0;
+        let mut acc: f64 = -1.0;
+        for k in 0..n_theta {
+            acc += thresholds[k].exp();
+            a[k + 2] = acc;
+        }
+        a[r] = f64::INFINITY;
+        a
+    };
+
+    let mut dmu3 = Array1::<f64>::zeros(n);
+    let mut dth = Array2::<f64>::zeros((n, n_theta));
+    let mut dmuth = Array2::<f64>::zeros((n, n_theta));
+    let mut dmu2th = Array2::<f64>::zeros((n, n_theta));
+
+    // Per-row workspace: a/b/c/d/f and a0/a1/b0/b1/c0/c1 buffers from the
+    // Level-1 assembly. mgcv efam.r:2796-2811.
+    for i in 0..n {
+        let yi = (y[i].round() as i64).clamp(1, r as i64) as usize;
+        let mu_i = eta[i];
+        let wt_i = prior_w.map(|w| w[i]).unwrap_or(1.0);
+        let al0 = alpha[yi - 1] - mu_i;
+        let al1 = alpha[yi] - mu_i;
+        let f = OcatLoss::fdiff_boundary(al0, al1).max(f64::MIN_POSITIVE);
+
+        let a0 = OcatLoss::abcd_a(al0);
+        let a1 = OcatLoss::abcd_a(al1);
+        let b0 = OcatLoss::abcd_b(al0);
+        let b1 = OcatLoss::abcd_b(al1);
+        let c0 = OcatLoss::abcd_c(al0);
+        let c1 = OcatLoss::abcd_c(al1);
+        let a = a1 - a0;
+        let b = b1 - b0;
+        let c = c1 - c0;
+        let a2 = a * a;
+        let a3 = a2 * a;
+        let f2 = f * f;
+
+        // Dmu3 includes wt (mgcv convention for length-n derivatives).
+        dmu3[i] = 2.0 * wt_i * (-c - 2.0 * a3 / f2 + 3.0 * a * b / f) / f;
+
+        // Per-row scalar building blocks (mgcv efam.r:2803-2811; written
+        // WITHOUT wt — wt enters at the per-θ assembly below).
+        let dmua0 = 2.0 * (a0 * a / f - b0) / f;
+        let dmua1 = -2.0 * (a1 * a / f - b1) / f;
+        let dmu2a0 = -2.0 * (c0 + (a0 * (2.0 * a2 / f - b) - 2.0 * b0 * a) / f) / f;
+        let dmu2a1 = 2.0 * (c1 + (2.0 * (a1 * a2 / f - b1 * a) - a1 * b) / f) / f;
+        let da0 = -2.0 * a0 / f;
+        let da1 = 2.0 * a1 / f;
+
+        // Assemble Dth/Dmuth/Dmu2th rows by which α boundary the y_i lands
+        // on. mgcv efam.r:2814-2832 — k is 1-based in mgcv; here k is
+        // 0-based, so the brackets become:
+        //   yi == k+2  → upper boundary  (carries θ_k)
+        //   yi == r    → lower boundary  (only meaningful for k = r-3)
+        //   otherwise  → both (yi > k+2 && yi < r)
+        for k in 0..n_theta {
+            let etk = thresholds[k].exp();
+            let k_plus_2 = k + 2;
+            let bracket_upper = yi == k_plus_2;
+            let bracket_lower = yi == r;
+            let bracket_middle = yi > k_plus_2 && yi < r && r >= k_plus_2 + 1;
+
+            if bracket_upper {
+                dth[[i, k]] = wt_i * da1 * etk;
+                dmuth[[i, k]] = wt_i * dmua1 * etk;
+                dmu2th[[i, k]] = wt_i * dmu2a1 * etk;
+            } else if bracket_middle {
+                dth[[i, k]] = wt_i * (da1 + da0) * etk;
+                dmuth[[i, k]] = wt_i * (dmua1 + dmua0) * etk;
+                dmu2th[[i, k]] = wt_i * (dmu2a1 + dmu2a0) * etk;
+            } else if bracket_lower {
+                dth[[i, k]] = wt_i * da0 * etk;
+                dmuth[[i, k]] = wt_i * dmua0 * etk;
+                dmu2th[[i, k]] = wt_i * dmu2a0 * etk;
+            }
+        }
+    }
+
+    (dmu3, dth, dmuth, dmu2th)
 }
 
 /// Phase 10 convenience constructor — Ocat + identity link at given log-gap
