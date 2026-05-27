@@ -23,10 +23,12 @@ jobs:
         uses: PyO3/maturin-action@v1
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-          OPENBLAS_STATIC: "1"
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter --no-default-features --features python
+          # Linux wheels use openblas-static so the produced wheel has no
+          # runtime libopenblas dep — pairs with the manylinux container
+          # below installing gfortran + openblas-devel for the build pass.
+          args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static
           sccache: "true"
           manylinux: auto
           before-script-linux: |
@@ -59,28 +61,64 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install OpenBLAS (brew)
-        run: brew install openblas gfortran || brew install openblas
+      - name: Install gcc (for gfortran + libgcc_s)
+        # `brew install gcc` is what provides gfortran AND libgcc_s.1.1.dylib
+        # — the latter is what maturin's wheel-repair step links against via
+        # Homebrew openblas's @rpath. Without it, repair fails with
+        # "required library @rpath/libgcc_s.1.1.dylib could not be located".
+        run: brew install gcc
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-          # Help ndarray-linalg / pkg-config find Homebrew's openblas.
-          PKG_CONFIG_PATH: "/opt/homebrew/opt/openblas/lib/pkgconfig:/usr/local/opt/openblas/lib/pkgconfig"
-          LDFLAGS: "-L/opt/homebrew/opt/openblas/lib -L/usr/local/opt/openblas/lib"
-          CPPFLAGS: "-I/opt/homebrew/opt/openblas/include -I/usr/local/opt/openblas/include"
+          # openblas-static: openblas-src compiles OpenBLAS from source
+          # using the gfortran we just installed. No runtime libopenblas
+          # dep, no Homebrew @rpath shenanigans for maturin to reconcile.
+          # Tell delocate where libgcc_s lives so it can bundle it.
+          DYLD_FALLBACK_LIBRARY_PATH: "/opt/homebrew/opt/gcc/lib/gcc/current:/opt/homebrew/opt/gcc/lib/gcc/15:/opt/homebrew/opt/openblas/lib"
+          LIBRARY_PATH: "/opt/homebrew/opt/gcc/lib/gcc/current:/opt/homebrew/opt/openblas/lib"
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter --no-default-features --features python
+          args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static
           sccache: "true"
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.target }}
           path: dist
 
-  # Windows wheels deferred — needs MKL or vcpkg openblas setup. Sdist
-  # covers Windows users for now (`pip install` will compile locally if
-  # they have Rust + an OpenBLAS toolchain).
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target: [x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        env:
+          PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+        with:
+          target: ${{ matrix.target }}
+          # Windows uses Intel MKL static via `blas-mkl-static` — avoids
+          # the MSYS2 / mingw / gfortran toolchain entirely. intel-mkl-src
+          # downloads MKL during the build (~500 MB tarball, cached by
+          # sccache). Same pattern mgcv_rust v0.x has shipped on since
+          # the 0.15 series — known-stable.
+          args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-mkl-static
+          sccache: "true"
+      - name: Validate wheel imports
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip numpy pytest
+          python -m pip install --no-index --find-links dist/ gamrs
+          python -c "import gamrs; print('imported OK')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-${{ matrix.target }}
+          path: dist
 
   sdist:
     runs-on: ubuntu-latest
@@ -97,10 +135,11 @@ jobs:
           path: dist
 
   publish-pypi:
-    # macOS aarch64 wheel job is informational until #106 lands —
-    # publish proceeds on Linux + sdist alone (mac users can `pip
-    # install gamrs` against the sdist as long as they have Rust +
-    # OpenBLAS, falling back to source compile).
+    # macOS + Windows still informational while the new wheel recipes
+    # bed in — publish proceeds on Linux + sdist alone so a green Linux
+    # run still produces a usable release. Tighten back to `needs:
+    # [linux, macos, windows, sdist]` once #106 / #113 have shipped a
+    # successful release.
     needs: [linux, sdist]
     runs-on: ubuntu-latest
     steps:
