@@ -16,33 +16,28 @@ jobs:
         target: [x86_64]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+          OPENBLAS_STATIC: "1"
         with:
           target: ${{ matrix.target }}
-          # Linux wheels use openblas-static so the produced wheel has no
-          # runtime libopenblas dep — pairs with the manylinux container
-          # below installing gfortran + openblas-devel for the build pass.
           args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static
           sccache: "true"
           manylinux: auto
           before-script-linux: |
             set -e
             if command -v yum &> /dev/null; then
-              yum install -y gcc-gfortran openssl-devel pkgconfig make cmake perl openblas-devel
+              yum install -y gcc-gfortran openssl-devel pkgconfig make cmake perl
             else
-              apt-get update && apt-get install -y gfortran libssl-dev pkg-config make cmake perl libopenblas-dev
+              apt-get update && apt-get install -y gfortran libssl-dev pkg-config make cmake perl
             fi
-      - name: Validate wheel imports
+      - name: Validate wheel
         run: |
           python -m pip install --upgrade pip numpy pytest
           python -m pip install --no-index --find-links dist/ gamrs
-          python -c "import gamrs; print(gamrs.__version__ if hasattr(gamrs, '__version__') else 'imported OK')"
+          python -c "import gamrs; print('linux wheel imported OK')"
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.target }}
@@ -58,29 +53,24 @@ jobs:
             runner: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install gcc (for gfortran + libgcc_s)
-        # `brew install gcc` is what provides gfortran AND libgcc_s.1.1.dylib
-        # — the latter is what maturin's wheel-repair step links against via
-        # Homebrew openblas's @rpath. Without it, repair fails with
-        # "required library @rpath/libgcc_s.1.1.dylib could not be located".
-        run: brew install gcc
+      # For blas-static: openblas-src compiles from source, no brew openblas needed.
+      # Only install the Fortran compiler.
+      - name: Install build tools
+        run: brew install gcc  # provides gfortran
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-          # openblas-static: openblas-src compiles OpenBLAS from source
-          # using the gfortran we just installed. No runtime libopenblas
-          # dep, no Homebrew @rpath shenanigans for maturin to reconcile.
-          # Tell delocate where libgcc_s lives so it can bundle it.
-          DYLD_FALLBACK_LIBRARY_PATH: "/opt/homebrew/opt/gcc/lib/gcc/current:/opt/homebrew/opt/gcc/lib/gcc/15:/opt/homebrew/opt/openblas/lib"
-          LIBRARY_PATH: "/opt/homebrew/opt/gcc/lib/gcc/current:/opt/homebrew/opt/openblas/lib"
+          OPENBLAS_STATIC: "1"
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static
           sccache: "true"
+      - name: Validate wheel
+        run: |
+          python3 -m pip install numpy pytest
+          python3 -m pip install --no-index --find-links dist/ gamrs
+          python3 -c "import gamrs; print('macos wheel imported OK')"
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.target }}
@@ -88,36 +78,27 @@ jobs:
 
   windows:
     runs-on: windows-latest
-    strategy:
-      matrix:
-        target: [x86_64]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      # Windows uses Intel MKL static — avoids gfortran/MSYS2.
+      # intel-mkl-src downloads MKL automatically.
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
         with:
-          target: ${{ matrix.target }}
-          # Windows uses Intel MKL static via `blas-mkl-static` — avoids
-          # the MSYS2 / mingw / gfortran toolchain entirely. intel-mkl-src
-          # downloads MKL during the build (~500 MB tarball, cached by
-          # sccache). Same pattern mgcv_rust v0.x has shipped on since
-          # the 0.15 series — known-stable.
+          target: x86_64
           args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-mkl-static
           sccache: "true"
-      - name: Validate wheel imports
+      - name: Validate wheel
         shell: bash
         run: |
           python -m pip install --upgrade pip numpy pytest
           python -m pip install --no-index --find-links dist/ gamrs
-          python -c "import gamrs; print('imported OK')"
+          python -c "import gamrs; print('windows wheel imported OK')"
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-windows-${{ matrix.target }}
+          name: wheels-windows-x86_64
           path: dist
 
   sdist:
@@ -131,20 +112,16 @@ jobs:
           args: --out dist
       - uses: actions/upload-artifact@v4
         with:
-          name: sdist
+          name: wheels-sdist
           path: dist
 
   publish-pypi:
-    # macOS + Windows still informational while the new wheel recipes
-    # bed in — publish proceeds on Linux + sdist alone so a green Linux
-    # run still produces a usable release. Tighten back to `needs:
-    # [linux, macos, windows, sdist]` once #106 / #113 have shipped a
-    # successful release.
-    needs: [linux, sdist]
     runs-on: ubuntu-latest
+    needs: [linux, macos, windows, sdist]
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: wheels-*
           path: dist
           merge-multiple: true
       - name: Publish to PyPI
