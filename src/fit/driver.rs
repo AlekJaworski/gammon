@@ -7,7 +7,7 @@
 
 use std::marker::PhantomData;
 
-use ndarray::{Array1, ArrayView1, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use crate::design::PreparedDesign;
 use crate::error::Result;
@@ -18,6 +18,90 @@ use crate::score::{EnvelopeScore, Profile, ShapeAwareEnvelopeScore, ShapeInnerBu
 use crate::traits::{CoordsKind, InnerSolver, Link, Loss, OuterSolver, VarianceFn};
 
 use super::{compute_edf, compute_edf_per_term, compute_vcov, FittedGam, LinkKind};
+
+/// Strategy for picking the outer Newton's initial ρ vector.
+///
+/// Concrete strategies are zero-cost stateless markers (`ZeroInit`,
+/// `SmartInit`) plus a stateful `ExplicitInit { rho }` for warm-starts.
+/// Data flows in per call — keeps the trait lifetime-free and means
+/// the same instance can re-initialize across refits (e.g. auto-k).
+pub trait LambdaInit {
+    /// Materialise the initial ρ vector for the given data + penalty
+    /// list. Returns length `s_list.len()`.
+    fn init(
+        &self,
+        y: ArrayView1<f64>,
+        x_design: &Array2<f64>,
+        s_list: &[Array2<f64>],
+    ) -> Array1<f64>;
+}
+
+/// `ρ_j = 0` (`λ_j = 1`) for all terms. Cheap and basis-agnostic;
+/// matches the gamrs ≤ 0.1 default. Robust for Gaussian / Bernoulli /
+/// Poisson where the basin around λ=1 is wide.
+#[derive(Clone, Copy, Default)]
+pub struct ZeroInit;
+impl LambdaInit for ZeroInit {
+    fn init(
+        &self,
+        _y: ArrayView1<f64>,
+        _x_design: &Array2<f64>,
+        s_list: &[Array2<f64>],
+    ) -> Array1<f64> {
+        Array1::<f64>::zeros(s_list.len())
+    }
+}
+
+/// `λ_init_j = y_var · ‖S_j‖_F · n / (‖X‖_F² + ε)`, clamped to
+/// `[1e-6, 1e6]`. Ported from mgcv_rust v0.x's
+/// `initialize_lambda_smart` (`gam_optimized.rs:479-502`). Default for
+/// shape-aware multi-smooth fits — puts the outer Newton in v0.x's
+/// convergence basin (parity report 2026-05-27).
+#[derive(Clone, Copy, Default)]
+pub struct SmartInit;
+impl LambdaInit for SmartInit {
+    fn init(
+        &self,
+        y: ArrayView1<f64>,
+        x_design: &Array2<f64>,
+        s_list: &[Array2<f64>],
+    ) -> Array1<f64> {
+        let n = y.len() as f64;
+        let y_mean = y.sum() / n.max(1.0);
+        let y_var = y.iter().map(|&yi| (yi - y_mean).powi(2)).sum::<f64>() / n.max(1.0);
+        let x_norm_sq: f64 = x_design.iter().map(|&v| v * v).sum();
+        let mut rho = Array1::<f64>::zeros(s_list.len());
+        for (j, s_j) in s_list.iter().enumerate() {
+            let s_norm: f64 = s_j.iter().map(|&v| v * v).sum::<f64>().sqrt();
+            let lambda = (y_var * s_norm * n) / (x_norm_sq + 1e-10);
+            rho[j] = lambda.clamp(1e-6, 1e6).ln();
+        }
+        rho
+    }
+}
+
+/// Caller-supplied ρ vector (e.g. from a pickled warm-restart or a
+/// hand-tuned starting point). The vector's length must equal the
+/// `s_list.len()` of the surrounding fit (debug-asserted).
+#[derive(Clone)]
+pub struct ExplicitInit {
+    pub rho: Array1<f64>,
+}
+impl LambdaInit for ExplicitInit {
+    fn init(
+        &self,
+        _y: ArrayView1<f64>,
+        _x_design: &Array2<f64>,
+        s_list: &[Array2<f64>],
+    ) -> Array1<f64> {
+        debug_assert_eq!(
+            self.rho.len(),
+            s_list.len(),
+            "ExplicitInit ρ vector length must match s_list"
+        );
+        self.rho.clone()
+    }
+}
 
 /// Build a Pearson-φ̂ `scale_fn` closure for `fit_pirls_envelope`. The
 /// returned closure captures `(y, prior_weights, n, mu_floor, V(μ))` and

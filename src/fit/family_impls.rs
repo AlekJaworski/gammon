@@ -34,6 +34,7 @@ use crate::score::{
 use crate::traits::{CoordsKind, InnerSolver, OuterSolver};
 
 use super::canonical::FamilyFitWithSolver;
+use super::driver::{LambdaInit, SmartInit};
 use super::driver::{fit_pirls_envelope, fit_shape_aware, make_pearson_scale_fn};
 use super::gaussian::fit_gaussian_from_prep;
 use super::quantile::fit_quantile_from_prep;
@@ -262,7 +263,8 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, NegBinVariance, S> for NegBin
         check_y_nonneg(y, "NegBin")?;
 
         let n_terms = prep.s_list.len();
-        let mut theta0_vec = vec![0.0_f64; n_terms];
+        let rho_init = SmartInit.init(y, &prep.x_design, &prep.s_list);
+        let mut theta0_vec: Vec<f64> = rho_init.to_vec();
         theta0_vec.push(init_theta.ln());
         let theta0 = Array1::from_vec(theta0_vec);
 
@@ -310,7 +312,8 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, TVariance, S> for TDist 
         }
 
         let n_terms = prep.s_list.len();
-        let mut theta0_vec = vec![0.0_f64; n_terms];
+        let rho_init = SmartInit.init(y, &prep.x_design, &prep.s_list);
+        let mut theta0_vec: Vec<f64> = rho_init.to_vec();
         theta0_vec.push(init_sigma2.ln());
         theta0_vec.push((init_nu - 2.0).ln());
         let theta0 = Array1::from_vec(theta0_vec);
@@ -363,7 +366,8 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, TweedieVariance, S> for Tweed
 
         let n_terms = prep.s_list.len();
         let p_t = ((init_p - 1.0) / (2.0 - init_p)).ln();
-        let mut theta0_vec = vec![0.0_f64; n_terms];
+        let rho_init = SmartInit.init(y, &prep.x_design, &prep.s_list);
+        let mut theta0_vec: Vec<f64> = rho_init.to_vec();
         theta0_vec.push(init_phi.ln());
         theta0_vec.push(p_t);
         let theta0 = Array1::from_vec(theta0_vec);
@@ -456,8 +460,12 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             _solver: PhantomData,
         };
 
-        // θ₀ = [ρ_1=0, …, ρ_T=0, θ₁, …, θ_{R-2}]
+        // θ₀ = [SmartInit ρ_1, …, SmartInit ρ_T, θ₁, …, θ_{R-2}]
+        let rho_init = SmartInit.init(y, &prep.x_design, &prep.s_list);
         let mut theta0 = Array1::<f64>::zeros(n_terms + theta0_shape.len());
+        for i in 0..n_terms {
+            theta0[i] = rho_init[i];
+        }
         for (i, &t) in theta0_shape.iter().enumerate() {
             theta0[n_terms + i] = t;
         }

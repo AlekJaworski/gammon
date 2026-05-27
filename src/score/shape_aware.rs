@@ -246,6 +246,26 @@ where
         // re-converged β̂, at 1 PIRLS solve instead of 2d+1).
         self.compute_value_grad_hess_analytical(theta)
     }
+
+    fn axis_step_caps(&self) -> Option<Vec<f64>> {
+        // ρ axes: 5.0 per axis (matches gamrs's global default, mgcv's
+        // unspecified-default Newton step magnitude in log-λ space).
+        // Shape axes: family-supplied (e.g. ocat θ → 0.5, Tweedie p_t → 2.0).
+        let n_terms = self.s_list.len();
+        let mut caps: Vec<f64> = vec![5.0; n_terms];
+        caps.extend(self.family_base.loss.shape_axis_step_caps());
+        Some(caps)
+    }
+
+    fn axis_bounds(&self) -> Option<Vec<(f64, f64)>> {
+        // ρ axes: effectively unbounded (large range — log λ saturation
+        // is governed by the gradient flattening, not a hard cap). Shape
+        // axes: family-supplied (ocat θ ∈ [-10, 10] etc.).
+        let n_terms = self.s_list.len();
+        let mut bnds: Vec<(f64, f64)> = vec![(-50.0, 50.0); n_terms];
+        bnds.extend(self.family_base.loss.shape_axis_bounds());
+        Some(bnds)
+    }
 }
 
 impl<L, K, V, B, P, S> ShapeAwareEnvelopeScore<L, K, V, B, P, S>
@@ -462,7 +482,10 @@ where
         let mut hess = if has_analytic_shape_grad {
             self.hess_via_fd_frozen_beta(theta, &fit, &ctx)?
         } else {
-            self.hess_via_fd_on_grad(theta)?
+            // v0.x recipe: direct central FD on the REML score value.
+            // Eliminates the FD-of-FD chain noise that was driving
+            // gamrs's saturated-λ over-leap on scat/negbin/ocat.
+            self.hess_via_fd_on_value(theta)?
         };
 
         // Optional family-supplied closed-form shape×shape block. Lives
@@ -556,11 +579,69 @@ where
         Ok(hess)
     }
 
+    /// Direct central FD of the REML score value (no chained FD through
+    /// the gradient). Mirrors v0.x's `reml_joint_ocat_finite_diff`
+    /// (`src/smooth.rs:622-694`) for families without
+    /// `analytic_shape_score_gradient` (scat / negbin / ocat).
+    ///
+    /// Diagonal: `(s(θ+h·eᵢ) − 2·s(θ) + s(θ−h·eᵢ)) / h²`.
+    /// Off-diagonal: `(s(θ+h·eᵢ+h·eⱼ) − s(θ+h·eᵢ−h·eⱼ)
+    ///               − s(θ−h·eᵢ+h·eⱼ) + s(θ−h·eᵢ−h·eⱼ)) / (4 h²)`.
+    ///
+    /// Cost: `1 + 2d + 2·d(d-1)` score evaluations (each a full PIRLS).
+    /// For d=4 (ocat with 2 smooths) that's 33 PIRLS solves — heavy,
+    /// but matches v0.x exactly and removes the chained-FD noise that
+    /// made gamrs's outer Newton drift on the saturated-λ axis (parity
+    /// report 2026-05-27).
+    fn hess_via_fd_on_value(&self, theta: &Array1<f64>) -> Result<Array2<f64>> {
+        let d = theta.len();
+        let mut h = Array2::<f64>::zeros((d, d));
+        let eps = 1.0e-4;
+        let s0 = self.compute_value(theta)?;
+        // Cache one-axis perturbations — reused for both the diagonal and
+        // each off-diagonal mixed-difference.
+        let mut s_plus = vec![0.0_f64; d];
+        let mut s_minus = vec![0.0_f64; d];
+        for i in 0..d {
+            let mut t_plus = theta.clone();
+            let mut t_minus = theta.clone();
+            t_plus[i] += eps;
+            t_minus[i] -= eps;
+            s_plus[i] = self.compute_value(&t_plus)?;
+            s_minus[i] = self.compute_value(&t_minus)?;
+            h[[i, i]] = (s_plus[i] - 2.0 * s0 + s_minus[i]) / (eps * eps);
+        }
+        // Off-diagonal mixed central differences.
+        for i in 0..d {
+            for j in i + 1..d {
+                let mut t_pp = theta.clone();
+                let mut t_pm = theta.clone();
+                let mut t_mp = theta.clone();
+                let mut t_mm = theta.clone();
+                t_pp[i] += eps;
+                t_pp[j] += eps;
+                t_pm[i] += eps;
+                t_pm[j] -= eps;
+                t_mp[i] -= eps;
+                t_mp[j] += eps;
+                t_mm[i] -= eps;
+                t_mm[j] -= eps;
+                let s_pp = self.compute_value(&t_pp)?;
+                let s_pm = self.compute_value(&t_pm)?;
+                let s_mp = self.compute_value(&t_mp)?;
+                let s_mm = self.compute_value(&t_mm)?;
+                let off = (s_pp - s_pm - s_mp + s_mm) / (4.0 * eps * eps);
+                h[[i, j]] = off;
+                h[[j, i]] = off;
+            }
+        }
+        Ok(h)
+    }
+
     /// v0.1 fallback path — central FD on the gradient with FULL PIRLS
-    /// re-converge at each ±h probe. Used by families without an
-    /// analytic shape gradient (TDist, NegBin, Ocat in gamrs) where the
-    /// frozen-β̂ Hessian is structurally inconsistent with the
-    /// FD-on-value gradient.
+    /// re-converge at each ±h probe. Retained because Tweedie's mixed
+    /// shape×ρ Hessian rows use the analytic-grad-frozen-β route instead.
+    #[allow(dead_code)]
     fn hess_via_fd_on_grad(&self, theta: &Array1<f64>) -> Result<Array2<f64>> {
         let d = theta.len();
         let mut h = Array2::<f64>::zeros((d, d));

@@ -51,6 +51,7 @@ pub mod quantile;
 pub use canonical::{
     fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver, FitWithProfile,
 };
+pub use driver::{ExplicitInit, LambdaInit, SmartInit, ZeroInit};
 
 /// Link kind tag carried on the [`FittedGam`] so `predict_ci` /
 /// `predict_diff` can map between η (linear-predictor) and μ (response)

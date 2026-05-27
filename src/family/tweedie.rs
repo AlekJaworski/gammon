@@ -112,6 +112,11 @@ impl Loss for Tweedie {
     fn n_shape_params(&self) -> usize {
         2
     }
+    /// mgcv `build_outer_search_vector`: TweedieLogPhi step cap 1.0,
+    /// TweedieP-transform step cap 2.0.
+    fn shape_axis_step_caps(&self) -> Vec<f64> {
+        vec![1.0, 2.0]
+    }
     fn set_shape_params(&mut self, params: &[f64]) {
         debug_assert_eq!(
             params.len(),

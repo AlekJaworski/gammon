@@ -89,6 +89,11 @@ impl Loss for TDist {
     fn n_shape_params(&self) -> usize {
         2
     }
+    /// mgcv `build_outer_search_vector`: TDistLogSigma2 step cap 1.0,
+    /// TDistLogNu (log(ν-2)) step cap 1.0.
+    fn shape_axis_step_caps(&self) -> Vec<f64> {
+        vec![1.0, 1.0]
+    }
     fn set_shape_params(&mut self, params: &[f64]) {
         debug_assert_eq!(params.len(), 2, "TDist expects 2 shape params");
         self.sigma2 = params[0].exp();

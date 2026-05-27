@@ -48,7 +48,13 @@ impl Default for NewtonOpts {
         // Closing it further is its own workstream — port mgcv's exact
         // assembly order or use a rotated-Cholesky path.
         Self {
-            max_iters: 50,
+            // 200 matches v0.x's `newton_max_iter = max_outer_iter.max(200)`
+            // (gam_optimized.rs:1265). Shape-aware multi-smooth fits need
+            // O(80-150) iters when a λ_j saturates — at 50 we hit the
+            // step-halving fallback and exit with a relaxed tolerance,
+            // which produces ρ̂ differences of 1-2 units vs v0.x on the
+            // saturated axis. See parity report 2026-05-27.
+            max_iters: 200,
             grad_tol: 5.0e-7,
             reml_tol: 1.0e-7,
             step_min: 1e-3,
@@ -80,7 +86,18 @@ impl Default for NewtonWithHalving {
 impl OuterSolver for NewtonWithHalving {
     fn minimize<S: ScoreDerivatives>(&self, score: &S, theta0: Array1<f64>) -> Result<OuterFit> {
         let opts = &self.opts;
+        let axis_caps = score.axis_step_caps();
+        let axis_bounds = score.axis_bounds();
         let mut theta = theta0;
+        // Clamp the initial point to any per-axis bounds — defensive
+        // against `theta0` coming in from a heuristic outside the box.
+        if let Some(ref bnds) = axis_bounds {
+            for (i, &(lo, hi)) in bnds.iter().enumerate() {
+                if i < theta.len() {
+                    theta[i] = theta[i].clamp(lo, hi);
+                }
+            }
+        }
         let (mut v, mut g, mut h) = score.value_grad_hess(&theta)?;
         let mut prev_v = f64::INFINITY;
 
@@ -121,19 +138,43 @@ impl OuterSolver for NewtonWithHalving {
                 Ok(s) => s,
                 Err(_) => -&g / opts.hess_floor.max(1.0), // fallback: steepest descent
             };
-            // Cap the step's L_∞ norm.
-            let step_norm = inf_norm(&step);
-            let scaled_step = if step_norm > opts.max_step {
-                &step * (opts.max_step / step_norm)
+            // Cap the step — per-axis caps (mgcv-style, set by shape-aware
+            // scores per family) if provided; otherwise the global L_∞ cap.
+            let scaled_step = if let Some(ref caps) = axis_caps {
+                debug_assert_eq!(caps.len(), step.len(), "axis_step_caps length mismatch");
+                // Per-axis: scale the whole step by the tightest binding ratio
+                // so direction is preserved (matches mgcv's per-axis-binding
+                // shrink — `smooth.r build_outer_search_vector`).
+                let mut shrink = 1.0_f64;
+                for (i, &si) in step.iter().enumerate() {
+                    if si.abs() > caps[i] && si.abs() > 0.0 {
+                        shrink = shrink.min(caps[i] / si.abs());
+                    }
+                }
+                &step * shrink
             } else {
-                step
+                let step_norm = inf_norm(&step);
+                if step_norm > opts.max_step {
+                    &step * (opts.max_step / step_norm)
+                } else {
+                    step
+                }
             };
 
-            // Step-halving until value decreases.
+            // Step-halving until value decreases. Per-axis bounds (if any)
+            // are clamped at each trial point — mgcv-style box-constrained
+            // Newton (smooth.r:~1976 lo/hi clamp).
             let mut alpha = 1.0;
             let mut accepted = false;
             for _ in 0..20 {
-                let trial = &theta + &(&scaled_step * alpha);
+                let mut trial = &theta + &(&scaled_step * alpha);
+                if let Some(ref bnds) = axis_bounds {
+                    for (i, &(lo, hi)) in bnds.iter().enumerate() {
+                        if i < trial.len() {
+                            trial[i] = trial[i].clamp(lo, hi);
+                        }
+                    }
+                }
                 let probe = score.value_grad_hess(&trial);
                 if let Ok((v_trial, g_trial, h_trial)) = probe {
                     if v_trial.is_finite() && v_trial < v - 1e-10 * v.abs() {
@@ -156,14 +197,16 @@ impl OuterSolver for NewtonWithHalving {
                 // Step-halving exhausted — likely at a numerical optimum
                 // where the gradient is small but Newton's quadratic
                 // approximation can't find a strictly-decreasing step.
-                // Declare converged if `|grad|_∞` is small relative to
-                // the score scale (same scale as the primary `grad_tol`).
+                // Declare converged ONLY if `|grad|_∞` meets the same
+                // criterion as the primary check. The old 1e-3 fallback
+                // masked non-convergence on saturated-λ axes (parity
+                // report 2026-05-27); v0.x has no such relaxed branch.
                 return Ok(OuterFit {
                     theta,
                     value: v,
                     grad_norm,
                     iterations: iter + 1,
-                    converged: grad_norm < 1e-3 * (v.abs() + 1.0),
+                    converged: grad_norm < grad_tol_abs,
                 });
             }
         }

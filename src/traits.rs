@@ -109,6 +109,22 @@ pub trait Loss {
         Vec::new()
     }
 
+    /// Per-shape-axis step cap for the outer Newton (mgcv-style). Length
+    /// `n_shape_params()`. Default `0.5` per axis — conservative enough
+    /// for the typical log-space shape transforms (ocat θ, NegBin log θ).
+    /// Families with looser caps in mgcv override: TDist log σ² = 1.0;
+    /// Tweedie log φ = 1.0, p-transform = 2.0.
+    fn shape_axis_step_caps(&self) -> Vec<f64> {
+        vec![0.5; self.n_shape_params()]
+    }
+    /// Per-shape-axis (lo, hi) bounds clamped after each accepted Newton
+    /// step. Length `n_shape_params()`. Default `(-10.0, 10.0)` — covers
+    /// every gamrs Loss's transform domain (log of positive scales, log
+    /// gaps for ocat). Families with tighter clamps override.
+    fn shape_axis_bounds(&self) -> Vec<(f64, f64)> {
+        vec![(-10.0, 10.0); self.n_shape_params()]
+    }
+
     /// Analytic contribution to the score's gradient w.r.t. THIS loss's
     /// shape parameters, evaluated at the current shape values.
     ///
@@ -332,6 +348,23 @@ pub trait ScoreDerivatives {
     /// Hessian, it should FD internally — the FD happens with the impl's
     /// own knowledge of which σ²/coords/etc. to hold fixed.
     fn value_grad_hess(&self, theta: &Array1<f64>) -> Result<(f64, Array1<f64>, Array2<f64>)>;
+
+    /// Per-axis step cap on a single Newton step (mgcv-style — see
+    /// `mgcv:smooth.r build_outer_search_vector`). Returns `None` to
+    /// signal "use the outer's global `max_step` L∞ cap" (the default).
+    /// Shape-aware multi-smooth scores override this to per-axis caps:
+    /// ρ axes use 5.0, ocat θ uses 0.5, TweedieTheta=2.0, NegBinTheta=0.5,
+    /// TDist log σ²=1.0. Closes the saturated-λ over-leap on multi-smooth
+    /// fits — see parity report 2026-05-27.
+    fn axis_step_caps(&self) -> Option<Vec<f64>> {
+        None
+    }
+    /// Per-axis lower / upper bounds clamped after each accepted step.
+    /// Returns `None` for axes without a bound. Used by mgcv's shape-aware
+    /// outer Newton (ocat θ ∈ [-10, 10]; TDist log σ² ∈ [lo, hi]).
+    fn axis_bounds(&self) -> Option<Vec<(f64, f64)>> {
+        None
+    }
 }
 
 /// Result of an outer-loop optimisation.
