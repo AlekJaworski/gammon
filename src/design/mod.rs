@@ -34,11 +34,13 @@ mod additive;
 mod cr;
 mod re;
 mod tensor;
+mod tps;
 
 pub use additive::{Additive, AdditivePredictor, MarginKind, TermSpec};
 pub use cr::{Cr, CrPredictor, CrStable, CrStablePredictor};
 pub use re::{Re, RePredictor};
 pub use tensor::TensorPredictor;
+pub use tps::TpsPredictor;
 
 // =============================================================================
 // Predictor — predict-time design rebuilder. Closed-set `enum`, NOT
@@ -73,6 +75,9 @@ pub enum Predictor {
     /// product of centred CR margins, with the intercept column
     /// prepended. Two penalties per term.
     Tensor(TensorPredictor),
+    /// 2-D (or higher) isotropic thin-plate regression spline.
+    /// Single penalty per term.
+    Tps(TpsPredictor),
 }
 
 impl Predictor {
@@ -87,6 +92,7 @@ impl Predictor {
             Self::CrStable(p) => p.design(x_new),
             Self::Additive(p) => p.design(x_new),
             Self::Tensor(p) => p.design(x_new),
+            Self::Tps(p) => p.design(x_new),
         }
     }
 
@@ -100,6 +106,7 @@ impl Predictor {
             Self::CrStable(p) => p.design_deriv(x_new, axis),
             Self::Additive(p) => p.design_deriv(x_new, axis),
             Self::Tensor(p) => p.design_deriv(x_new, axis),
+            Self::Tps(p) => p.design_deriv(x_new, axis),
         }
     }
 }
