@@ -277,6 +277,86 @@ where
     P: Profile<L>,
     S: LinearSolver,
 {
+    /// SINGLE SOURCE OF TRUTH for the per-term envelope ρ-gradient.
+    /// Called from `compute_value_grad`, `eval_grad_with_fit`,
+    /// `eval_grad_frozen_beta`, and the python-side diagnostic — every
+    /// gradient evaluation path goes through here.
+    ///
+    /// Formula (at converged β; envelope theorem):
+    ///   `∂REML/∂ρ_j = λ_j·β'S_jβ/(2φ) + 0.5·λ_j·tr(H⁻¹S_j)
+    ///                + 0.5·∂ridge/∂ρ_j · tr(H⁻¹) − 0.5·adj_rank_j`
+    ///
+    /// The `∂ridge/∂ρ_j` term is the load-bearing correction for the
+    /// score's post-penalty `max_diag(A)` ridge convention (mgcv recipe
+    /// per `reml_criterion_ocat_proper`). At `i* = argmax_i |A[i,i]|`
+    /// (post-pen), `∂A[i*,i*]/∂ρ_j = λ_j·S_j[i*,i*]` (W treated as
+    /// ρ-constant by envelope). For families using pre-penalty ridge
+    /// (or no ridge), this term is essentially zero because `i*` lands
+    /// on a position where `S_j[i*,i*] = 0`.
+    pub(crate) fn compute_rho_envelope_gradient(
+        &self,
+        fit: &GaussianInnerFit<S>,
+        family: &Family<L, K, V>,
+        rho_slice: &[f64],
+        bsb_per_term: &[f64],
+        tr_hinv_s_per_term: &[f64],
+        phi: f64,
+    ) -> Vec<f64> {
+        let n_terms = self.s_list.len();
+        let rank_adj = family.loss.score_rank_adjustment();
+        let n = fit.n;
+        let p = fit.p;
+
+        // Rebuild A_diag = X'WX_diag + Σ λ_j S_j_diag to find i* (the
+        // argmax row used by the post-penalty ridge formula).
+        let mut a_diag = Array1::<f64>::zeros(p);
+        for c in 0..p {
+            let mut xtwx_c = 0.0_f64;
+            for i in 0..n {
+                let xic = self.x_design[[i, c]];
+                xtwx_c += xic * xic * fit.working_weights[i];
+            }
+            a_diag[c] = xtwx_c;
+        }
+        for j in 0..n_terms {
+            let lambda_j = rho_slice[j].exp();
+            for c in 0..p {
+                a_diag[c] += lambda_j * self.s_list[j][[c, c]];
+            }
+        }
+        let mut i_star = 0_usize;
+        let mut best = a_diag[0].abs();
+        for c in 1..p {
+            let v = a_diag[c].abs();
+            if v > best {
+                best = v;
+                i_star = c;
+            }
+        }
+
+        let ridge_scale = 1.0e-5 * (1.0 + (n_terms as f64).sqrt());
+        // tr(H⁻¹) — diag of A⁻¹ via the fit's factor.
+        let mut id_eye = Array2::<f64>::zeros((p, p));
+        for c in 0..p {
+            id_eye[[c, c]] = 1.0;
+        }
+        let tr_h_inv = fit.trace_a_inv(id_eye.view());
+
+        let mut g = Vec::with_capacity(n_terms);
+        for j in 0..n_terms {
+            let lambda_j = rho_slice[j].exp();
+            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
+            let d_ridge_d_rho_j = ridge_scale * lambda_j * self.s_list[j][[i_star, i_star]];
+            g.push(
+                lambda_j * bsb_per_term[j] / (2.0 * phi)
+                    + 0.5 * lambda_j * tr_hinv_s_per_term[j]
+                    + 0.5 * d_ridge_d_rho_j * tr_h_inv
+                    - 0.5 * adj_rank_j,
+            );
+        }
+        g
+    }
+
     /// Build a family with the shape params from θ and run the inner solve.
     /// Returns the inner fit plus the rebuilt family (so the score body
     /// can read `loss.saturated_log_lik` / `loss.fixed_dispersion`
@@ -400,15 +480,17 @@ where
             .profile
             .dispersion(&family.loss, &fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
             .unwrap_or(1.0);
-        let rank_adj = family.loss.score_rank_adjustment();
-        // ∂REML/∂(log λ_j) = λ_j β'S_jβ / (2φ) + λ_j · tr(H⁻¹S_j) / 2 - rank_j / 2
+        let rho_grad = self.compute_rho_envelope_gradient(
+            &fit,
+            &family,
+            &rho_slice,
+            &bsb_per_term,
+            &tr_hinv_s_per_term,
+            phi,
+        );
         let mut g = Array1::<f64>::zeros(n_terms + n_shape);
         for j in 0..n_terms {
-            let lambda_j = rho_slice[j].exp();
-            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
-            g[j] = lambda_j * bsb_per_term[j] / (2.0 * phi)
-                + 0.5 * lambda_j * tr_hinv_s_per_term[j]
-                - 0.5 * adj_rank_j;
+            g[j] = rho_grad[j];
         }
 
         if n_shape > 0 {
@@ -797,14 +879,17 @@ where
             .dispersion(&family.loss, fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
             .unwrap_or(1.0);
 
-        let rank_adj = family.loss.score_rank_adjustment();
+        let rho_grad = self.compute_rho_envelope_gradient(
+            fit,
+            family,
+            &rho_slice,
+            &bsb_per_term,
+            &tr_hinv_s_per_term,
+            phi_center,
+        );
         let mut g = Array1::<f64>::zeros(n_terms + n_shape);
         for j in 0..n_terms {
-            let lambda_j = rho_slice[j].exp();
-            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
-            g[j] = lambda_j * bsb_per_term[j] / (2.0 * phi_center)
-                + 0.5 * lambda_j * tr_hinv_s_per_term[j]
-                - 0.5 * adj_rank_j;
+            g[j] = rho_grad[j];
         }
         if n_shape > 0 {
             let n_minus_mp = (fit.n as f64) - (self.mp as f64);
@@ -889,14 +974,19 @@ where
             .dispersion(&family.loss, fit, 1.0, bsb_total, fit.p as f64, self.mp)
             .unwrap_or(ctx.phi_center);
 
-        let rank_adj = family.loss.score_rank_adjustment();
+        // Reuse the same envelope ρ-gradient helper so the formula stays
+        // in one place (commit message: DRY).
+        let rho_grad = self.compute_rho_envelope_gradient(
+            fit,
+            &family,
+            &rho_slice,
+            &ctx.bsb_per_term,
+            &ctx.tr_hinv_s_per_term,
+            phi,
+        );
         let mut g = Array1::<f64>::zeros(n_terms + n_shape);
         for j in 0..n_terms {
-            let lambda_j = rho_slice[j].exp();
-            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
-            g[j] = lambda_j * ctx.bsb_per_term[j] / (2.0 * phi)
-                + 0.5 * lambda_j * ctx.tr_hinv_s_per_term[j]
-                - 0.5 * adj_rank_j;
+            g[j] = rho_grad[j];
         }
         if n_shape > 0 {
             let dp = ctx.deviance + bsb_total;

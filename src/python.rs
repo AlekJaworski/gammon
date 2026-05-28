@@ -221,6 +221,60 @@ impl PyFittedGam {
         let score = dp / 2.0 + 0.5 * log_det_h - 0.5 * log_det_lambda_s
             - 0.5 * (mp as f64) * two_pi_ln;
 
+        // Reuse the same envelope ρ-gradient helper the outer Newton uses,
+        // so the diagnostic and the optimiser stay byte-equivalent (DRY).
+        use crate::score::{FixedAtOneProfile, OcatInnerBuilder, ShapeAwareEnvelopeScore};
+        use crate::traits::CoordsKind;
+        // Need per-term tr(H⁻¹S_j) too, which trace_a_inv computes for us.
+        let mut tr_hinv_s_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        for j in 0..n_terms {
+            tr_hinv_s_per_term.push(fit.trace_a_inv(prep.s_list[j].view()));
+        }
+        let score_holder = ShapeAwareEnvelopeScore::<
+            crate::family::OcatLoss,
+            crate::family::IdentityLink,
+            crate::family::OcatVariance,
+            OcatInnerBuilder,
+            FixedAtOneProfile,
+            CholeskySolver,
+        > {
+            x_design: prep.x_design.clone(),
+            y: y_arr.clone(),
+            prior_weights: None,
+            s_list: prep.s_list.clone(),
+            family_base: crate::family::ocat_identity(
+                Array1::zeros(n_cats.saturating_sub(2)),
+                n_cats,
+            ),
+            rank_s_list: prep.rank_s_list.clone(),
+            mp: prep.mp,
+            log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
+            coords: CoordsKind::Identity,
+            pirls_opts: PirlsOpts::default(),
+            inner_builder: OcatInnerBuilder,
+            profile: FixedAtOneProfile,
+            _solver: PhantomData,
+        };
+        let family_ocat = crate::family::ocat_identity(
+            {
+                let mut a = Array1::<f64>::zeros(n_cats.saturating_sub(2));
+                for k in 0..n_cats.saturating_sub(2) {
+                    a[k] = theta_arr[n_terms + k];
+                }
+                a
+            },
+            n_cats,
+        );
+        let rho_vec = rho_slice.to_vec();
+        let grad_rho = score_holder.compute_rho_envelope_gradient(
+            &fit,
+            &family_ocat,
+            &rho_vec,
+            &bsb_per_term,
+            &tr_hinv_s_per_term,
+            1.0,
+        );
+
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("score", score)?;
         dict.set_item("beta", fit.beta.into_pyarray(py))?;
@@ -233,6 +287,7 @@ impl PyFittedGam {
         dict.set_item("mp", mp)?;
         dict.set_item("iters", fit.iterations)?;
         dict.set_item("converged", fit.converged)?;
+        dict.set_item("grad_rho", grad_rho)?;
         Ok(dict)
     }
 

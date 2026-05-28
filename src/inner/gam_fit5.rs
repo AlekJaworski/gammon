@@ -240,16 +240,12 @@ impl<S: LinearSolver> OcatInner<S> {
         // the score caused the +30 score drift on saturated-λ ocat
         // multi-smooth fits (parity report 2026-05-27).
         let a_factor = {
-            // v0.x's `reml_criterion_ocat_proper` (`reml/ocat_joint.rs:284-303`)
-            // computes the SCORE-side max_diag from A *after* adding the
-            // penalty. At saturated λ this gives a ridge several orders of
-            // magnitude larger than the β-solve recipe's pre-penalty max_diag,
-            // and that ridge flows into log|H| in the score formula.
-            // Diagnostic at the ocat parity fixture (2026-05-28) showed
-            // Δlog|H| ≈ 40 between engines at saturated λ — exactly the
-            // 0.5·40 = +20 score gap we observed. The β-solve in the PIRLS
-            // loop keeps the v0.x `fit_pirls_ocat` pre-penalty convention
-            // for numerical consistency with that algorithm.
+            // v0.x recipe: POST-penalty max_diag (`reml/ocat_joint.rs:284-303`).
+            // The score's `log|H|` then matches v0.x byte-for-byte.
+            // The analytic ρ-gradient must include the
+            // `∂ridge/∂ρ_j · tr(H⁻¹) / 2` term because the post-penalty
+            // ridge depends on λ — that term is wired in
+            // `shape_aware.rs::compute_value_grad`.
             let xtw = weighted_xt(&self.x_design, &working_weights);
             let xtwx = xtw.dot(&self.x_design);
             let mut a = xtwx;

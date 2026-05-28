@@ -55,8 +55,8 @@ impl Default for NewtonOpts {
             // which produces ρ̂ differences of 1-2 units vs v0.x on the
             // saturated axis. See parity report 2026-05-27.
             max_iters: 200,
-            grad_tol: 5.0e-7,
-            reml_tol: 1.0e-7,
+            grad_tol: 1.0e-9,
+            reml_tol: 1.0e-10,
             step_min: 1e-3,
             hess_floor: 1e-8,
             max_step: 5.0,
