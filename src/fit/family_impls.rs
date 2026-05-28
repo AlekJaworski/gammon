@@ -18,12 +18,12 @@ use ndarray::{Array1, ArrayView1, ArrayView2};
 use crate::design::PreparedDesign;
 use crate::error::{GamrsError, Result};
 use crate::family::{
-    bernoulli_logit, gamma_log, inverse_gaussian_log, negbin_log, ocat_identity, ocat_init_theta,
-    poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity, tweedie_log, Bernoulli,
-    BinomialVariance, ConstantVariance, ElfLoss, ElfVariance, Family, Gamma, GammaVariance,
-    Gaussian, IdentityLink, InverseGaussian, InverseGaussianVariance, LogLink, LogitLink, NegBin,
-    NegBinVariance, OcatLoss, OcatVariance, Poisson, PoissonVariance, QuasiBinomial, QuasiPoisson,
-    TDist, TVariance, Tweedie, TweedieVariance,
+    bernoulli_logit, gamma_inverse, gamma_log, inverse_gaussian_log, negbin_log, ocat_identity,
+    ocat_init_theta, poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity,
+    tweedie_log, Bernoulli, BinomialVariance, ConstantVariance, ElfLoss, ElfVariance, Family,
+    Gamma, GammaVariance, Gaussian, IdentityLink, InverseGaussian, InverseGaussianVariance,
+    InverseLink, LogLink, LogitLink, NegBin, NegBinVariance, OcatLoss, OcatVariance, Poisson,
+    PoissonVariance, QuasiBinomial, QuasiPoisson, TDist, TVariance, Tweedie, TweedieVariance,
 };
 use crate::inner::{GaussianInnerFit, LinearSolver, PirlsOpts};
 use crate::outer::{NewtonOpts, NewtonWithHalving};
@@ -205,6 +205,42 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, GammaVariance, S> for Gamma {
             MgcvTwoSigmaProfile,
             scale_fn,
             LinkKind::Log,
+        )
+    }
+}
+
+// --- Gamma: inverse (canonical) link + μ² variance, profiled φ ---
+// mgcv's default for `family = Gamma()`. Reuses the link-free `Gamma`
+// Loss + `μ²` `GammaVariance` from the log-link impl; only the Link
+// type swaps. Canonical pair → Fisher == Newton in PIRLS.
+impl<S: LinearSolver> FamilyFitWithSolver<InverseLink, GammaVariance, S> for Gamma {
+    fn fit_from_prep_canonical(
+        _family: Family<Self, InverseLink, GammaVariance>,
+        prep: PreparedDesign,
+        x: ArrayView2<f64>,
+        y: ArrayView1<f64>,
+        prior_weights: Option<ArrayView1<f64>>,
+    ) -> Result<FittedGam> {
+        check_lengths(x, y, prior_weights)?;
+        check_y_positive(y, "Gamma")?;
+        let n = x.nrows();
+        let scale_fn = make_pearson_scale_fn::<S, _>(
+            y.to_owned(),
+            prior_weights.map(|w| w.to_owned()),
+            n,
+            1e-300,
+            |mu_i| mu_i * mu_i,
+        );
+        fit_pirls_envelope::<_, _, _, _, _, S, _>(
+            prep,
+            x,
+            y,
+            prior_weights,
+            gamma_inverse(),
+            Gamma,
+            MgcvTwoSigmaProfile,
+            scale_fn,
+            LinkKind::Inverse,
         )
     }
 }

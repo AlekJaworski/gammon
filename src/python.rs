@@ -31,8 +31,9 @@ use pyo3::Bound;
 use crate::design::{Additive, Cr, CrStable, DesignStrategy, MarginKind, Predictor, Re, TermSpec};
 use crate::error::GamrsError;
 use crate::family::{
-    bernoulli_logit, elf_identity, gamma_log, gaussian_identity, inverse_gaussian_log, negbin_log,
-    ocat_identity, poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity, tweedie_log,
+    bernoulli_logit, elf_identity, gamma_inverse, gamma_log, gaussian_identity,
+    inverse_gaussian_log, negbin_log, ocat_identity, poisson_log, quasibinomial_logit,
+    quasipoisson_log, tdist_identity, tweedie_log,
 };
 use crate::fit::{FamilyFit, FittedGam, PredictScale};
 
@@ -889,7 +890,8 @@ where
 /// - `"poisson"` → `poisson_log()`
 /// - `"quasipoisson"` → `quasipoisson_log()`
 /// - `"quasibinomial"` → `quasibinomial_logit()`
-/// - `"gamma"` → `gamma_log()`
+/// - `"Gamma"` → `gamma_inverse()` (mgcv's canonical default for `Gamma()`)
+/// - `"gamma"` → `gamma_log()` (backwards-compatible log-link alias)
 /// - `"inverse_gaussian"` / `"inverse.gaussian"` → `inverse_gaussian_log()`
 /// - `"negbin"` / `"nb"` → `negbin_log(theta=2.0)` (or user-passed theta)
 /// - `"tdist"` / `"scat"` → `tdist_identity(nu=5, sigma2=1)`
@@ -952,6 +954,7 @@ fn fit<'py>(
         "quasibinomial" => {
             fit_dispatch_design(quasibinomial_logit(), x_view, y_view, w_view, design, k)?
         }
+        "Gamma" => fit_dispatch_design(gamma_inverse(), x_view, y_view, w_view, design, k)?,
         "gamma" => fit_dispatch_design(gamma_log(), x_view, y_view, w_view, design, k)?,
         "inverse_gaussian" | "inverse.gaussian" => {
             fit_dispatch_design(inverse_gaussian_log(), x_view, y_view, w_view, design, k)?
@@ -1036,7 +1039,7 @@ fn fit<'py>(
         other => {
             return Err(PyValueError::new_err(format!(
                 "unknown family {other:?}; supported: gaussian, bernoulli, poisson, \
-                 quasipoisson, quasibinomial, gamma, inverse_gaussian, negbin, tdist, \
+                 quasipoisson, quasibinomial, gamma, Gamma, inverse_gaussian, negbin, tdist, \
                  tweedie, ocat, elf"
             )))
         }
@@ -1245,6 +1248,7 @@ fn fit_additive<'py>(
         "quasibinomial" => {
             fit_additive_dispatch(quasibinomial_logit(), x_view, y_view, w_view, term_specs)?
         }
+        "Gamma" => fit_additive_dispatch(gamma_inverse(), x_view, y_view, w_view, term_specs)?,
         "gamma" => fit_additive_dispatch(gamma_log(), x_view, y_view, w_view, term_specs)?,
         "inverse_gaussian" | "inverse.gaussian" => {
             fit_additive_dispatch(inverse_gaussian_log(), x_view, y_view, w_view, term_specs)?
@@ -1325,7 +1329,7 @@ fn fit_additive<'py>(
         other => {
             return Err(PyValueError::new_err(format!(
                 "unknown family {other:?}; supported: gaussian, bernoulli, poisson, \
-                 quasipoisson, quasibinomial, gamma, inverse_gaussian, negbin, tdist, \
+                 quasipoisson, quasibinomial, gamma, Gamma, inverse_gaussian, negbin, tdist, \
                  tweedie, ocat, elf"
             )))
         }

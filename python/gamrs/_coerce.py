@@ -20,8 +20,12 @@ FAMILY_TO_GAMRS: dict[str, tuple[str, str]] = {
     "poisson": ("poisson", "log"),
     "quasipoisson": ("quasipoisson", "log"),
     "quasibinomial": ("quasibinomial", "logit"),
+    # mgcv's canonical link for Gamma is reciprocal (1/μ). The capital-G
+    # "Gamma" matches R's mgcv default; lowercase "gamma" keeps the
+    # historical log-link alias for backwards-compatibility with
+    # pre-canonical-link callers.
+    "Gamma": ("Gamma", "inverse"),
     "gamma": ("gamma", "log"),
-    "Gamma": ("gamma", "log"),
     "inverse.gaussian": ("inverse_gaussian", "log"),
     "inverse_gaussian": ("inverse_gaussian", "log"),
     "negbin": ("negbin", "log"),

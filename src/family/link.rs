@@ -1,4 +1,4 @@
-//! Shared link functions: Identity, Log, Logit.
+//! Shared link functions: Identity, Log, Logit, Inverse.
 
 use crate::traits::Link;
 
@@ -10,6 +10,12 @@ pub struct LogLink;
 
 #[derive(Clone)]
 pub struct LogitLink;
+
+/// Reciprocal link `g(μ) = 1/μ`. Canonical link for the Gamma family
+/// (mgcv's `Gamma()` default). Pair with `Gamma` Loss + `GammaVariance`
+/// via the `gamma_inverse()` constructor.
+#[derive(Clone)]
+pub struct InverseLink;
 
 impl Link for IdentityLink {
     fn link(&self, mu: f64) -> f64 {
@@ -101,6 +107,48 @@ impl Link for LogitLink {
     }
     fn is_canonical(&self) -> bool {
         // Logit IS the canonical link for Bernoulli/Binomial.
+        true
+    }
+}
+
+impl Link for InverseLink {
+    fn link(&self, mu: f64) -> f64 {
+        // g(μ) = 1/μ. Floor μ away from 0 to keep η finite.
+        let eps = 1e-300;
+        1.0 / mu.max(eps)
+    }
+    fn inverse_link(&self, eta: f64) -> f64 {
+        // g⁻¹(η) = 1/η. Floor |η| away from 0 to keep μ finite.
+        let eps = 1e-300;
+        let sign = if eta < 0.0 { -1.0 } else { 1.0 };
+        1.0 / (sign * eta.abs().max(eps))
+    }
+    fn d_inverse_link(&self, eta: f64) -> f64 {
+        // dμ/dη = -1/η²
+        let eps = 1e-300;
+        let e2 = (eta * eta).max(eps);
+        -1.0 / e2
+    }
+    fn d_link_dmu(&self, mu: f64) -> f64 {
+        // dη/dμ = -1/μ²
+        let eps = 1e-300;
+        let m2 = (mu * mu).max(eps);
+        -1.0 / m2
+    }
+    fn d2_link_dmu(&self, mu: f64) -> f64 {
+        // d²η/dμ² = 2/μ³
+        let eps = 1e-300;
+        let m = mu.max(eps);
+        2.0 / (m * m * m)
+    }
+    fn d3_link_dmu(&self, mu: f64) -> f64 {
+        // d³η/dμ³ = -6/μ⁴
+        let eps = 1e-300;
+        let m = mu.max(eps);
+        -6.0 / (m * m * m * m)
+    }
+    fn is_canonical(&self) -> bool {
+        // Reciprocal IS the canonical link for Gamma.
         true
     }
 }

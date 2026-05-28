@@ -2,7 +2,7 @@
 
 use crate::traits::{Loss, VarianceFn};
 
-use super::link::LogLink;
+use super::link::{InverseLink, LogLink};
 use super::Family;
 
 /// Gamma likelihood for continuous positive responses (waiting times,
@@ -119,4 +119,13 @@ impl VarianceFn for GammaVariance {
 /// Phase 7 convenience constructor — Gamma + log link.
 pub fn gamma_log() -> Family<Gamma, LogLink, GammaVariance> {
     Family::new(Gamma, LogLink, GammaVariance)
+}
+
+/// Gamma + reciprocal (inverse) link — the canonical link mgcv uses for
+/// `family = Gamma()` in R. Reuses the link-free `Gamma` Loss / `μ²`
+/// `GammaVariance` and pairs them with the new `InverseLink`. Canonical-
+/// pair means Fisher == Newton in PIRLS, so no `use_newton_irls` opt-in
+/// is needed.
+pub fn gamma_inverse() -> Family<Gamma, InverseLink, GammaVariance> {
+    Family::new(Gamma, InverseLink, GammaVariance)
 }

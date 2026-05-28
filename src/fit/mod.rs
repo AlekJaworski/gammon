@@ -58,7 +58,7 @@ pub use driver::{ExplicitInit, LambdaInit, SmartInit, ZeroInit};
 /// scales without re-importing the family type at the call site.
 ///
 /// Closed-set enum (no `Box<dyn>`) — every family in gamrs uses one of
-/// these three canonical links. New families adopting a new link kind
+/// these canonical link kinds. New families adopting a new link kind
 /// extend this enum (a library-controlled change).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
@@ -66,6 +66,8 @@ pub enum LinkKind {
     Identity,
     Log,
     Logit,
+    /// Reciprocal link `η = 1/μ` (mgcv's canonical link for Gamma).
+    Inverse,
 }
 
 impl LinkKind {
@@ -82,6 +84,12 @@ impl LinkKind {
                     e / (1.0 + e)
                 }
             }
+            Self::Inverse => {
+                // μ = 1/η. Floor |η| away from 0.
+                let eps = 1e-300;
+                let sign = if eta < 0.0 { -1.0 } else { 1.0 };
+                1.0 / (sign * eta.abs().max(eps))
+            }
         }
     }
 
@@ -94,6 +102,12 @@ impl LinkKind {
             Self::Logit => {
                 let mu = self.inverse(eta);
                 mu * (1.0 - mu)
+            }
+            Self::Inverse => {
+                // dμ/dη = -1/η²
+                let eps = 1e-300;
+                let e2 = (eta * eta).max(eps);
+                -1.0 / e2
             }
         }
     }
