@@ -133,6 +133,97 @@ impl PyFittedGam {
         self.inner.shape_params.clone().into_pyarray(py)
     }
 
+    /// Diagnostic: evaluate the ocat REML score at an arbitrary
+    /// `theta = [ρ_1, …, ρ_T, θ_ocat_1, …]` without re-fitting the
+    /// outer Newton. Re-runs the inner PIRLS at the requested θ and
+    /// returns the score value. Used for parity diagnostics against
+    /// v0.x's `evaluate_reml_ocat_proper_at`.
+    ///
+    /// Requires the fit to be an ocat fit (the caller's responsibility);
+    /// otherwise returns an error.
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_reml_at_ocat<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        x: PyReadonlyArray2<'py, f64>,
+        theta: PyReadonlyArray1<'py, f64>,
+        n_cats: usize,
+        k_per_term: Vec<usize>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        use crate::design::{Additive, Cr, DesignStrategy, TermSpec};
+        use crate::family::ocat_identity;
+        use crate::inner::{CholeskySolver, OcatInner, PirlsOpts};
+        use crate::traits::InnerSolver;
+        use ndarray::Array1;
+        use std::marker::PhantomData;
+
+        let _ = Cr { k: 0 };
+        let y_arr: Array1<f64> = y.as_array().to_owned();
+        let x_view: ArrayView2<f64> = x.as_array();
+        let theta_arr: Array1<f64> = theta.as_array().to_owned();
+
+        let terms: Vec<TermSpec> = k_per_term
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| TermSpec::Cr { col: i, k })
+            .collect();
+        let prep = Additive { terms }.prepare(x_view).map_err(map_err)?;
+        let n_terms = prep.s_list.len();
+        let rho_slice: Array1<f64> = theta_arr.slice(ndarray::s![..n_terms]).to_owned();
+        let thresholds: Array1<f64> = if theta_arr.len() > n_terms {
+            theta_arr.slice(ndarray::s![n_terms..]).to_owned()
+        } else {
+            Array1::zeros(n_cats.saturating_sub(2))
+        };
+        let family = ocat_identity(thresholds, n_cats);
+        let inner = OcatInner::<CholeskySolver> {
+            x_design: prep.x_design.clone(),
+            y: y_arr.clone(),
+            prior_weights: None,
+            s_list: prep.s_list.clone(),
+            family,
+            opts: PirlsOpts::default(),
+            _solver: PhantomData,
+        };
+        let fit = inner.fit(&rho_slice).map_err(map_err)?;
+
+        // Decompose the score components per
+        // `reml/ocat_joint.rs::reml_criterion_ocat_proper`.
+        let mut bsb_total = 0.0_f64;
+        let mut bsb_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut log_det_lambda_s = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = prep.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            bsb_per_term.push(bsb_j);
+            let lambda_j = rho_slice[j].exp();
+            bsb_total += lambda_j * bsb_j;
+            log_det_lambda_s +=
+                (prep.rank_s_list[j] as f64) * rho_slice[j] + prep.log_pseudo_det_s_list[j];
+        }
+        let dp = fit.deviance + bsb_total;
+        let log_det_h = fit.log_det_a();
+        let mp = prep.mp;
+        let two_pi_ln = (2.0_f64 * std::f64::consts::PI).ln();
+        let score = dp / 2.0 + 0.5 * log_det_h - 0.5 * log_det_lambda_s
+            - 0.5 * (mp as f64) * two_pi_ln;
+
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("score", score)?;
+        dict.set_item("beta", fit.beta.into_pyarray(py))?;
+        dict.set_item("eta", fit.eta.into_pyarray(py))?;
+        dict.set_item("deviance", fit.deviance)?;
+        dict.set_item("bsb_total", bsb_total)?;
+        dict.set_item("bsb_per_term", bsb_per_term)?;
+        dict.set_item("log_det_h", log_det_h)?;
+        dict.set_item("log_det_lambda_s", log_det_lambda_s)?;
+        dict.set_item("mp", mp)?;
+        dict.set_item("iters", fit.iterations)?;
+        dict.set_item("converged", fit.converged)?;
+        Ok(dict)
+    }
+
     /// Per-term column ranges into the lpmatrix `[1 | C_1 | C_2 | …]`.
     /// Returns a list of `(first, last_exclusive)` tuples — one per term
     /// for an Additive fit, or a single `[(1, p)]` for a single-smooth fit.
