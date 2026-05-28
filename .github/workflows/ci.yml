@@ -24,9 +24,10 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
-        # Library-only clippy (benches inherited from cram still use the
-        # 1-D fit API; tracked separately). Warnings allowed for now.
-        run: cargo clippy --lib
+        # Full target set (lib + tests + benches), errors on warnings.
+        # Benches were ported to the current `Array2<f64>` fit API in
+        # task #105 so `--all-targets` no longer skips them.
+        run: cargo clippy --all-targets -- -D warnings
       - name: cargo test (release)
         run: cargo test --release
 
