@@ -123,6 +123,13 @@ impl Loss for TDist {
         1.0e-8
     }
 
+    /// EXPERIMENTAL — diagnostic toggle for the mgcv-style rank heuristic
+    /// (centered CR(k) treated as rank k−2 by mgcv vs gamrs's k−1). Empirical
+    /// check for scat parallel to ocat (commit `d91b710`).
+    fn score_rank_adjustment(&self) -> i32 {
+        -1
+    }
+
     /// Provide Level-1 derivatives (`Dmu3, Dth, Dmuth, Dmu2th`) to the
     /// shape-aware score's analytic θ-gradient assembly. Mirrors ocat's
     /// `OcatLoss::level1_shape_derivatives` (commits `85946a1` + `c38083c`)

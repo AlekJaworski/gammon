@@ -339,6 +339,31 @@ impl DesignStrategy for Additive {
                     per_term_predictor.push(Predictor::Tensor(fit.predictor));
                     cols_used.push(vec![col_a, col_b]);
                 }
+                TermSpec::TeMulti { .. } | TermSpec::Ti { .. } => {
+                    // N-margin te(...) / ti(...) interaction dispatch is
+                    // pending the TensorTermFit::build_te / build_ti
+                    // n-margin extensions. Currently returns an explicit
+                    // error so callers can detect the unfinished path.
+                    return Err(GamrsError::InvalidParameter(
+                        "TeMulti and Ti dispatch not yet wired in Additive::prepare. \
+                         The TermSpec variants are surfaced for forward-compat; the \
+                         n-margin and ti() builders in src/design/tensor.rs are a \
+                         pending follow-up commit (task #99 partial)."
+                            .to_string(),
+                    ));
+                }
+                TermSpec::Tps { .. } => {
+                    let (tcols, tk) = match t {
+                        TermSpec::Tps { cols, k } => (cols.clone(), *k),
+                        _ => unreachable!(),
+                    };
+                    let fit = super::tps::TpsTermFit::build(x, &tcols, tk)?;
+                    per_term_dim.push(fit.design.ncols());
+                    per_term_centred.push(fit.design);
+                    per_term_s_smooth.push(vec![fit.s_smooth]);
+                    per_term_predictor.push(Predictor::Tps(fit.predictor));
+                    cols_used.push(tcols);
+                }
             }
         }
 
