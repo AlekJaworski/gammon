@@ -89,22 +89,26 @@ impl TermSpec {
     /// duplicate-column checks). Tensor terms also read `col_b`; use
     /// [`Self::cols`] for the full list.
     pub fn col(&self) -> usize {
-        match *self {
-            Self::Cr { col, .. } => col,
-            Self::CrStable { col, .. } => col,
-            Self::Re { col } => col,
-            Self::Tensor { col_a, .. } => col_a,
+        match self {
+            Self::Cr { col, .. } => *col,
+            Self::CrStable { col, .. } => *col,
+            Self::Re { col } => *col,
+            Self::Tensor { col_a, .. } => *col_a,
+            Self::TeMulti { cols, .. } | Self::Ti { cols, .. } | Self::Tps { cols, .. } => cols[0],
         }
     }
 
     /// All columns this term reads from `x`. Length 1 for univariate
-    /// terms, 2 for tensor products.
+    /// terms, >= 2 for tensor / interaction / TPRS terms.
     pub fn cols(&self) -> Vec<usize> {
-        match *self {
-            Self::Cr { col, .. } => vec![col],
-            Self::CrStable { col, .. } => vec![col],
-            Self::Re { col } => vec![col],
-            Self::Tensor { col_a, col_b, .. } => vec![col_a, col_b],
+        match self {
+            Self::Cr { col, .. } => vec![*col],
+            Self::CrStable { col, .. } => vec![*col],
+            Self::Re { col } => vec![*col],
+            Self::Tensor { col_a, col_b, .. } => vec![*col_a, *col_b],
+            Self::TeMulti { cols, .. } | Self::Ti { cols, .. } | Self::Tps { cols, .. } => {
+                cols.clone()
+            }
         }
     }
 }
