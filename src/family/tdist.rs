@@ -46,20 +46,30 @@ impl Loss for TDist {
         (self.nu + 1.0) * (1.0 + r * r / (self.nu * self.sigma2)).ln()
     }
 
-    /// Saturated log-lik: `log Γ((ν+1)/2) - log Γ(ν/2) - 0.5 log(π·ν·σ²)`
-    /// — independent of y. We drop the y-dependent piece since the score
-    /// formula is invariant under additive constants in y; the *λ*-gradient
-    /// is unaffected. Phase 2a only uses `saturated_log_lik` inside the
-    /// score's `Σ ls(y)` sum, where this constant is fine. The `_scale`
+    /// Saturated log-lik per observation: `log Γ((ν+1)/2) - log Γ(ν/2)
+    /// - 0.5 log(π·ν·σ²)` — independent of y (scat is location-scale, so
+    /// the saturated density is constant in the response). The `_scale`
     /// arg is the external dispersion — TDist owns its scale via the
     /// shape param `self.sigma2`, so the external one is ignored.
+    ///
+    /// **Why both Γ terms matter under joint Newton on (λ, ν, σ²)**:
+    /// historically Phase-2a dropped the Γ ratio with the rationale "Γ
+    /// terms are constants in (ν, σ²)" — that is **false**: Γ((ν+1)/2)
+    /// and Γ(ν/2) both move with ν, and the Σ_i ls_i term carries an
+    /// n·(dlog Γ((ν+1)/2)/dν − dlog Γ(ν/2)/dν) component into the
+    /// LAML gradient w.r.t. log(ν - 2). Dropping it (as Phase 2a did)
+    /// made the outer Newton's ∂LAML/∂(log(ν - 2)) chase the wrong
+    /// optimum, pulling ν toward the lower bound (ν → 2⁺ saturated at
+    /// `log(ν - 2) = -10` on the multi-smooth synthetic) instead of
+    /// the interior optimum mgcv finds at ν ≈ 5. Includes both Γ terms
+    /// to match v0.x `pirls/mod.rs:521-528` (Family::TDist branch of
+    /// `saturated_log_likelihood`) byte-for-byte at fixed (ν, σ²).
     fn saturated_log_lik(&self, _y: f64, _scale: f64) -> f64 {
-        // -½ log(π·ν·σ²) + log Γ((ν+1)/2) - log Γ(ν/2)
-        // The Γ terms are constants in (ν, σ²); we omit them (constant in
-        // y, doesn't affect the λ-gradient — same convention Gaussian uses).
-        // For full joint-θ optimisation Phase 2b will reinstate them.
         let pi = std::f64::consts::PI;
-        -0.5 * (pi * self.nu * self.sigma2).ln()
+        let half_nu_p1 = (self.nu + 1.0) / 2.0;
+        let half_nu = self.nu / 2.0;
+        crate::special::log_gamma(half_nu_p1) - crate::special::log_gamma(half_nu)
+            - 0.5 * (pi * self.nu * self.sigma2).ln()
     }
 
     /// `∂D/∂μ = -2(ν+1)·(y-μ) / (ν·σ² + (y-μ)²)`.
