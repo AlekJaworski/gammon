@@ -112,6 +112,98 @@ impl Loss for TDist {
     fn get_shape_params(&self) -> Vec<f64> {
         vec![self.sigma2.ln(), (self.nu - 2.0).ln()]
     }
+
+    /// Match v0.x `fit_pirls_tdist`'s β-tolerance. v0.x's scat diagnostic
+    /// call site (`lib.rs:1162`) and the regular outer-fit path both pass
+    /// `1e-8` to `fit_pirls_tdist`. gamrs's PirlsOpts default of `1e-9`
+    /// stops one decimal later than v0.x, leaving a residual β-gap that
+    /// flows through Layer-3 into the score-formula's `log|H|`. Same
+    /// convention as ocat (commit `4c95a72`).
+    fn pirls_dev_rel_tol(&self) -> f64 {
+        1.0e-8
+    }
+
+    /// Provide Level-1 derivatives (`Dmu3, Dth, Dmuth, Dmu2th`) to the
+    /// shape-aware score's analytic θ-gradient assembly. Mirrors ocat's
+    /// `OcatLoss::level1_shape_derivatives` (commits `85946a1` + `c38083c`)
+    /// — the IFT path in `score/shape_aware.rs::analytic_shape_grad_via_ift`
+    /// and the Tk·KK' β-chain in `compute_rho_envelope_gradient` are
+    /// family-agnostic; they fire as soon as the loss returns `Some(...)`.
+    ///
+    /// For scat the two shape params are `θ_0 = log σ²` and
+    /// `θ_1 = log(ν − 2)`. All four arrays are analytic, derived from
+    /// `D(y, μ; ν, σ²) = (ν+1) · log(1 + (y−μ)²/(ν·σ²))`.
+    ///
+    /// Notation in the derivation: `r = y − μ`, `q = ν·σ²`, `s = q + r²`.
+    /// Identity link so `μ = η`. The shape-transform Jacobians are
+    /// `∂σ²/∂θ_0 = σ²`, `∂q/∂θ_0 = q`, `∂(ν−2)/∂θ_1 = ν − 2`,
+    /// `∂ν/∂θ_1 = ν − 2`, `∂q/∂θ_1 = σ²·(ν − 2)` (= `qs_theta1` below).
+    ///
+    /// The `dmu3` / `dth` / `dmuth` / `dmu2th` arrays already incorporate
+    /// the per-row prior weight (same convention as ocat —
+    /// `family/ocat.rs::ocat_dd_level1`; mgcv `efam.r:2814-2832`).
+    fn level1_shape_derivatives(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        eta: ndarray::ArrayView1<f64>,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<crate::traits::Level1ShapeDerivs> {
+        use ndarray::{Array1, Array2};
+        let n = y.len();
+        let nu = self.nu;
+        let sigma2 = self.sigma2;
+        let nu_p1 = nu + 1.0;
+        let nu_minus_2 = nu - 2.0;
+        let qs_theta1 = sigma2 * nu_minus_2; // ∂q/∂θ_1
+        let q = nu * sigma2; // ν·σ² — constant across rows
+
+        let mut dmu3 = Array1::<f64>::zeros(n);
+        let mut dth = Array2::<f64>::zeros((n, 2));
+        let mut dmuth = Array2::<f64>::zeros((n, 2));
+        let mut dmu2th = Array2::<f64>::zeros((n, 2));
+
+        for i in 0..n {
+            let r = y[i] - eta[i];
+            let r2 = r * r;
+            let s = q + r2;
+            let s2 = s * s;
+            let s3 = s2 * s;
+            let wt_i = prior_w.map(|w| w[i]).unwrap_or(1.0);
+
+            // ∂³D/∂μ³ = 4·r·(ν+1)·(3q − r²) / s³. Includes wt (ocat
+            // convention — IFT consumer pre-applies wt at this step).
+            dmu3[i] = wt_i * 4.0 * r * nu_p1 * (3.0 * q - r2) / s3;
+
+            // ── θ_0 = log σ² ────────────────────────────────────────────
+            // ∂D/∂θ_0 = (ν+1)·(q/s − 1) = −(ν+1)·r² / s.
+            dth[[i, 0]] = wt_i * (-nu_p1 * r2 / s);
+            // ∂(∂D/∂μ)/∂θ_0 = 2(ν+1)·r·q / s².
+            dmuth[[i, 0]] = wt_i * (2.0 * nu_p1 * r * q / s2);
+            // ∂(∂²D/∂μ²)/∂θ_0 = 2(ν+1)·q·(3r² − q) / s³.
+            dmu2th[[i, 0]] = wt_i * (2.0 * nu_p1 * q * (3.0 * r2 - q) / s3);
+
+            // ── θ_1 = log(ν − 2) ────────────────────────────────────────
+            // ∂D/∂θ_1 = (ν−2)·[log(1 + r²/q) − (ν+1)·r²/(ν·s)].
+            let log_term = if q > 0.0 { (1.0 + r2 / q).ln() } else { 0.0 };
+            dth[[i, 1]] = wt_i * nu_minus_2 * (log_term - nu_p1 * r2 / (nu * s));
+            // ∂(∂D/∂μ)/∂θ_1 = −2r·[(ν−2)·s − (ν+1)·qs_theta1] / s².
+            dmuth[[i, 1]] =
+                wt_i * (-2.0 * r * (nu_minus_2 * s - nu_p1 * qs_theta1) / s2);
+            // ∂(∂²D/∂μ²)/∂θ_1
+            //   = 2·[(ν−2)·(q − r²)·s + (ν+1)·qs_theta1·(3r² − q)] / s³.
+            dmu2th[[i, 1]] = wt_i
+                * (2.0
+                    * (nu_minus_2 * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q))
+                    / s3);
+        }
+
+        Some(crate::traits::Level1ShapeDerivs {
+            dmu3,
+            dth,
+            dmuth,
+            dmu2th,
+        })
+    }
 }
 
 impl VarianceFn for TVariance {
