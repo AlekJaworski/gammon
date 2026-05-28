@@ -282,17 +282,32 @@ where
     /// `eval_grad_frozen_beta`, and the python-side diagnostic — every
     /// gradient evaluation path goes through here.
     ///
-    /// Formula (at converged β; envelope theorem):
-    ///   `∂REML/∂ρ_j = λ_j·β'S_jβ/(2φ) + 0.5·λ_j·tr(H⁻¹S_j)
-    ///                + 0.5·∂ridge/∂ρ_j · tr(H⁻¹) − 0.5·adj_rank_j`
+    /// Formula (at PIRLS-converged β):
+    /// ```text
+    ///   ∂REML/∂ρ_j = λ_j·β'S_jβ/(2φ)
+    ///              + 0.5·λ_j·tr(H⁻¹S_j)                ← Fisher envelope
+    ///              + 0.5·∂ridge/∂ρ_j · tr(H⁻¹)         ← ridge derivative
+    ///              + 0.5·Tk·KK'_j                        ← β-chain in log|H|
+    ///              − 0.5·adj_rank_j
+    /// ```
     ///
-    /// The `∂ridge/∂ρ_j` term is the load-bearing correction for the
-    /// score's post-penalty `max_diag(A)` ridge convention (mgcv recipe
-    /// per `reml_criterion_ocat_proper`). At `i* = argmax_i |A[i,i]|`
-    /// (post-pen), `∂A[i*,i*]/∂ρ_j = λ_j·S_j[i*,i*]` (W treated as
-    /// ρ-constant by envelope). For families using pre-penalty ridge
-    /// (or no ridge), this term is essentially zero because `i*` lands
-    /// on a position where `S_j[i*,i*] = 0`.
+    /// The two "extra" terms — beyond gamrs's prior simple-envelope form —
+    /// are the non-canonical-link / non-Gaussian corrections:
+    ///
+    /// 1. **`∂ridge/∂ρ_j · tr(H⁻¹) / 2`**: post-penalty `max_diag(A)`
+    ///    ridge depends on λ. At `i* = argmax_i |A[i,i]|` (post-pen),
+    ///    `∂A[i*,i*]/∂ρ_j = λ_j·S_j[i*,i*]` (W constant by envelope).
+    ///
+    /// 2. **`Tk·KK'_j / 2`**: W = ½·Dmu2(η) depends on β through η = Xβ,
+    ///    so `∂(X'WX)/∂ρ_j` is non-zero via the chain:
+    ///    `∂β/∂ρ_j = −λ_j·H⁻¹·S_j·β` (IFT on PIRLS score equation),
+    ///    `η₁_j = X·∂β/∂ρ_j`,
+    ///    `Tk·KK'_j = Σᵢ (½·Dmu3_i) · η₁_j[i] · h_diag[i]`,
+    ///    where `h_diag_i = (X·H⁻¹·X')_ii`.
+    ///    Only fires when the Loss supplies `level1_shape_derivatives`
+    ///    (ocat does; default Loss impl returns None, so other shape-
+    ///    aware families fall back to the pure envelope — matching
+    ///    gamrs's documented parity floor for those).
     pub(crate) fn compute_rho_envelope_gradient(
         &self,
         fit: &GaussianInnerFit<S>,
@@ -342,6 +357,54 @@ where
         }
         let tr_h_inv = fit.trace_a_inv(id_eye.view());
 
+        // Tk·KK' contribution — only fires when the Loss supplies
+        // `level1_shape_derivatives` (currently ocat). For other shape-
+        // aware families we use the pure-envelope formula which is the
+        // existing documented parity floor.
+        let tk_kkt_per_term: Vec<f64> = if let Some(level1) = family.loss.level1_shape_derivatives(
+            self.y.view(),
+            fit.eta.view(),
+            self.prior_weights.as_ref().map(|w| w.view()),
+        ) {
+            // h_diag[i] = (X · H⁻¹ · X')_ii. Use the fit factor to solve
+            // column-wise: A⁻¹ · X' = column-by-column solve(A, X_i).
+            let mut a_inv_xt = Array2::<f64>::zeros((p, n));
+            for i in 0..n {
+                let xi = self.x_design.row(i).to_owned();
+                let col = S::solve(&fit.a_factor, xi.view());
+                for r in 0..p {
+                    a_inv_xt[[r, i]] = col[r];
+                }
+            }
+            let mut h_diag = Array1::<f64>::zeros(n);
+            for i in 0..n {
+                let mut s = 0.0_f64;
+                for r in 0..p {
+                    s += self.x_design[[i, r]] * a_inv_xt[[r, i]];
+                }
+                h_diag[i] = s;
+            }
+            // For each j: dβ/dρ_j = -λ_j · H⁻¹ · S_j · β. Then η₁_j = X·dβ/dρ_j.
+            let mut tk_kkt = vec![0.0_f64; n_terms];
+            for j in 0..n_terms {
+                let lambda_j = rho_slice[j].exp();
+                let s_beta = self.s_list[j].dot(&fit.beta);
+                let dbeta_drho_j: Array1<f64> = {
+                    let rhs = s_beta.mapv(|v| -lambda_j * v);
+                    S::solve(&fit.a_factor, rhs.view())
+                };
+                let eta1_j = self.x_design.dot(&dbeta_drho_j);
+                let mut s = 0.0_f64;
+                for i in 0..n {
+                    s += 0.5 * level1.dmu3[i] * eta1_j[i] * h_diag[i];
+                }
+                tk_kkt[j] = s;
+            }
+            tk_kkt
+        } else {
+            vec![0.0_f64; n_terms]
+        };
+
         let mut g = Vec::with_capacity(n_terms);
         for j in 0..n_terms {
             let lambda_j = rho_slice[j].exp();
@@ -351,6 +414,7 @@ where
                 lambda_j * bsb_per_term[j] / (2.0 * phi)
                     + 0.5 * lambda_j * tr_hinv_s_per_term[j]
                     + 0.5 * d_ridge_d_rho_j * tr_h_inv
+                    + 0.5 * tk_kkt_per_term[j]
                     - 0.5 * adj_rank_j,
             );
         }
