@@ -64,6 +64,24 @@ pub enum TermSpec {
         bs_a: MarginKind,
         bs_b: MarginKind,
     },
+    /// N-margin anisotropic tensor product `te(x_{c_0}, ..., x_{c_{D-1}})`.
+    /// `cols.len() = k.len() = bs.len() = D >= 2`. D smoothing parameters.
+    TeMulti {
+        cols: Vec<usize>,
+        k: Vec<usize>,
+        bs: Vec<MarginKind>,
+    },
+    /// N-margin tensor interaction `ti(x_{c_0}, ..., x_{c_{D-1}})` — pure
+    /// interaction with main effects excluded (mgcv's `ti(...)`). D
+    /// smoothing parameters per term.
+    Ti {
+        cols: Vec<usize>,
+        k: Vec<usize>,
+        bs: Vec<MarginKind>,
+    },
+    /// 2-D (or higher) isotropic thin-plate regression spline. Single
+    /// smoothing parameter.
+    Tps { cols: Vec<usize>, k: usize },
 }
 
 impl TermSpec {
