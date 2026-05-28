@@ -31,7 +31,7 @@ use crate::score::{
     FixedAtOneProfile, MgcvTwoSigmaProfile, OcatInnerBuilder, OwnedByLossProfile,
     PirlsInnerBuilder, ShapeAwareEnvelopeScore, ShapeInnerBuilder,
 };
-use crate::traits::{CoordsKind, InnerSolver, OuterSolver};
+use crate::traits::{CoordsKind, InnerSolver, Loss, OuterSolver};
 
 use super::canonical::FamilyFitWithSolver;
 use super::driver::{LambdaInit, SmartInit};
@@ -454,7 +454,11 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             mp: prep.mp,
             log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
             coords: CoordsKind::Identity,
-            pirls_opts: PirlsOpts::default(),
+            pirls_opts: {
+                let mut o = PirlsOpts::default();
+                o.dev_rel_tol = family.loss.pirls_dev_rel_tol();
+                o
+            },
             inner_builder: OcatInnerBuilder,
             profile: FixedAtOneProfile,
             _solver: PhantomData,

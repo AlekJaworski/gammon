@@ -179,6 +179,19 @@ pub trait Loss {
         0
     }
 
+    /// Per-family inner-PIRLS β-change convergence tolerance. Default
+    /// `1e-9` (gamrs's historical PirlsOpts default). Families that need
+    /// to match v0.x's per-family inner-PIRLS tolerance override:
+    /// ocat returns `1e-8` matching `fit_pirls_ocat`'s `tolerance` arg
+    /// passed from `lib.rs:968`.
+    ///
+    /// The hook lets the shape-aware driver pass v0.x's per-family
+    /// tolerance into `PirlsOpts.dev_rel_tol` at score construction —
+    /// shrinks the Layer-3 β-residual to v0.x's stopping point.
+    fn pirls_dev_rel_tol(&self) -> f64 {
+        1.0e-9
+    }
+
     /// Analytic contribution to the score's gradient w.r.t. THIS loss's
     /// shape parameters, evaluated at the current shape values.
     ///

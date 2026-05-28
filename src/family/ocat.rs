@@ -214,6 +214,15 @@ impl Loss for OcatLoss {
         -1
     }
 
+    /// Match v0.x's `fit_pirls_ocat` β-tolerance (`lib.rs:968` passes
+    /// `1e-8` to the PIRLS call). gamrs's general `PirlsOpts::default`
+    /// uses `1e-9` which stops one decimal later than v0.x — the residual
+    /// β difference between the two engines at the same θ was driven
+    /// largely by this gap (Layer-3 parity diagnostic 2026-05-28).
+    fn pirls_dev_rel_tol(&self) -> f64 {
+        1.0e-8
+    }
+
     /// Provide Level-1 derivatives (`Dmu3, Dth, Dmuth, Dmu2th`) to the
     /// shape-aware score's analytic θ-gradient assembly. Ports v0.x's
     /// `ocat_dd` at `OcatDerivLevel::Level1`. The score uses these to

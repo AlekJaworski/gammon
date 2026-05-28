@@ -305,6 +305,11 @@ where
     let prior = prior_weights.map(|w| w.to_owned());
     let n = x.nrows();
 
+    let pirls_opts = {
+        let mut o = PirlsOpts::default();
+        o.dev_rel_tol = family_base.loss.pirls_dev_rel_tol();
+        o
+    };
     let score = ShapeAwareEnvelopeScore::<L, K, V, B, P, S> {
         x_design: prep.x_design.clone(),
         y: y.to_owned(),
@@ -315,7 +320,7 @@ where
         mp: prep.mp,
         log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
         coords: CoordsKind::Identity,
-        pirls_opts: PirlsOpts::default(),
+        pirls_opts,
         inner_builder: inner_builder.clone(),
         profile,
         _solver: PhantomData,
