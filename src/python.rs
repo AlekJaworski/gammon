@@ -372,6 +372,280 @@ impl PyFittedGam {
         Ok(dict)
     }
 
+    /// Diagnostic: evaluate the scat (TDist) LAML score at an arbitrary
+    /// `theta = [ρ_1, …, ρ_T, log_σ², log(ν - 2)]` without re-fitting the
+    /// outer Newton. Re-runs the inner PIRLS at the requested θ and
+    /// returns a dict with every additive component of mgcv's GamFit5
+    /// formula `Dp/2 - ls + log|H|/2 - log|λS|+/2 - Mp/2·log(2π)`.
+    /// Used for parity diagnostics against v0.x's
+    /// `evaluate_reml_scat_components_at`.
+    ///
+    /// Requires the family to be scat/TDist. The shape part of `theta` is
+    /// the standard gamrs TDist shape vector — `[log σ², log(ν - 2)]`
+    /// (`tdist.rs::set_shape_params`).
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_reml_at_scat<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        x: PyReadonlyArray2<'py, f64>,
+        theta: PyReadonlyArray1<'py, f64>,
+        k_per_term: Vec<usize>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        use crate::design::{Additive, DesignStrategy, TermSpec};
+        use crate::family::tdist_identity;
+        use crate::inner::{CholeskySolver, PirlsInner, PirlsOpts};
+        use crate::traits::{InnerSolver, Loss};
+        use ndarray::Array1;
+        use std::marker::PhantomData;
+
+        let y_arr: Array1<f64> = y.as_array().to_owned();
+        let x_view: ArrayView2<f64> = x.as_array();
+        let theta_arr: Array1<f64> = theta.as_array().to_owned();
+
+        let terms: Vec<TermSpec> = k_per_term
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| TermSpec::Cr { col: i, k })
+            .collect();
+        let prep = Additive { terms }.prepare(x_view).map_err(map_err)?;
+        let n_terms = prep.s_list.len();
+        if theta_arr.len() != n_terms + 2 {
+            return Err(PyValueError::new_err(format!(
+                "evaluate_reml_at_scat expects theta=[ρ_1..ρ_T, log_σ², log(ν-2)] \
+                 (length {}); got {}",
+                n_terms + 2,
+                theta_arr.len()
+            )));
+        }
+        let rho_slice: Array1<f64> = theta_arr.slice(ndarray::s![..n_terms]).to_owned();
+        let shape_slice: Vec<f64> =
+            theta_arr.iter().skip(n_terms).copied().collect();
+
+        // Build the TDist family with the supplied shape params. Use any
+        // valid init (ν=5, σ²=1); set_shape_params rewrites both.
+        let mut family = tdist_identity(5.0, 1.0);
+        family.set_shape_params(&shape_slice);
+        let nu_value = family.loss.nu;
+        let sigma2_value = family.loss.sigma2;
+
+        // Per-family inner-PIRLS tolerance via the typed hook.
+        let opts = PirlsOpts {
+            dev_rel_tol: family.loss.pirls_dev_rel_tol(),
+            ..PirlsOpts::default()
+        };
+
+        let inner = PirlsInner::<_, _, _, CholeskySolver> {
+            x_design: prep.x_design.clone(),
+            y: y_arr.clone(),
+            prior_weights: None,
+            s_list: prep.s_list.clone(),
+            family: family.clone(),
+            opts,
+            _solver: PhantomData,
+        };
+        let fit = inner.fit(&rho_slice).map_err(map_err)?;
+
+        // Score decomposition — mirrors `score/shape_aware.rs::score_value`
+        // for TDist/FixedAtOneProfile. Apply the family's mgcv-style
+        // rank adjustment so the diagnostic matches the outer-Newton path.
+        // TDist's default `score_rank_adjustment() = 0`; the typed hook
+        // lets future families override.
+        let rank_adj = family.loss.score_rank_adjustment();
+        let mut bsb_total = 0.0_f64;
+        let mut bsb_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut log_det_lambda_s = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = prep.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            bsb_per_term.push(bsb_j);
+            let lambda_j = rho_slice[j].exp();
+            bsb_total += lambda_j * bsb_j;
+            let adj_rank_j = ((prep.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
+            log_det_lambda_s += adj_rank_j * rho_slice[j] + prep.log_pseudo_det_s_list[j];
+        }
+        let dp = fit.deviance + bsb_total;
+        let log_det_h = fit.log_det_a();
+        let mp = prep.mp;
+
+        // FixedAtOneProfile sets φ=1 for scat — σ² lives inside the loss.
+        let phi: f64 = 1.0;
+
+        // Saturated log-lik: Σ_i ls_i(y_i; sigma2, nu). For scat this is
+        // location-scale, independent of y — same formula v0.x uses
+        // (`pirls/mod.rs:521-528`).
+        let ls_sum: f64 = y_arr
+            .iter()
+            .map(|&yi| family.loss.saturated_log_lik(yi, phi))
+            .sum();
+
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let score = dp / (2.0 * phi)
+            - 0.5 * (mp as f64) * (two_pi * phi).ln()
+            + 0.5 * log_det_h
+            - 0.5 * log_det_lambda_s
+            - ls_sum;
+
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("score", score)?;
+        dict.set_item("beta", fit.beta.clone().into_pyarray(py))?;
+        dict.set_item("eta", fit.eta.clone().into_pyarray(py))?;
+        dict.set_item("mu", fit.mu.clone().into_pyarray(py))?;
+        dict.set_item("deviance", fit.deviance)?;
+        dict.set_item("bsb_total", bsb_total)?;
+        dict.set_item("bsb_per_term", bsb_per_term)?;
+        dict.set_item("dp", dp)?;
+        dict.set_item("log_det_h", log_det_h)?;
+        dict.set_item("log_det_lambda_s", log_det_lambda_s)?;
+        dict.set_item("ls", ls_sum)?;
+        dict.set_item("nu", nu_value)?;
+        dict.set_item("sigma2", sigma2_value)?;
+        dict.set_item("mp", mp)?;
+        dict.set_item("iters", fit.iterations)?;
+        dict.set_item("converged", fit.converged)?;
+        Ok(dict)
+    }
+
+    /// Diagnostic: evaluate the NegBin REML score at an arbitrary
+    /// `theta = [ρ_1, …, ρ_T, log_θ]` without re-fitting the outer Newton.
+    /// Re-runs the inner PIRLS at the requested θ and returns a dict with
+    /// every additive component of mgcv's score formula
+    /// `Dp/(2φ) - ls - 0.5·Mp·log(2πφ) + 0.5·log|H| - 0.5·log|λS|+` with
+    /// φ=1 fixed for NegBin. Used for parity diagnostics against v0.x's
+    /// `evaluate_reml_negbin_components_at`.
+    ///
+    /// Requires the family to be NegBin. The shape part of `theta` is the
+    /// standard gamrs NegBin shape vector — `[log θ]` (`negbin.rs::set_shape_params`).
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_reml_at_negbin<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        x: PyReadonlyArray2<'py, f64>,
+        theta: PyReadonlyArray1<'py, f64>,
+        k_per_term: Vec<usize>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        use crate::design::{Additive, DesignStrategy, TermSpec};
+        use crate::family::negbin_log;
+        use crate::inner::{CholeskySolver, PirlsInner, PirlsOpts};
+        use crate::traits::{InnerSolver, Loss};
+        use ndarray::Array1;
+        use std::marker::PhantomData;
+
+        let y_arr: Array1<f64> = y.as_array().to_owned();
+        let x_view: ArrayView2<f64> = x.as_array();
+        let theta_arr: Array1<f64> = theta.as_array().to_owned();
+
+        let terms: Vec<TermSpec> = k_per_term
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| TermSpec::Cr { col: i, k })
+            .collect();
+        let prep = Additive { terms }.prepare(x_view).map_err(map_err)?;
+        let n_terms = prep.s_list.len();
+        if theta_arr.len() != n_terms + 1 {
+            return Err(PyValueError::new_err(format!(
+                "evaluate_reml_at_negbin expects theta=[ρ_1..ρ_T, log_θ] \
+                 (length {}); got {}",
+                n_terms + 1,
+                theta_arr.len()
+            )));
+        }
+        let rho_slice: Array1<f64> = theta_arr.slice(ndarray::s![..n_terms]).to_owned();
+        let shape_slice: Vec<f64> =
+            theta_arr.iter().skip(n_terms).copied().collect();
+
+        // Build the NegBin family with the supplied shape param. Use any
+        // valid init (θ=2.0); set_shape_params rewrites it.
+        let mut family = negbin_log(2.0);
+        family.set_shape_params(&shape_slice);
+        let theta_value = family.loss.theta;
+
+        // Per-family inner-PIRLS tolerance via the typed hook (uses
+        // `NegBin::pirls_dev_rel_tol` — overridable per family without
+        // touching the diagnostic).
+        let opts = PirlsOpts {
+            dev_rel_tol: family.loss.pirls_dev_rel_tol(),
+            ..PirlsOpts::default()
+        };
+
+        let inner = PirlsInner::<_, _, _, CholeskySolver> {
+            x_design: prep.x_design.clone(),
+            y: y_arr.clone(),
+            prior_weights: None,
+            s_list: prep.s_list.clone(),
+            family: family.clone(),
+            opts,
+            _solver: PhantomData,
+        };
+        let fit = inner.fit(&rho_slice).map_err(map_err)?;
+
+        // Score decomposition — mirrors `score/shape_aware.rs::score_value`
+        // for NegBin/FixedAtOneProfile. Apply the family's mgcv-style rank
+        // adjustment so the diagnostic matches the outer-Newton path.
+        // NegBin's `score_rank_adjustment()` is family-overridable; the
+        // typed hook lets the value flow through both the score body and
+        // this diagnostic by construction.
+        let rank_adj = family.loss.score_rank_adjustment();
+        let mut bsb_total = 0.0_f64;
+        let mut bsb_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut log_det_lambda_s = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = prep.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            bsb_per_term.push(bsb_j);
+            let lambda_j = rho_slice[j].exp();
+            bsb_total += lambda_j * bsb_j;
+            let adj_rank_j = ((prep.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
+            log_det_lambda_s += adj_rank_j * rho_slice[j] + prep.log_pseudo_det_s_list[j];
+        }
+        let dp = fit.deviance + bsb_total;
+        // log|H| — `fit.log_det_a()` returns the Fisher-W A's log|det| via
+        // the stored factorisation. When `use_newton_irls() = true` PIRLS
+        // populates `log_det_h_override` with the Newton-W path; pick that
+        // when present (mirrors the score body in `envelope.rs`).
+        let log_det_h = fit.log_det_h_override.unwrap_or_else(|| fit.log_det_a());
+        let mp = prep.mp;
+
+        // FixedAtOneProfile: φ=1 for NegBin (dispersion lives in θ).
+        let phi: f64 = 1.0;
+
+        // Saturated NB log-lik per `negbin.rs::saturated_log_lik`. v0.x's
+        // closed form keeps the lgamma(y+θ)-lgamma(θ) θ-dependent block
+        // and the y·log(y/(y+θ)) + θ·log(θ/(y+θ)) terms; the lgamma(y+1)
+        // term is dropped (constant in θ). The two-engine score comparison
+        // already accounts for the dropped constant — both sides drop it.
+        let ls_sum: f64 = y_arr
+            .iter()
+            .map(|&yi| family.loss.saturated_log_lik(yi, phi))
+            .sum();
+
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let score = dp / (2.0 * phi)
+            - 0.5 * (mp as f64) * (two_pi * phi).ln()
+            + 0.5 * log_det_h
+            - 0.5 * log_det_lambda_s
+            - ls_sum;
+
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("score", score)?;
+        dict.set_item("beta", fit.beta.clone().into_pyarray(py))?;
+        dict.set_item("eta", fit.eta.clone().into_pyarray(py))?;
+        dict.set_item("mu", fit.mu.clone().into_pyarray(py))?;
+        dict.set_item("deviance", fit.deviance)?;
+        dict.set_item("bsb_total", bsb_total)?;
+        dict.set_item("bsb_per_term", bsb_per_term)?;
+        dict.set_item("dp", dp)?;
+        dict.set_item("log_det_h", log_det_h)?;
+        dict.set_item("log_det_lambda_s", log_det_lambda_s)?;
+        dict.set_item("ls", ls_sum)?;
+        dict.set_item("theta", theta_value)?;
+        dict.set_item("mp", mp)?;
+        dict.set_item("iters", fit.iterations)?;
+        dict.set_item("converged", fit.converged)?;
+        Ok(dict)
+    }
+
     /// Per-term column ranges into the lpmatrix `[1 | C_1 | C_2 | …]`.
     /// Returns a list of `(first, last_exclusive)` tuples — one per term
     /// for an Additive fit, or a single `[(1, p)]` for a single-smooth fit.
