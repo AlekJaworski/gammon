@@ -109,6 +109,28 @@ impl Loss for Tweedie {
         Some(self.phi)
     }
 
+    // NOTE on `score_rank_adjustment`: Tweedie INTENTIONALLY keeps the
+    // default `0` rank convention, NOT the `-1` ocat uses. Tweedie multi-
+    // smooth parity diagnostic 2026-05-28 confirmed:
+    //
+    //   * With rank_adj=0 (default): gamrs and v0.x converge to the SAME
+    //     `(λ, p)` and predictions agree to `μ-RMSE = 0.0023%` (essentially
+    //     identical). Per-component `log_det_lambda_s` reads `~17` units
+    //     higher in gamrs but `log_det_h` reads `~9` units lower (v0.x's
+    //     larger score-side ridge inflates log|H|), and the two
+    //     differences cancel through the outer Newton's stationarity.
+    //   * With rank_adj=-1: the components-level `log_det_lambda_s`
+    //     matches v0.x byte-for-byte BUT gamrs's outer Newton now finds
+    //     a different `λ_2` (371 vs v0.x's 6.49e6) because the matching
+    //     formula no longer compensates the unridged-vs-ridged `log|H|`
+    //     gap. End-to-end μ-RMSE regresses from 0.0023% → 1.45%.
+    //
+    // Ergo: rank_adj=0 is the right setting for Tweedie under gamrs's
+    // current `factor_and_solve_with_ridge` convention (1e-12 score-side
+    // ridge vs v0.x's `1e-5 · max_diag`). If gamrs ever lifts to v0.x's
+    // larger score-side ridge, revisit this with the diagnostic harness
+    // at `scripts/diagnostics/tweedie_parity_layered.py`.
+
     fn n_shape_params(&self) -> usize {
         2
     }

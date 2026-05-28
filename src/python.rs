@@ -236,6 +236,142 @@ impl PyFittedGam {
         Ok(dict)
     }
 
+    /// Diagnostic: evaluate the Tweedie REML score at an arbitrary
+    /// `theta = [ρ_1, …, ρ_T, log_φ, p_transform]` without re-fitting the
+    /// outer Newton. Re-runs the inner PIRLS at the requested θ and
+    /// returns a dict with every additive component of mgcv's score
+    /// formula `Dp/(2φ) - ls + log|H|/2 - log|λS|+/2 - Mp/2·log(2πφ)`.
+    /// Used for parity diagnostics against v0.x's
+    /// `evaluate_reml_tweedie_components_at`.
+    ///
+    /// Requires the family to be Tweedie. The shape part of `theta` is
+    /// the standard gamrs Tweedie shape vector — `[log φ, p_transform]`
+    /// where `p = 1 + sigmoid(p_transform)` clamped to `[1.05, 1.95]`
+    /// (`tweedie.rs::set_shape_params`).
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_reml_at_tweedie<'py>(
+        &self,
+        py: Python<'py>,
+        y: PyReadonlyArray1<'py, f64>,
+        x: PyReadonlyArray2<'py, f64>,
+        theta: PyReadonlyArray1<'py, f64>,
+        k_per_term: Vec<usize>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        use crate::design::{Additive, DesignStrategy, TermSpec};
+        use crate::family::tweedie_log;
+        use crate::inner::{CholeskySolver, PirlsInner, PirlsOpts};
+        use crate::traits::{InnerSolver, Loss};
+        use ndarray::Array1;
+        use std::marker::PhantomData;
+
+        let y_arr: Array1<f64> = y.as_array().to_owned();
+        let x_view: ArrayView2<f64> = x.as_array();
+        let theta_arr: Array1<f64> = theta.as_array().to_owned();
+
+        let terms: Vec<TermSpec> = k_per_term
+            .iter()
+            .enumerate()
+            .map(|(i, &k)| TermSpec::Cr { col: i, k })
+            .collect();
+        let prep = Additive { terms }.prepare(x_view).map_err(map_err)?;
+        let n_terms = prep.s_list.len();
+        if theta_arr.len() != n_terms + 2 {
+            return Err(PyValueError::new_err(format!(
+                "evaluate_reml_at_tweedie expects theta=[ρ_1..ρ_T, log_φ, p_transform] \
+                 (length {}); got {}",
+                n_terms + 2,
+                theta_arr.len()
+            )));
+        }
+        let rho_slice: Array1<f64> = theta_arr.slice(ndarray::s![..n_terms]).to_owned();
+        let shape_slice: Vec<f64> =
+            theta_arr.iter().skip(n_terms).copied().collect();
+
+        // Build the Tweedie family with the supplied shape params. Use any
+        // valid init (p=1.5, φ=1.0); set_shape_params rewrites both.
+        let mut family = tweedie_log(1.5, 1.0);
+        family.set_shape_params(&shape_slice);
+        let p_value = family.loss.p;
+        let phi_value = family.loss.phi;
+
+        // Per-family inner-PIRLS tolerance via the typed hook (Tweedie
+        // currently uses the default 1e-9; the override pathway is in
+        // place if v0.x parity ever needs tighter).
+        let opts = PirlsOpts {
+            dev_rel_tol: family.loss.pirls_dev_rel_tol(),
+            ..PirlsOpts::default()
+        };
+
+        let inner = PirlsInner::<_, _, _, CholeskySolver> {
+            x_design: prep.x_design.clone(),
+            y: y_arr.clone(),
+            prior_weights: None,
+            s_list: prep.s_list.clone(),
+            family: family.clone(),
+            opts,
+            _solver: PhantomData,
+        };
+        let fit = inner.fit(&rho_slice).map_err(map_err)?;
+
+        // Score decomposition — mirrors `score/shape_aware.rs::score_value`
+        // for Tweedie/OwnedByLossProfile. Apply the family's mgcv-style
+        // rank adjustment so the diagnostic matches the outer-Newton
+        // path. Tweedie's default `score_rank_adjustment() = 0`; the
+        // typed hook lets future families override.
+        let rank_adj = family.loss.score_rank_adjustment();
+        let mut bsb_total = 0.0_f64;
+        let mut bsb_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut log_det_lambda_s = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = prep.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            bsb_per_term.push(bsb_j);
+            let lambda_j = rho_slice[j].exp();
+            bsb_total += lambda_j * bsb_j;
+            let adj_rank_j = ((prep.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
+            log_det_lambda_s += adj_rank_j * rho_slice[j] + prep.log_pseudo_det_s_list[j];
+        }
+        let dp = fit.deviance + bsb_total;
+        let log_det_h = fit.log_det_a();
+        let mp = prep.mp;
+
+        // OwnedByLossProfile reads φ live off the family — same as the
+        // shape-aware score body.
+        let phi = phi_value.max(1e-12);
+
+        // Saturated log-lik: Σ_i ls_i(y_i; φ, p).
+        let ls_sum: f64 = y_arr
+            .iter()
+            .map(|&yi| family.loss.saturated_log_lik(yi, phi))
+            .sum();
+
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let score = dp / (2.0 * phi)
+            - 0.5 * (mp as f64) * (two_pi * phi).ln()
+            + 0.5 * log_det_h
+            - 0.5 * log_det_lambda_s
+            - ls_sum;
+
+        let dict = pyo3::types::PyDict::new(py);
+        dict.set_item("score", score)?;
+        dict.set_item("beta", fit.beta.clone().into_pyarray(py))?;
+        dict.set_item("eta", fit.eta.clone().into_pyarray(py))?;
+        dict.set_item("mu", fit.mu.clone().into_pyarray(py))?;
+        dict.set_item("deviance", fit.deviance)?;
+        dict.set_item("bsb_total", bsb_total)?;
+        dict.set_item("bsb_per_term", bsb_per_term)?;
+        dict.set_item("dp", dp)?;
+        dict.set_item("log_det_h", log_det_h)?;
+        dict.set_item("log_det_lambda_s", log_det_lambda_s)?;
+        dict.set_item("ls", ls_sum)?;
+        dict.set_item("phi", phi)?;
+        dict.set_item("p", p_value)?;
+        dict.set_item("mp", mp)?;
+        dict.set_item("iters", fit.iterations)?;
+        dict.set_item("converged", fit.converged)?;
+        Ok(dict)
+    }
+
     /// Per-term column ranges into the lpmatrix `[1 | C_1 | C_2 | …]`.
     /// Returns a list of `(first, last_exclusive)` tuples — one per term
     /// for an Additive fit, or a single `[(1, p)]` for a single-smooth fit.
