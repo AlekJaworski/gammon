@@ -123,11 +123,15 @@ fn quantile_three_taus_monotone_and_converged() {
     // surfaces can cross slightly — but in aggregate the ordering must hold.
     let mut crossings_low_mid = 0;
     let mut crossings_mid_high = 0;
-    for i in 0..n {
-        if preds[0][i] > preds[1][i] {
+    for (p_low, (p_mid, p_high)) in preds[0]
+        .iter()
+        .zip(preds[1].iter().zip(preds[2].iter()))
+        .take(n)
+    {
+        if p_low > p_mid {
             crossings_low_mid += 1;
         }
-        if preds[1][i] > preds[2][i] {
+        if p_mid > p_high {
             crossings_mid_high += 1;
         }
     }

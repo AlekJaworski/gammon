@@ -28,9 +28,11 @@ impl CrSpline {
                 k
             )));
         }
-        // Knots must be strictly increasing.
+        // Knots must be strictly increasing. NaN-bearing inputs also fail
+        // this check via `partial_cmp` returning None, mapped to the same
+        // error string.
         for w in knots.as_slice().unwrap().windows(2) {
-            if !(w[1] > w[0]) {
+            if w[1].partial_cmp(&w[0]) != Some(std::cmp::Ordering::Greater) {
                 return Err(GamrsError::InvalidParameter(
                     "CR spline knots must be strictly increasing".into(),
                 ));

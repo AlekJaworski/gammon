@@ -305,10 +305,9 @@ where
     let prior = prior_weights.map(|w| w.to_owned());
     let n = x.nrows();
 
-    let pirls_opts = {
-        let mut o = PirlsOpts::default();
-        o.dev_rel_tol = family_base.loss.pirls_dev_rel_tol();
-        o
+    let pirls_opts = PirlsOpts {
+        dev_rel_tol: family_base.loss.pirls_dev_rel_tol(),
+        ..Default::default()
     };
     let score = ShapeAwareEnvelopeScore::<L, K, V, B, P, S> {
         x_design: prep.x_design.clone(),

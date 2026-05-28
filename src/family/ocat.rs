@@ -394,7 +394,7 @@ pub fn ocat_dd_level1(
             let k_plus_2 = k + 2;
             let bracket_upper = yi == k_plus_2;
             let bracket_lower = yi == r;
-            let bracket_middle = yi > k_plus_2 && yi < r && r >= k_plus_2 + 1;
+            let bracket_middle = yi > k_plus_2 && yi < r && r > k_plus_2;
 
             if bracket_upper {
                 dth[[i, k]] = wt_i * da1 * etk;

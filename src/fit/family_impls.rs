@@ -19,7 +19,7 @@ use crate::design::PreparedDesign;
 use crate::error::{GamrsError, Result};
 use crate::family::{
     bernoulli_logit, gamma_inverse, gamma_log, inverse_gaussian_log, negbin_log, ocat_identity,
-    ocat_init_theta, poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity,
+    poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity,
     tweedie_log, Bernoulli, BinomialVariance, ConstantVariance, ElfLoss, ElfVariance, Family,
     Gamma, GammaVariance, Gaussian, IdentityLink, InverseGaussian, InverseGaussianVariance,
     InverseLink, LogLink, LogitLink, NegBin, NegBinVariance, OcatLoss, OcatVariance, Poisson,
@@ -439,7 +439,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         prior_weights: Option<ArrayView1<f64>>,
     ) -> Result<FittedGam> {
         let n_cats = family.loss.n_cats;
-        let init_theta_opt: Option<Array1<f64>> = Some(family.loss.thresholds.clone());
+        let init_thresholds: Array1<f64> = family.loss.thresholds.clone();
 
         check_lengths(x, y, prior_weights)?;
         if n_cats < 3 {
@@ -459,8 +459,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         let prior = prior_weights.map(|w| w.to_owned());
         let n = x.nrows();
 
-        let theta0_shape: Array1<f64> =
-            init_theta_opt.unwrap_or_else(|| ocat_init_theta(y, n_cats));
+        let theta0_shape: Array1<f64> = init_thresholds;
         if theta0_shape.len() != n_cats - 2 {
             return Err(GamrsError::InvalidParameter(format!(
                 "Ocat init_theta length must equal n_cats - 2 = {} (log-gap thresholds between adjacent categories above the first); got {}",
@@ -490,10 +489,9 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             mp: prep.mp,
             log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
             coords: CoordsKind::Identity,
-            pirls_opts: {
-                let mut o = PirlsOpts::default();
-                o.dev_rel_tol = family.loss.pirls_dev_rel_tol();
-                o
+            pirls_opts: PirlsOpts {
+                dev_rel_tol: family.loss.pirls_dev_rel_tol(),
+                ..Default::default()
             },
             inner_builder: OcatInnerBuilder,
             profile: FixedAtOneProfile,

@@ -1,3 +1,27 @@
+// Crate-level clippy allowances. The four categories silenced here are
+// either (a) too-broad to fix one site at a time without obscuring the
+// numerical code, or (b) inherent to the API surface gamrs ships.
+//
+// - `too_many_arguments` — the inner solvers and shape-aware drivers
+//   take 9-16 args because the inner state is genuinely that wide
+//   (design + penalties + family + opts + flags). Bundling them into
+//   structs hides intent in the score body.
+// - `type_complexity` — closure return / trait-object types in
+//   src/python.rs (PyO3 dispatch) and `Result<(GaussianInnerFit<S>,
+//   Family<L, K, V>)>` are unavoidable in the trait stack.
+// - `needless_range_loop` — score/gradient code is uniformly index-
+//   based to match the math and stay cheap on per-iter PIRLS hot paths.
+// - `doc_overindented_list_items` / `doc_lazy_continuation` — cosmetic
+//   rustdoc complaints on existing module docstrings; fixing means
+//   tweaking ~30 doc-comment list items with zero behavioural impact.
+#![allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::needless_range_loop,
+    clippy::doc_overindented_list_items,
+    clippy::doc_lazy_continuation
+)]
+
 //! gamrs — GAM core, v2 architecture experiment.
 //!
 //! Phase 0 scope (per `Projects/mgcv_rust/plans/mgcv_rust - v2 Architecture

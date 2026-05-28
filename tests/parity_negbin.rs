@@ -1,6 +1,7 @@
 //! Phase 6 parity test: gamrs `fit_negbin_cr` vs mgcv `nb()` on 1-D NegBin
 //! + log. mgcv estimates θ via profile-likelihood; gamrs does joint Newton
 //! on `[log λ, log θ]`. Compares μ predictions.
+#![allow(clippy::doc_lazy_continuation)]
 
 use ndarray::{Array1, Array2};
 use serde::Deserialize;
