@@ -204,6 +204,11 @@ pub(crate) fn matrix_inf_norm(m: ArrayView2<f64>) -> f64 {
 /// Rank + `log|S|+` of a symmetric PSD penalty matrix. The pseudo-det is
 /// the product of strictly positive eigenvalues; the rank counts them
 /// against a relative tolerance.
+///
+/// Returns the mathematically-correct count of positive eigenvalues.
+/// Some downstream score paths (ocat in particular) apply a per-family
+/// "mgcv heuristic" rank adjustment via `Loss::score_rank_adjustment`
+/// to match mgcv's `non_zero_rows − 2` convention for CR splines.
 pub(crate) fn rank_and_log_pseudo_det(s: ArrayView2<f64>) -> (usize, f64) {
     let s_owned = s.to_owned();
     let (eigs, _) = s_owned

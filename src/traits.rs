@@ -160,6 +160,25 @@ pub trait Loss {
         None
     }
 
+    /// Per-family rank adjustment applied at the score-formula's
+    /// `Σ rank·log λ` term. Default 0 (use the mathematically-correct
+    /// positive-eigenvalue count). Ocat returns −1 to match v0.x's mgcv
+    /// `non_zero_rows − 2` heuristic for centered CR splines — closes the
+    /// 1.23-unit score-formula offset that was driving 5.95% multi-smooth
+    /// ocat μ-RMSE (parity diagnostic 2026-05-28).
+    ///
+    /// **Why family-scoped, not basis-scoped**: empirically, applying this
+    /// adjustment globally regresses Gaussian additive and other shape-aware
+    /// families that had been at their existing "documented parity floor"
+    /// thanks to a different error cancellation. The mgcv heuristic is
+    /// mathematically off-by-one for centered CR but downstream code
+    /// (PIRLS, σ̂², etc.) is wired around that convention in family-specific
+    /// ways. Ocat is the only family whose convergence basin was visibly
+    /// driven by this; others stay on `0` until per-family investigation.
+    fn score_rank_adjustment(&self) -> i32 {
+        0
+    }
+
     /// Analytic contribution to the score's gradient w.r.t. THIS loss's
     /// shape parameters, evaluated at the current shape values.
     ///

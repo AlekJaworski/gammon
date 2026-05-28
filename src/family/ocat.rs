@@ -203,6 +203,17 @@ impl Loss for OcatLoss {
         self.thresholds.to_vec()
     }
 
+    /// Match v0.x's mgcv-style rank heuristic for the `Σ rank·log λ`
+    /// score-formula term: report rank `(positive_eigvals − 1)` for the
+    /// centered CR(k) penalty mgcv treats as having a 2-dim null space.
+    /// gamrs's `rank_and_log_pseudo_det` returns the mathematical
+    /// `positive_eigvals = k − 2`; this −1 brings the score formula
+    /// in line with v0.x at `Σ rank·log λ` and closes the
+    /// 5.95% → 0.06% multi-smooth ocat parity gap (2026-05-28 diagnostic).
+    fn score_rank_adjustment(&self) -> i32 {
+        -1
+    }
+
     /// Provide Level-1 derivatives (`Dmu3, Dth, Dmuth, Dmu2th`) to the
     /// shape-aware score's analytic θ-gradient assembly. Ports v0.x's
     /// `ocat_dd` at `OcatDerivLevel::Level1`. The score uses these to

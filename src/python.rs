@@ -189,18 +189,30 @@ impl PyFittedGam {
         let fit = inner.fit(&rho_slice).map_err(map_err)?;
 
         // Decompose the score components per
-        // `reml/ocat_joint.rs::reml_criterion_ocat_proper`.
+        // `reml/ocat_joint.rs::reml_criterion_ocat_proper`. Apply the
+        // family's mgcv-style rank adjustment (ocat: -1) at the
+        // `Σ rank·log λ` term so the diagnostic matches what the
+        // outer-Newton score path actually uses.
         let mut bsb_total = 0.0_f64;
         let mut bsb_per_term: Vec<f64> = Vec::with_capacity(n_terms);
         let mut log_det_lambda_s = 0.0_f64;
+        let rank_adj = {
+            use crate::traits::Loss;
+            crate::family::OcatLoss::new(
+                Array1::zeros(n_cats.saturating_sub(2)),
+                n_cats,
+            )
+            .score_rank_adjustment()
+        };
         for j in 0..n_terms {
             let s_beta = prep.s_list[j].dot(&fit.beta);
             let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
             bsb_per_term.push(bsb_j);
             let lambda_j = rho_slice[j].exp();
             bsb_total += lambda_j * bsb_j;
+            let adj_rank_j = ((prep.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
             log_det_lambda_s +=
-                (prep.rank_s_list[j] as f64) * rho_slice[j] + prep.log_pseudo_det_s_list[j];
+                adj_rank_j * rho_slice[j] + prep.log_pseudo_det_s_list[j];
         }
         let dp = fit.deviance + bsb_total;
         let log_det_h = fit.log_det_a();

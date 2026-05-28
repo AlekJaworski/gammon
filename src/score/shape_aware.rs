@@ -327,6 +327,8 @@ where
         let n_terms = self.s_list.len();
         debug_assert_eq!(rho_slice.len(), n_terms);
 
+        // Per-family mgcv-style rank adjustment (ocat: −1; others: 0).
+        let rank_adj = family.loss.score_rank_adjustment();
         // Per-term bsb_j = β'S_j β + aggregate via λ_j. dp = D + Σ_j λ_j β'S_jβ.
         let mut bsb_total = 0.0_f64;
         let mut log_det_lambda_s = 0.0_f64;
@@ -335,8 +337,9 @@ where
             let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
             let lambda_j = rho_slice[j].exp();
             bsb_total += lambda_j * bsb_j;
+            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
             log_det_lambda_s +=
-                (self.rank_s_list[j] as f64) * rho_slice[j] + self.log_pseudo_det_s_list[j];
+                adj_rank_j * rho_slice[j] + self.log_pseudo_det_s_list[j];
         }
         let dp = fit.deviance + bsb_total;
         // tr(H⁻¹X'WX) for the Profile signature — unused by both
@@ -397,13 +400,15 @@ where
             .profile
             .dispersion(&family.loss, &fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
             .unwrap_or(1.0);
+        let rank_adj = family.loss.score_rank_adjustment();
         // ∂REML/∂(log λ_j) = λ_j β'S_jβ / (2φ) + λ_j · tr(H⁻¹S_j) / 2 - rank_j / 2
         let mut g = Array1::<f64>::zeros(n_terms + n_shape);
         for j in 0..n_terms {
             let lambda_j = rho_slice[j].exp();
+            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
             g[j] = lambda_j * bsb_per_term[j] / (2.0 * phi)
                 + 0.5 * lambda_j * tr_hinv_s_per_term[j]
-                - 0.5 * (self.rank_s_list[j] as f64);
+                - 0.5 * adj_rank_j;
         }
 
         if n_shape > 0 {
@@ -792,12 +797,14 @@ where
             .dispersion(&family.loss, fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
             .unwrap_or(1.0);
 
+        let rank_adj = family.loss.score_rank_adjustment();
         let mut g = Array1::<f64>::zeros(n_terms + n_shape);
         for j in 0..n_terms {
             let lambda_j = rho_slice[j].exp();
+            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
             g[j] = lambda_j * bsb_per_term[j] / (2.0 * phi_center)
                 + 0.5 * lambda_j * tr_hinv_s_per_term[j]
-                - 0.5 * (self.rank_s_list[j] as f64);
+                - 0.5 * adj_rank_j;
         }
         if n_shape > 0 {
             let n_minus_mp = (fit.n as f64) - (self.mp as f64);
@@ -882,12 +889,14 @@ where
             .dispersion(&family.loss, fit, 1.0, bsb_total, fit.p as f64, self.mp)
             .unwrap_or(ctx.phi_center);
 
+        let rank_adj = family.loss.score_rank_adjustment();
         let mut g = Array1::<f64>::zeros(n_terms + n_shape);
         for j in 0..n_terms {
             let lambda_j = rho_slice[j].exp();
+            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
             g[j] = lambda_j * ctx.bsb_per_term[j] / (2.0 * phi)
                 + 0.5 * lambda_j * ctx.tr_hinv_s_per_term[j]
-                - 0.5 * (self.rank_s_list[j] as f64);
+                - 0.5 * adj_rank_j;
         }
         if n_shape > 0 {
             let dp = ctx.deviance + bsb_total;
