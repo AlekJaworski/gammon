@@ -44,15 +44,23 @@ impl Loss for NegBin {
     }
 
     /// Saturated log-lik at μ=y: `lgamma(y+θ) - lgamma(θ) - lgamma(y+1)
-    /// + y·log(y/(y+θ)) + θ·log(θ/(y+θ))`. The lgamma(y+1) term is
-    /// constant in θ — we drop it for the same reason as Poisson. The
-    /// `lgamma(y+θ) - lgamma(θ)` terms are kept because they depend on θ
-    /// and contribute to the joint outer Newton's θ-gradient. φ is fixed
-    /// at 1 (NegBin's dispersion lives entirely in θ) so `_scale` is moot.
+    /// + y·log(y/(y+θ)) + θ·log(θ/(y+θ))`. All four terms are kept —
+    /// matches mgcv `gam.fit3.r:2497-2548` (`fix.family.ls`) byte-for-byte
+    /// (v0.x `src/pirls/mod.rs::Family::NegBin` lines 565-581). The
+    /// `lgamma(y+1)` piece is constant in θ AND λ, so it doesn't affect
+    /// the score's optimum — but its inclusion makes the absolute REML
+    /// value commensurable with mgcv's reported `score`, which lets the
+    /// parity diagnostic compare component-by-component to ≤ 1e-12 instead
+    /// of off-by-`Σ lgamma(y+1)`. Closes the `ls` parity gap on the
+    /// 2026-05-28 NegBin layer-4 cross-eval (component diff went from
+    /// ~737 to 0). φ is fixed at 1 (NegBin's dispersion lives entirely in
+    /// θ), so `_scale` is moot.
     fn saturated_log_lik(&self, y: f64, _scale: f64) -> f64 {
         let theta = self.theta;
         let yt = y + theta;
-        let lg = crate::special::log_gamma(yt) - crate::special::log_gamma(theta);
+        let lg = crate::special::log_gamma(yt)
+            - crate::special::log_gamma(theta)
+            - crate::special::log_gamma(y + 1.0);
         let y_term = if y > 0.0 { y * (y / yt).ln() } else { 0.0 };
         let t_term = theta * (theta / yt).ln();
         lg + y_term + t_term
