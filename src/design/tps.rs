@@ -1,21 +1,30 @@
 //! Thin-plate regression spline (TPRS) — 2-D (or higher) isotropic
 //! smooth, mgcv's `bs="tp"`.
 //!
-//! Low-rank radial-basis implementation following Duchon thin-plate
-//! construction (Wood 2003) with knots placed at a uniform-stride
-//! subsample of data points. Produces a usable D-D isotropic smooth
-//! with a single smoothing parameter.
+//! Low-rank radial-basis implementation with knots placed at a uniform-
+//! stride subsample of data points. Produces a usable D-D isotropic
+//! smooth with a single smoothing parameter.
 //!
 //! Construction (smoothness order m=2):
 //!
 //! 1. Pick `k` knot points (uniform stride over the data rows).
 //! 2. Radial-basis matrix `E[i, j] = η(||x_i − xk_j||)` with
 //!    dimension-dependent kernel `η` (Wood §5.5.1).
-//! 3. Polynomial null-space `T[i, :] = [x_i.0, x_i.1, …]` (linear part).
-//! 4. Design `[E | T_lin]` of width `k + D`.
-//! 5. Penalty `S = block_diag(E_kk, 0_{D×D})`.
+//! 3. Smooth design = `E` of width `k` (intercept prepended by the
+//!    `prepend_intercept` helper). Penalty `S = E_kk` (k×k).
+//!
+//! NOTE on the polynomial null-space: the full Duchon construction adds
+//! an unpenalised polynomial block `T_lin` (linear part) to the design.
+//! In a regression-spline (penalised) setting, T_lin would be collinear
+//! with the radial basis E (which already spans linear trends via its
+//! own polynomial null-space), producing a singular X'X. mgcv's `bs="tp"`
+//! handles this by orthogonalising E against T (Z·β reduced basis) — a
+//! larger refactor. For 0.3 we drop T_lin: the intercept handles the
+//! constant trend, and linear data trends are absorbed by E's low-
+//! frequency directions at the cost of a bit of smoother flexibility.
+//! Identifiability for linear trends is preserved by the intercept.
 
-use ndarray::{Array2, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView2};
 
 use crate::error::{GamrsError, Result};
 
@@ -25,19 +34,25 @@ use super::{prepend_intercept, prepend_zero_column};
 pub struct TpsPredictor {
     pub cols: Vec<usize>,
     pub knots: Array2<f64>,
+    /// Eigenvectors of E_kk used to rotate the raw radial basis into the
+    /// eigenbasis. Stored at fit time so predict-time `design` produces
+    /// the same orthogonal columns the fit saw.
+    pub v_rot: Array2<f64>,
 }
 
 impl TpsPredictor {
     pub(crate) fn design(&self, x_new: ArrayView2<f64>) -> Result<Array2<f64>> {
         self.check_cols(x_new)?;
         let raw = self.tps_design(x_new, None);
-        Ok(prepend_intercept(raw.view()))
+        let rotated = raw.dot(&self.v_rot);
+        Ok(prepend_intercept(rotated.view()))
     }
 
     pub(crate) fn design_deriv(&self, x_new: ArrayView2<f64>, axis: usize) -> Result<Array2<f64>> {
         self.check_cols(x_new)?;
         let raw_d1 = self.tps_design(x_new, Some(axis));
-        Ok(prepend_zero_column(raw_d1.view()))
+        let rotated_d1 = raw_d1.dot(&self.v_rot);
+        Ok(prepend_zero_column(rotated_d1.view()))
     }
 
     fn check_cols(&self, x_new: ArrayView2<f64>) -> Result<()> {
@@ -56,7 +71,7 @@ impl TpsPredictor {
         let d = self.cols.len();
         let k = self.knots.nrows();
         let n = x_new.nrows();
-        let mut out = Array2::<f64>::zeros((n, k + d));
+        let mut out = Array2::<f64>::zeros((n, k));
         let deriv_margin: Option<usize> =
             deriv_axis.and_then(|ax| self.cols.iter().position(|&c| c == ax));
         if deriv_axis.is_some() && deriv_margin.is_none() {
@@ -78,14 +93,6 @@ impl TpsPredictor {
                     out[[i, j]] = tps_eta_deriv(r, d, diff_axis);
                 } else {
                     out[[i, j]] = tps_eta(r, d);
-                }
-            }
-            for m in 0..d {
-                let val = x_new[[i, self.cols[m]]];
-                if let Some(m_idx) = deriv_margin {
-                    out[[i, k + m]] = if m == m_idx { 1.0 } else { 0.0 };
-                } else {
-                    out[[i, k + m]] = val;
                 }
             }
         }
@@ -154,11 +161,12 @@ impl TpsTermFit {
                 }
             }
         }
-        let predictor = TpsPredictor {
-            cols: cols.to_vec(),
-            knots: knots.clone(),
-        };
-        let raw_design = predictor.tps_design(x, None);
+        // Build the raw radial E_kk = η(||knot_r - knot_c||). For d=2 the
+        // kernel η(r) = r²·ln(r)/(8π) is conditionally PSD — has both
+        // positive AND negative eigenvalues, with a (d+1)-dim null-space
+        // corresponding to constant + linear polynomials. We transform
+        // into the eigenbasis so the working penalty becomes a positive
+        // diagonal and the design is well-conditioned.
         let mut e_kk = Array2::<f64>::zeros((k, k));
         for r in 0..k {
             for c in 0..k {
@@ -177,19 +185,68 @@ impl TpsTermFit {
                 e_kk[[c, r]] = avg;
             }
         }
-        let p_term = k + d;
-        let mut s_smooth = Array2::<f64>::zeros((p_term, p_term));
-        for r in 0..k {
-            for c in 0..k {
-                s_smooth[[r, c]] = e_kk[[r, c]];
+
+        // Symmetric eigendecomposition: E_kk = V · diag(λ) · V'.
+        // λ has mixed signs; sort indices by |λ| descending.
+        use ndarray_linalg::Eigh;
+        let (eigvals, eigvecs) = e_kk
+            .clone()
+            .eigh(ndarray_linalg::UPLO::Lower)
+            .map_err(|e| GamrsError::Linalg(format!("eigh failed in tps build: {e}")))?;
+        let max_abs_eig = eigvals.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+
+        let mut order: Vec<usize> = (0..k).collect();
+        order.sort_by(|&a, &b| {
+            eigvals[b]
+                .abs()
+                .partial_cmp(&eigvals[a].abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Permuted V (k × k) — columns ordered by descending |λ|.
+        let mut v_rot = Array2::<f64>::zeros((k, k));
+        for (new_c, &old_c) in order.iter().enumerate() {
+            for r in 0..k {
+                v_rot[[r, new_c]] = eigvecs[[r, old_c]];
             }
         }
-        let s_max = leading_eig_abs(s_smooth.view())?;
-        if s_max > 0.0 {
-            s_smooth /= s_max;
+
+        // Penalty in the eigenbasis: diag(|λ|) normalised by max|λ|.
+        // The smallest (≈d+1) entries correspond to the polynomial null
+        // space; floor them at a small shrinkage so the system stays
+        // well-conditioned but the basis still acts like a smoother on
+        // the high-curvature directions.
+        let mut s_diag = Array1::<f64>::zeros(k);
+        for (new_c, &old_c) in order.iter().enumerate() {
+            s_diag[new_c] = eigvals[old_c].abs();
         }
+        if max_abs_eig > 0.0 {
+            s_diag /= max_abs_eig;
+        }
+        let shrinkage = 1.0e-4;
+        for i in 0..k {
+            s_diag[i] = s_diag[i].max(shrinkage);
+        }
+        let mut s_smooth = Array2::<f64>::zeros((k, k));
+        for i in 0..k {
+            s_smooth[[i, i]] = s_diag[i];
+        }
+
+        let predictor = TpsPredictor {
+            cols: cols.to_vec(),
+            knots: knots.clone(),
+            v_rot: v_rot.clone(),
+        };
+
+        // Raw radial design (n × k) then rotated into the eigenbasis.
+        let raw_design = predictor.tps_design(x, None);
+        let design = raw_design.dot(&v_rot);
+
+        debug_assert_eq!(design.shape(), &[n, k]);
+        debug_assert_eq!(s_smooth.shape(), &[k, k]);
+
         Ok(Self {
-            design: raw_design,
+            design,
             s_smooth,
             predictor,
         })
@@ -239,15 +296,6 @@ fn tps_eta_deriv(r: f64, d: usize, diff: f64) -> f64 {
     eta_prime * diff / r
 }
 
-fn leading_eig_abs(s: ArrayView2<f64>) -> Result<f64> {
-    use ndarray_linalg::Eigh;
-    let s_owned = s.to_owned();
-    let (eigs, _) = s_owned
-        .eigh(ndarray_linalg::UPLO::Lower)
-        .map_err(|e| GamrsError::Linalg(format!("eigh failed in tps rescale: {e}")))?;
-    Ok(eigs.iter().map(|e| e.abs()).fold(0.0_f64, f64::max))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,12 +311,7 @@ mod tests {
             x[[i, 1]] = ((i as f64) * 0.31).sin();
         }
         let fit = TpsTermFit::build(x.view(), &[0, 1], k).unwrap();
-        assert_eq!(fit.design.shape(), &[n, k + d]);
-        assert_eq!(fit.s_smooth.shape(), &[k + d, k + d]);
-        for r in k..(k + d) {
-            for c in k..(k + d) {
-                assert_eq!(fit.s_smooth[[r, c]], 0.0);
-            }
-        }
+        assert_eq!(fit.design.shape(), &[n, k]);
+        assert_eq!(fit.s_smooth.shape(), &[k, k]);
     }
 }

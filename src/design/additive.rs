@@ -216,7 +216,10 @@ fn invoke_sub_design(
     cols: &[usize],
 ) -> Result<Array2<f64>> {
     match pred {
-        Predictor::Tensor(_) => pred.design(x_new),
+        // Multi-column sub-predictors slice their own margin columns from
+        // the full design matrix using the column indices stored at
+        // fit-time. `Tps::cols` may have arbitrary length (≥ 2).
+        Predictor::Tensor(_) | Predictor::Tps(_) => pred.design(x_new),
         _ => {
             // Univariate: pass the single configured column as a (n, 1) view.
             debug_assert_eq!(cols.len(), 1);
@@ -233,7 +236,7 @@ fn invoke_sub_design_deriv(
     axis: usize,
 ) -> Result<Array2<f64>> {
     match pred {
-        Predictor::Tensor(_) => pred.design_deriv(x_new, axis),
+        Predictor::Tensor(_) | Predictor::Tps(_) => pred.design_deriv(x_new, axis),
         _ => {
             // Univariate sub-predictors take (n, 1) and an axis of 0.
             debug_assert_eq!(cols.len(), 1);
