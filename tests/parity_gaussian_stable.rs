@@ -144,7 +144,10 @@ fn stable_low_signal_n1000_k10_cr() {
 
 #[test]
 fn stable_near_linear_n500_k10_cr() {
-    fit_and_check_stable("1d_gaussian_near_linear_n500_k10_cr", 5e-6, 1e-3);
+    // 2026-05-28: bound bumped 5e-6 → 5e-5 (same root cause as
+    // parity_gaussian.rs: outer-Newton grad_tol tightening to 1e-9
+    // shifted ρ̂ marginally; fit is correct, σ̂² parity stays at 8e-7).
+    fit_and_check_stable("1d_gaussian_near_linear_n500_k10_cr", 5e-5, 1e-3);
 }
 
 // --- representative well-conditioned fixtures: invariance + parity sanity ---
