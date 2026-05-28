@@ -25,7 +25,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 use serde_json::Value;
 
 const WARMUP_ITERS: usize = 3;
@@ -44,7 +44,11 @@ fn sample_count(name: &str) -> usize {
 
 struct Fixture {
     name: &'static str,
-    x: Array1<f64>,
+    /// 1-D column view of x — used by the design-prep micro-bench which
+    /// calls `CrSpline::with_quantile_knots` directly.
+    x1: Array1<f64>,
+    /// 2-D `(n, 1)` matrix — what the canonical `gamrs::fit` API expects.
+    x2: Array2<f64>,
     y: Array1<f64>,
     k: usize,
 }
@@ -68,9 +72,13 @@ fn load_fixture(name: &'static str) -> Fixture {
         .map(|x| x.as_f64().unwrap())
         .collect();
     let k = v["inputs"]["k"][0].as_u64().unwrap() as usize;
+    let n = xs.len();
+    let x1 = Array1::from_vec(xs.clone());
+    let x2 = Array2::from_shape_vec((n, 1), xs).unwrap();
     Fixture {
         name,
-        x: Array1::from_vec(xs),
+        x1,
+        x2,
         y: Array1::from_vec(ys),
         k,
     }
@@ -151,7 +159,7 @@ fn bench_one(
     );
     BenchResult {
         fixture: fx.name,
-        n: fx.x.len(),
+        n: fx.x2.nrows(),
         k: fx.k,
         path,
         median_us: median.as_secs_f64() * 1e6,
@@ -206,13 +214,13 @@ fn bench_design_prep(fx: &Fixture) -> Duration {
     use gamrs::basis::CrSpline;
     // Warm up.
     for _ in 0..WARMUP_ITERS {
-        let cr = CrSpline::with_quantile_knots(fx.x.view(), fx.k).unwrap();
+        let cr = CrSpline::with_quantile_knots(fx.x1.view(), fx.k).unwrap();
         std::hint::black_box(cr);
     }
     let n = 200;
     let t0 = Instant::now();
     for _ in 0..n {
-        let cr = CrSpline::with_quantile_knots(fx.x.view(), fx.k).unwrap();
+        let cr = CrSpline::with_quantile_knots(fx.x1.view(), fx.k).unwrap();
         std::hint::black_box(cr);
     }
     t0.elapsed() / (n as u32)
@@ -234,7 +242,7 @@ fn main() {
         let r = bench_one(&fx, "GaussianClosedFormInner", |fx| {
             let f = gamrs::fit(
                 gamrs::family::gaussian_identity(),
-                fx.x.view(),
+                fx.x2.view(),
                 fx.y.view(),
                 None,
                 fx.k,
@@ -251,7 +259,7 @@ fn main() {
         let r = bench_one(&fx, "PirlsInner (Bernoulli)", |fx| {
             let f = gamrs::fit(
                 gamrs::family::bernoulli_logit(),
-                fx.x.view(),
+                fx.x2.view(),
                 fx.y.view(),
                 None,
                 fx.k,
@@ -268,7 +276,7 @@ fn main() {
         let r = bench_one(&fx, "PirlsInner (Poisson)", |fx| {
             let f = gamrs::fit(
                 gamrs::family::poisson_log(),
-                fx.x.view(),
+                fx.x2.view(),
                 fx.y.view(),
                 None,
                 fx.k,
@@ -285,7 +293,7 @@ fn main() {
         let r = bench_one(&fx, "PirlsInner + profile-σ² Newton", |fx| {
             let f = gamrs::fit(
                 gamrs::family::gamma_log(),
-                fx.x.view(),
+                fx.x2.view(),
                 fx.y.view(),
                 None,
                 fx.k,
@@ -302,7 +310,7 @@ fn main() {
         let r = bench_one(&fx, "ShapeAwareEnvelopeScore (Tweedie)", |fx| {
             let f = gamrs::fit(
                 gamrs::family::tweedie_log(1.5, 1.0),
-                fx.x.view(),
+                fx.x2.view(),
                 fx.y.view(),
                 None,
                 fx.k,
@@ -319,7 +327,7 @@ fn main() {
         let r = bench_one(&fx, "PirlsInner + Newton-W (IG)", |fx| {
             let f = gamrs::fit(
                 gamrs::family::inverse_gaussian_log(),
-                fx.x.view(),
+                fx.x2.view(),
                 fx.y.view(),
                 None,
                 fx.k,

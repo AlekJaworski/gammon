@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use ndarray::Array1;
+use ndarray::{Array1, Array2};
 use serde_json::Value;
 
 fn main() {
@@ -30,7 +30,9 @@ fn main() {
         .map(|x| x.as_f64().unwrap())
         .collect();
     let k = v["inputs"]["k"][0].as_u64().unwrap() as usize;
-    let x = Array1::from_vec(xs);
+    let n = xs.len();
+    // Current fit API expects (n, n_features) — pack the 1-D column.
+    let x = Array2::from_shape_vec((n, 1), xs).unwrap();
     let y = Array1::from_vec(ys);
 
     // Warm up.
@@ -59,7 +61,7 @@ fn main() {
     let per_fit = elapsed / runs;
     println!(
         "fixture: {fx_name}; n={}; k={}; gamrs per-fit = {:?}",
-        x.len(),
+        x.nrows(),
         k,
         per_fit
     );
