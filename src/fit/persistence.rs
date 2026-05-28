@@ -1,34 +1,33 @@
 //! Fit-time persistence — `FittedGam::serialize` / `::deserialize`.
 //!
-//! Wire format (binary-ish, length-framed JSON):
+//! Wire format (binary, length-framed bincode):
 //!
 //! ```text
-//! ┌────────────────┬───────────────┬──────────────┬──────────────────┐
-//! │ MAGIC (5 B)    │ VERSION (4 B) │ LEN (8 B LE) │ JSON body (UTF-8)│
-//! └────────────────┴───────────────┴──────────────┴──────────────────┘
+//! ┌────────────────┬───────────────┬──────────────┬───────────────────┐
+//! │ MAGIC (5 B)    │ VERSION (4 B) │ LEN (8 B LE) │ bincode body      │
+//! └────────────────┴───────────────┴──────────────┴───────────────────┘
 //! ```
 //!
 //! - `MAGIC = b"GAMRS"` — quick guard against accidentally loading the
 //!   wrong file format.
 //! - `VERSION` — a `u32` little-endian schema tag. Bumped on breaking
 //!   FittedGam / Predictor field changes; downstream consumers can use
-//!   it to gate migrations. Current value: `1`.
-//! - `LEN` — `u64` little-endian byte length of the JSON body that
-//!   follows. Lets the reader know how much to slice off without
-//!   trusting the input length.
-//! - JSON body — serde_json serialization of [`FittedGam`]. JSON over
-//!   bincode here because (a) the gamrs dependency surface is already
-//!   minimal and serde_json was the only binary serializer cached at
-//!   crate-publish time; (b) JSON is debuggable — a developer can
-//!   pop the body out, inspect it, diff two fits — without a custom
-//!   tool. Cost is ~3-5× larger payload than bincode, which for a
-//!   single-smooth GAM (10 knots → p=10) is still a few KB.
+//!   it to gate migrations. Current value: `2` (v1 was JSON-bodied).
+//! - `LEN` — `u64` little-endian byte length of the bincode body that
+//!   follows.
+//! - bincode body — bincode 1.3 default-options serialization of
+//!   [`FittedGam`]. Bincode's binary float encoding round-trips
+//!   `f64` byte-for-byte (no decimal-string lossy reparse), and the
+//!   wire size is ~3-5× smaller than the equivalent JSON.
+//!
+//! For human-debuggable serialization, use [`FittedGam::serialize_json`]
+//! / [`FittedGam::deserialize_json`] — those are unframed and keep
+//! `serde_json` semantics.
 //!
 //! Round-trip guarantees:
 //!
 //! - β, vcov, knots, centring, reparam_v all round-trip to bit-for-bit
-//!   equality (JSON serializes f64 with full-precision text format and
-//!   serde_json parses it back to the same bits).
+//!   equality.
 //! - Predictions after a `deserialize` match the in-memory original
 //!   exactly (asserted by the `persistence_roundtrip` tests).
 //!
@@ -40,20 +39,22 @@ use crate::error::{GamrsError, Result};
 use crate::fit::FittedGam;
 
 const MAGIC: &[u8; 5] = b"GAMRS";
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 const HEADER_LEN: usize = 5 + 4 + 8;
 
 impl FittedGam {
-    /// Serialize to a compact binary frame (`MAGIC | VERSION | LEN | JSON`).
+    /// Serialize to a compact binary frame (`MAGIC | VERSION | LEN | bincode`).
     ///
     /// Returns `Vec<u8>` ready for `std::fs::write` or
     /// `std::net::TcpStream::write_all`. Round-trip with
     /// [`FittedGam::deserialize`] yields a bit-for-bit equal coefficient
     /// vector and predictor — predictions are FP-identical to the
-    /// original fit.
+    /// original fit (bincode encodes f64 as raw little-endian bytes).
     pub fn serialize(&self) -> Result<Vec<u8>> {
-        let body = serde_json::to_vec(self).map_err(|e| {
-            GamrsError::InvalidParameter(format!("FittedGam::serialize: JSON encode failed: {e}"))
+        let body = bincode::serialize(self).map_err(|e| {
+            GamrsError::InvalidParameter(format!(
+                "FittedGam::serialize: bincode encode failed: {e}"
+            ))
         })?;
         let len = body.len() as u64;
         let mut out = Vec::with_capacity(HEADER_LEN + body.len());
@@ -108,10 +109,9 @@ impl FittedGam {
             )));
         }
         let body = &bytes[HEADER_LEN..end];
-        let fitted: FittedGam = serde_json::from_slice(body).map_err(|e| {
+        let fitted: FittedGam = bincode::deserialize(body).map_err(|e| {
             GamrsError::InvalidParameter(format!(
-                "FittedGam::deserialize: JSON decode failed at byte {}: {e}",
-                e.column()
+                "FittedGam::deserialize: bincode decode failed: {e}"
             ))
         })?;
         Ok(fitted)

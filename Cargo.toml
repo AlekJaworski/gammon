@@ -20,6 +20,7 @@ pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
 numpy = { version = "0.27", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
+bincode = { version = "1.3", optional = true }
 
 # ndarray-linalg gated behind `blas` so the BLAS backend (system OpenBLAS,
 # static OpenBLAS, or Intel MKL) is selected explicitly per platform. See
@@ -43,7 +44,7 @@ default-features = false
 # into double-linked OpenBLAS and break the build.
 default = ["persistence", "blas", "blas-system"]
 python = ["dep:pyo3", "dep:numpy", "persistence"]
-persistence = ["dep:serde", "dep:serde_json", "ndarray/serde"]
+persistence = ["dep:serde", "dep:serde_json", "dep:bincode", "ndarray/serde"]
 # BLAS features — pick exactly one of blas-system / blas-static / blas-mkl-static.
 blas = ["dep:ndarray-linalg"]
 blas-system = ["ndarray-linalg/openblas-system"]      # Linux / dev box

@@ -51,14 +51,12 @@ pub use tps::TpsPredictor;
 /// Predict-time design rebuilder. Library-controlled closed set —
 /// `match` dispatch is zero-cost. See module docs for rationale.
 ///
-/// Serde representation (under the `persistence` feature) tags each
-/// variant by `"kind"` for forward-compatibility — adding a new variant
-/// only extends the tagged set.
+/// Serde representation (under the `persistence` feature) uses the
+/// default externally-tagged form — wire-format compatible with both
+/// bincode (binary) and serde_json (text). Bincode does not support
+/// `serde(tag = "...")` because it requires `deserialize_any`, so the
+/// internally-tagged form would only work for the JSON path.
 #[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "persistence",
-    serde(tag = "kind", rename_all = "snake_case")
-)]
 pub enum Predictor {
     /// CR spline + sum-to-zero centring + intercept column.
     Cr(CrPredictor),
