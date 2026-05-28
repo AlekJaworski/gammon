@@ -132,4 +132,37 @@ jobs:
           command: upload
           args: --non-interactive --skip-existing dist/*
 
-  # crates.io publish deferred — wire up later. Tracked in TODO.
+  # ---------------------------------------------------------------------
+  # crates.io publish — task #101.
+  #
+  # Gated on `github.event_name == 'release'` so `workflow_dispatch` runs
+  # (which only build/upload wheels) don't accidentally double-publish.
+  # Runs *after* every wheel + sdist + PyPI job succeeds: a crates.io
+  # publish is irreversible (the version is permanently burned), so we
+  # wait until the Python side is fully green.
+  #
+  # Precondition: the crate name `gamrs` must be claimable on crates.io
+  # under the `AlekJaworski` account (matches `repository = "…/gamrs"` in
+  # Cargo.toml). For the very first publish, do a manual `cargo publish
+  # --dry-run` then `cargo publish` from a workstation so the name is
+  # owned before this job runs.
+  # ---------------------------------------------------------------------
+  publish-crates:
+    runs-on: ubuntu-latest
+    needs: [linux, macos, windows, sdist, publish-pypi]
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install OpenBLAS (sdist build deps)
+        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev gfortran
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: cargo publish --dry-run
+        env:
+          CARGO_TOKEN: ${{ secrets.CARGO_API_TOKEN }}
+        run: cargo publish --dry-run --token "$CARGO_TOKEN"
+      - name: cargo publish
+        env:
+          CARGO_TOKEN: ${{ secrets.CARGO_API_TOKEN }}
+        run: cargo publish --token "$CARGO_TOKEN"
