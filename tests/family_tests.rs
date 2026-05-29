@@ -445,7 +445,7 @@ fn invgauss_variance_is_mu_cubed() {
 fn tweedie_d_loss_dmu_matches_fd() {
     for &p in &[1.3, 1.5, 1.7] {
         fd_d_loss(
-            &Tweedie { p, phi: 1.0 },
+            &Tweedie { p, phi: 1.0, profile_p: true },
             &[0.0, 1.0, 5.0],
             &[0.5, 1.0, 3.0],
             1e-6,
@@ -456,7 +456,7 @@ fn tweedie_d_loss_dmu_matches_fd() {
 
 #[test]
 fn tweedie_variance_is_mu_pow_p() {
-    let v = TweedieVariance { p: 1.5 };
+    let v = TweedieVariance { p: 1.5, profile_p: true };
     for &mu in &[0.5_f64, 1.0, 4.0] {
         let expected = mu.powf(1.5);
         assert!((v.variance(mu) - expected).abs() < 1e-12);
@@ -465,9 +465,9 @@ fn tweedie_variance_is_mu_pow_p() {
 
 #[test]
 fn tweedie_shape_params_roundtrip() {
-    let t = Tweedie { p: 1.6, phi: 0.5 };
+    let t = Tweedie { p: 1.6, phi: 0.5, profile_p: true };
     let params = t.get_shape_params();
-    let mut t2 = Tweedie { p: 99.0, phi: 99.0 };
+    let mut t2 = Tweedie { p: 99.0, phi: 99.0, profile_p: true };
     t2.set_shape_params(&params);
     assert!((t2.p - 1.6).abs() < 1e-10, "p got {}", t2.p);
     assert!((t2.phi - 0.5).abs() < 1e-10, "phi got {}", t2.phi);

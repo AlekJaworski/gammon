@@ -20,7 +20,8 @@ use crate::error::{GamrsError, Result};
 use crate::family::{
     bernoulli_logit, gamma_inverse, gamma_log, inverse_gaussian_log, negbin_log, ocat_identity,
     poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity,
-    tweedie_log, Bernoulli, BinomialVariance, ConstantVariance, ElfLoss, ElfVariance, Family,
+    tweedie_log, tweedie_log_fixed_p, Bernoulli, BinomialVariance, ConstantVariance, ElfLoss,
+    ElfVariance, Family,
     Gamma, GammaVariance, Gaussian, IdentityLink, InverseGaussian, InverseGaussianVariance,
     InverseLink, LogLink, LogitLink, NegBin, NegBinVariance, OcatLoss, OcatVariance, Poisson,
     PoissonVariance, QuasiBinomial, QuasiPoisson, TDist, TVariance, Tweedie, TweedieVariance,
@@ -385,6 +386,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, TweedieVariance, S> for Tweed
     ) -> Result<FittedGam> {
         let init_p = family.loss.p;
         let init_phi = family.loss.phi;
+        let profile_p = family.loss.profile_p;
         check_lengths(x, y, prior_weights)?;
         if !(1.0 < init_p && init_p < 2.0) {
             return Err(GamrsError::InvalidParameter(format!(
@@ -401,25 +403,39 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, TweedieVariance, S> for Tweed
         check_y_nonneg(y, "Tweedie")?;
 
         let n_terms = prep.s_list.len();
-        let p_t = ((init_p - 1.0) / (2.0 - init_p)).ln();
         let rho_init = SmartInit.init(y, &prep.x_design, &prep.s_list);
         let mut theta0_vec: Vec<f64> = rho_init.to_vec();
         theta0_vec.push(init_phi.ln());
-        theta0_vec.push(p_t);
+        if profile_p {
+            // p_transform = log((p-1)/(2-p)); only present when p is profiled.
+            theta0_vec.push(((init_p - 1.0) / (2.0 - init_p)).ln());
+        }
         let theta0 = Array1::from_vec(theta0_vec);
+
+        // Profile-p has 2 shape params [log φ, p_t]; fixed-p has 1 [log φ].
+        let make_family = move || {
+            if profile_p {
+                tweedie_log(init_p, init_phi)
+            } else {
+                tweedie_log_fixed_p(init_p, init_phi)
+            }
+        };
 
         fit_shape_aware::<_, _, _, _, _, S, _, _>(
             prep,
             x,
             y,
             prior_weights,
-            tweedie_log(init_p, init_phi),
+            make_family(),
             theta0,
             PirlsInnerBuilder,
             OwnedByLossProfile,
             move |theta| {
-                let mut f = tweedie_log(init_p, init_phi);
-                f.set_shape_params(&[theta[n_terms], theta[n_terms + 1]]);
+                let mut f = make_family();
+                let n_shape = f.n_shape_params();
+                let shape_slice: Vec<f64> =
+                    (0..n_shape).map(|i| theta[n_terms + i]).collect();
+                f.set_shape_params(&shape_slice);
                 f
             },
             // scale = φ̂ from the converged family.

@@ -226,6 +226,33 @@ class TeTerm:
 
 
 @dataclass(frozen=True)
+class TeMultiTerm:
+    """Anisotropic n-margin tensor product term `te(x_c0, ..., x_c{D-1})`
+    — one smoothing parameter per margin (D >= 2). CR margins, uncentred
+    marginals (main effects retained, matching mgcv ``te``).
+
+    `cols` is the tuple of column indices (length D >= 2). `k` is the
+    matching tuple of marginal basis dims (defaults to ``(5, ...)``).
+    """
+    cols: Tuple[int, ...]
+    k: Optional[Tuple[int, ...]] = None
+
+
+@dataclass(frozen=True)
+class TiTerm:
+    """N-margin tensor interaction term `ti(x_c0, ..., x_c{D-1})` — pure
+    interaction with each margin's main effect excluded (per-margin
+    sum-to-zero, matching mgcv ``ti``). One smoothing parameter per
+    margin (D >= 2). CR margins.
+
+    `cols` is the tuple of column indices (length D >= 2). `k` is the
+    matching tuple of marginal basis dims (defaults to ``(5, ...)``).
+    """
+    cols: Tuple[int, ...]
+    k: Optional[Tuple[int, ...]] = None
+
+
+@dataclass(frozen=True)
 class TpsTerm:
     """Isotropic thin-plate regression spline `s(x_cols, bs='tp')` —
     one smoothing parameter per term, arbitrary number of input
@@ -240,7 +267,7 @@ class TpsTerm:
 
 # Sum type at the Python boundary. Type-checked closed set — adding a
 # new term kind extends this union (a library-controlled change).
-Term = Union[CrTerm, CrStableTerm, ReTerm, TeTerm, TpsTerm]
+Term = Union[CrTerm, CrStableTerm, ReTerm, TeTerm, TeMultiTerm, TiTerm, TpsTerm]
 
 
 def _term_to_tuple(term: Term) -> tuple:
@@ -260,13 +287,29 @@ def _term_to_tuple(term: Term) -> tuple:
             "te",
             (int(term.k[0]), int(term.k[1])),
         )
+    if isinstance(term, TeMultiTerm):
+        cols_tup = tuple(int(c) for c in term.cols)
+        k_tup = (
+            tuple(int(ki) for ki in term.k)
+            if term.k is not None
+            else tuple(5 for _ in cols_tup)
+        )
+        return (cols_tup, "te_multi", k_tup)
+    if isinstance(term, TiTerm):
+        cols_tup = tuple(int(c) for c in term.cols)
+        k_tup = (
+            tuple(int(ki) for ki in term.k)
+            if term.k is not None
+            else tuple(5 for _ in cols_tup)
+        )
+        return (cols_tup, "ti", k_tup)
     if isinstance(term, TpsTerm):
         cols_tup = tuple(int(c) for c in term.cols)
         k_val = int(term.k) if term.k is not None else 10 * len(cols_tup)
         return (cols_tup, "tp", k_val)
     raise TypeError(
         f"unknown term type {type(term).__name__}; expected one of "
-        "CrTerm / CrStableTerm / ReTerm / TeTerm / TpsTerm"
+        "CrTerm / CrStableTerm / ReTerm / TeTerm / TeMultiTerm / TiTerm / TpsTerm"
     )
 
 
@@ -277,23 +320,28 @@ def fit_additive(
     terms: Sequence[Term],
     *,
     weights: Any = None,
+    **family_kwargs: Any,
 ) -> Any:
     """Fit a multi-smooth additive GAM `y ~ s(x_{c_0}) + s(x_{c_1}) + ...`.
 
     `x` must be a 2-D array of shape ``(n_obs, n_input_dims)``. `y` is
     1-D of length `n_obs`. `terms` is a sequence of typed term objects
-    — :class:`CrTerm`, :class:`CrStableTerm`, :class:`ReTerm`, or
-    :class:`TeTerm`. Tensor terms (:class:`TeTerm`) provide two
-    smoothing parameters per term and read two columns of `x`.
+    — :class:`CrTerm`, :class:`CrStableTerm`, :class:`ReTerm`,
+    :class:`TeTerm`, :class:`TeMultiTerm`, :class:`TiTerm`, or
+    :class:`TpsTerm`. Tensor terms provide one smoothing parameter per
+    margin and read several columns of `x`.
 
     Returns the native :class:`FittedGam`. Use
     :attr:`FittedGam.rho` / :attr:`FittedGam.lambda` / :attr:`FittedGam.edf_per_term`
     (all length = number of smoothing params, i.e. 1 per univariate term,
-    2 per tensor term) for per-term diagnostics.
+    one per tensor margin) for per-term diagnostics.
 
-    `family` accepts the same strings as :func:`_gamrs_native.fit` minus
-    the shape-managed families (tdist, scat, negbin, tweedie, ocat, elf,
-    quantile) which are restricted to single-smooth in 94b.
+    `family` accepts the same strings as :func:`_gamrs_native.fit`,
+    including the shape-managed families ``negbin`` / ``nb`` (profile-θ)
+    and ``tweedie`` / ``tw``. Family shape kwargs forward via
+    ``**family_kwargs`` — e.g. ``theta=`` for negbin; for Tweedie omit
+    ``tweedie_p`` for profile-p (p estimated, mgcv ``tw()``) or pass
+    ``tweedie_p=val`` to hold p fixed (mgcv ``Tweedie(p=val)``).
     """
     x_arr = np.ascontiguousarray(np.asarray(x, dtype=np.float64))
     if x_arr.ndim != 2:
@@ -312,4 +360,6 @@ def fit_additive(
     term_tuples = [_term_to_tuple(t) for t in terms]
     if not term_tuples:
         raise ValueError("terms must be non-empty")
-    return _gamrs_native.fit_additive(family, x_arr, y_arr, term_tuples, weights=w_arr)
+    return _gamrs_native.fit_additive(
+        family, x_arr, y_arr, term_tuples, weights=w_arr, **family_kwargs
+    )

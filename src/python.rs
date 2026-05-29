@@ -33,7 +33,7 @@ use crate::error::GamrsError;
 use crate::family::{
     bernoulli_logit, elf_identity, gamma_inverse, gamma_log, gaussian_identity,
     inverse_gaussian_log, negbin_log, ocat_identity, poisson_log, quasibinomial_logit,
-    quasipoisson_log, tdist_identity, tweedie_log,
+    quasipoisson_log, tdist_identity, tweedie_log, tweedie_log_fixed_p,
 };
 use crate::fit::{FamilyFit, FittedGam, PredictScale};
 
@@ -895,7 +895,12 @@ where
 /// - `"inverse_gaussian"` / `"inverse.gaussian"` → `inverse_gaussian_log()`
 /// - `"negbin"` / `"nb"` → `negbin_log(theta=2.0)` (or user-passed theta)
 /// - `"tdist"` / `"scat"` → `tdist_identity(nu=5, sigma2=1)`
-/// - `"tweedie"` / `"tw"` → `tweedie_log(p=1.5, phi=1)`
+/// - `"tweedie"` / `"tw"` → Tweedie + log link. `tweedie_p` toggles the
+///   mode (mgcv_rust convention): `tweedie_p=None` → **profile-p** (mgcv
+///   `tw()`): `p` is estimated jointly with `φ` and the smoothing params,
+///   initialised at 1.5. `tweedie_p=Some(val)` → **fixed-p** (mgcv
+///   `Tweedie(p=val)`): `p` is held CONSTANT at `val` (must be in `(1, 2)`)
+///   and only `φ` + smoothing params are estimated.
 /// - `"ocat"` → `ocat_identity(n_cats=r)` — requires `r`.
 /// - `"elf"` / `"quantile"` → `elf_identity(tau=0.5, sigma=0, lambda=0)`
 ///   (auto-tuned warm start).
@@ -981,21 +986,35 @@ fn fit<'py>(
             )?
         }
         "tweedie" | "tw" => {
-            let p_val = tweedie_p.unwrap_or(1.5);
             let phi_val = tweedie_phi.unwrap_or(1.0);
-            if !(1.0 < p_val && p_val < 2.0) {
-                return Err(PyValueError::new_err(format!(
-                    "tweedie p must be in (1, 2); got tweedie_p={p_val}"
-                )));
+            // tweedie_p semantics (mgcv_rust convention):
+            //   None      → profile-p (mgcv `tw()`): p estimated jointly.
+            //   Some(val) → fixed-p   (mgcv `Tweedie(p=val)`): p held = val.
+            match tweedie_p {
+                None => fit_dispatch_design(
+                    tweedie_log(1.5, phi_val),
+                    x_view,
+                    y_view,
+                    w_view,
+                    design,
+                    k,
+                )?,
+                Some(p_val) => {
+                    if !(1.0 < p_val && p_val < 2.0) {
+                        return Err(PyValueError::new_err(format!(
+                            "tweedie fixed p must be in (1, 2); got tweedie_p={p_val}"
+                        )));
+                    }
+                    fit_dispatch_design(
+                        tweedie_log_fixed_p(p_val, phi_val),
+                        x_view,
+                        y_view,
+                        w_view,
+                        design,
+                        k,
+                    )?
+                }
             }
-            fit_dispatch_design(
-                tweedie_log(p_val, phi_val),
-                x_view,
-                y_view,
-                w_view,
-                design,
-                k,
-            )?
         }
         "ocat" => {
             let n_cats = r.ok_or_else(|| {
@@ -1108,6 +1127,53 @@ fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<Term
                 10 * cols.len()
             };
             TermSpec::Tps { cols, k }
+        } else if basis == "te_multi" || basis == "ti" {
+            // N-margin te(...) / ti(...): (cols_tuple, "te_multi"|"ti", k_tuple)
+            // where cols_tuple has length D >= 2 and k_tuple has the same
+            // length (one marginal basis dim per margin).
+            let cols_tup: &Bound<'_, pyo3::types::PyTuple> =
+                first.cast::<pyo3::types::PyTuple>().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "fit_additive: term {j} first element must be a tuple of column indices"
+                    ))
+                })?;
+            if cols_tup.len() < 2 {
+                return Err(PyValueError::new_err(format!(
+                    "fit_additive: term {j} cols tuple must have at least 2 elements"
+                )));
+            }
+            let mut cols: Vec<usize> = Vec::with_capacity(cols_tup.len());
+            for ci in 0..cols_tup.len() {
+                cols.push(cols_tup.get_item(ci)?.extract()?);
+            }
+            let k: Vec<usize> = if tup.len() >= 3 {
+                let k_item = tup.get_item(2)?;
+                let k_tup = k_item.cast::<pyo3::types::PyTuple>().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "fit_additive: term {j} k must be a tuple of marginal basis dims"
+                    ))
+                })?;
+                if k_tup.len() != cols.len() {
+                    return Err(PyValueError::new_err(format!(
+                        "fit_additive: term {j} k tuple length ({}) must match cols length ({})",
+                        k_tup.len(),
+                        cols.len()
+                    )));
+                }
+                let mut kv = Vec::with_capacity(k_tup.len());
+                for ki in 0..k_tup.len() {
+                    kv.push(k_tup.get_item(ki)?.extract()?);
+                }
+                kv
+            } else {
+                vec![5; cols.len()]
+            };
+            let bs = vec![MarginKind::Cr; cols.len()];
+            if basis == "ti" {
+                TermSpec::Ti { cols, k, bs }
+            } else {
+                TermSpec::TeMulti { cols, k, bs }
+            }
         } else if basis == "te" {
             let cols_tup: &Bound<'_, pyo3::types::PyTuple> =
                 first.cast::<pyo3::types::PyTuple>().map_err(|_| {
@@ -1173,8 +1239,8 @@ fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<Term
                 "re" => TermSpec::Re { col },
                 other => {
                     return Err(PyValueError::new_err(format!(
-                        "fit_additive: term {j} basis must be 'cr', 'cr_stable', 're', 'te', or 'tp'; \
-                         got {other:?}"
+                        "fit_additive: term {j} basis must be 'cr', 'cr_stable', 're', 'te', \
+                         'te_multi', 'ti', or 'tp'; got {other:?}"
                     )))
                 }
             }
@@ -1299,20 +1365,33 @@ fn fit_additive<'py>(
             )?
         }
         "tweedie" | "tw" => {
-            let p_val = tweedie_p.unwrap_or(1.5);
             let phi_val = tweedie_phi.unwrap_or(1.0);
-            if !(1.0 < p_val && p_val < 2.0) {
-                return Err(PyValueError::new_err(format!(
-                    "tweedie p must be in (1, 2); got tweedie_p={p_val}"
-                )));
+            // tweedie_p semantics (mgcv_rust convention):
+            //   None      → profile-p (mgcv `tw()`): p estimated jointly.
+            //   Some(val) → fixed-p   (mgcv `Tweedie(p=val)`): p held = val.
+            match tweedie_p {
+                None => fit_additive_dispatch(
+                    tweedie_log(1.5, phi_val),
+                    x_view,
+                    y_view,
+                    w_view,
+                    term_specs,
+                )?,
+                Some(p_val) => {
+                    if !(1.0 < p_val && p_val < 2.0) {
+                        return Err(PyValueError::new_err(format!(
+                            "tweedie fixed p must be in (1, 2); got tweedie_p={p_val}"
+                        )));
+                    }
+                    fit_additive_dispatch(
+                        tweedie_log_fixed_p(p_val, phi_val),
+                        x_view,
+                        y_view,
+                        w_view,
+                        term_specs,
+                    )?
+                }
             }
-            fit_additive_dispatch(
-                tweedie_log(p_val, phi_val),
-                x_view,
-                y_view,
-                w_view,
-                term_specs,
-            )?
         }
         "ocat" => {
             let n_cats = r.ok_or_else(|| {

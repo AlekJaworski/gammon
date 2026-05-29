@@ -202,6 +202,13 @@ impl<B: Basis> Basis for StableReparam<B> {
 /// Householder reflector on `t`: returns the `(k, k-1)` matrix whose
 /// columns are orthonormal and orthogonal to `t`. Equivalent to the last
 /// `k-1` columns of `Q` from `QR(t)`.
+/// Public wrapper around [`nullspace_householder`] for callers (e.g. the
+/// n-margin tensor builder) that have a raw column-sum vector but no
+/// `Basis` instance to feed [`SumToZero::from_fit_design`].
+pub(crate) fn nullspace_householder_pub(t: ArrayView1<f64>) -> Array2<f64> {
+    nullspace_householder(t)
+}
+
 fn nullspace_householder(t: ArrayView1<f64>) -> Array2<f64> {
     let k = t.len();
     debug_assert!(k >= 2);

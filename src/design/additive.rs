@@ -219,7 +219,7 @@ fn invoke_sub_design(
         // Multi-column sub-predictors slice their own margin columns from
         // the full design matrix using the column indices stored at
         // fit-time. `Tps::cols` may have arbitrary length (≥ 2).
-        Predictor::Tensor(_) | Predictor::Tps(_) => pred.design(x_new),
+        Predictor::Tensor(_) | Predictor::TensorMulti(_) | Predictor::Tps(_) => pred.design(x_new),
         _ => {
             // Univariate: pass the single configured column as a (n, 1) view.
             debug_assert_eq!(cols.len(), 1);
@@ -236,7 +236,9 @@ fn invoke_sub_design_deriv(
     axis: usize,
 ) -> Result<Array2<f64>> {
     match pred {
-        Predictor::Tensor(_) | Predictor::Tps(_) => pred.design_deriv(x_new, axis),
+        Predictor::Tensor(_) | Predictor::TensorMulti(_) | Predictor::Tps(_) => {
+            pred.design_deriv(x_new, axis)
+        }
         _ => {
             // Univariate sub-predictors take (n, 1) and an axis of 0.
             debug_assert_eq!(cols.len(), 1);
@@ -343,17 +345,25 @@ impl DesignStrategy for Additive {
                     cols_used.push(vec![col_a, col_b]);
                 }
                 TermSpec::TeMulti { .. } | TermSpec::Ti { .. } => {
-                    // N-margin te(...) / ti(...) interaction dispatch is
-                    // pending the TensorTermFit::build_te / build_ti
-                    // n-margin extensions. Currently returns an explicit
-                    // error so callers can detect the unfinished path.
-                    return Err(GamrsError::InvalidParameter(
-                        "TeMulti and Ti dispatch not yet wired in Additive::prepare. \
-                         The TermSpec variants are surfaced for forward-compat; the \
-                         n-margin and ti() builders in src/design/tensor.rs are a \
-                         pending follow-up commit (task #99 partial)."
-                            .to_string(),
-                    ));
+                    let (cols, k, bs, interaction) = match t {
+                        TermSpec::TeMulti { cols, k, bs } => {
+                            (cols.clone(), k.clone(), bs.clone(), false)
+                        }
+                        TermSpec::Ti { cols, k, bs } => {
+                            (cols.clone(), k.clone(), bs.clone(), true)
+                        }
+                        _ => unreachable!(),
+                    };
+                    let fit = if interaction {
+                        super::tensor::TensorMultiTermFit::build_ti(x, &cols, &k, &bs)?
+                    } else {
+                        super::tensor::TensorMultiTermFit::build_te(x, &cols, &k, &bs)?
+                    };
+                    per_term_dim.push(fit.design.ncols());
+                    per_term_centred.push(fit.design);
+                    per_term_s_smooth.push(fit.s_list_term);
+                    per_term_predictor.push(Predictor::TensorMulti(fit.predictor));
+                    cols_used.push(cols);
                 }
                 TermSpec::Tps { .. } => {
                     let (tcols, tk) = match t {

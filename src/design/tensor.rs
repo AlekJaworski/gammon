@@ -229,6 +229,257 @@ impl TensorTermFit {
 }
 
 // =============================================================================
+// N-margin tensor product (te) and tensor interaction (ti).
+// =============================================================================
+
+/// Predict-time rebuilder for an n-margin tensor product (`te`) or tensor
+/// interaction (`ti`). Holds each margin's knot grid + optional per-margin
+/// centring matrix (used by `ti` to strip each margin's main effect) and
+/// the single tensor-level sum-to-zero centring matrix.
+///
+/// For `te` the per-margin centrings are absent (uncentred marginals,
+/// matching mgcv `mc[i] = FALSE`); for `ti` each margin carries an
+/// `(k_i, k_i - 1)` sum-to-zero matrix so the row-wise Kronecker contains
+/// only the pure interaction.
+#[cfg_attr(feature = "persistence", derive(serde::Serialize, serde::Deserialize))]
+pub struct TensorMultiPredictor {
+    /// Column index in `x` each margin reads. Length `D >= 2`.
+    pub cols: Vec<usize>,
+    /// Per-margin knot grids (currently all CR). Length `D`.
+    pub knots: Vec<ndarray::Array1<f64>>,
+    /// Optional per-margin sum-to-zero centring matrix. `None` for `te`
+    /// (uncentred marginals); `Some((k_i, k_i - 1))` for `ti`. Length `D`.
+    pub margin_centrings: Vec<Option<Array2<f64>>>,
+    /// Tensor-level sum-to-zero centring matrix, shape
+    /// `(prod_k, prod_k - 1)`. Applied AFTER the row-wise Kronecker.
+    pub centring: Array2<f64>,
+}
+
+impl TensorMultiPredictor {
+    pub(crate) fn design(&self, x_new: ArrayView2<f64>) -> Result<Array2<f64>> {
+        self.check_cols(x_new)?;
+        let raw = self.tensor_design(x_new, /*deriv_axis=*/ None);
+        let centred = raw.dot(&self.centring);
+        Ok(prepend_intercept(centred.view()))
+    }
+
+    pub(crate) fn design_deriv(&self, x_new: ArrayView2<f64>, axis: usize) -> Result<Array2<f64>> {
+        self.check_cols(x_new)?;
+        let raw_d1 = self.tensor_design(x_new, Some(axis));
+        let centred_d1 = raw_d1.dot(&self.centring);
+        Ok(prepend_zero_column(centred_d1.view()))
+    }
+
+    fn check_cols(&self, x_new: ArrayView2<f64>) -> Result<()> {
+        for &c in &self.cols {
+            if c >= x_new.ncols() {
+                return Err(GamrsError::InvalidParameter(format!(
+                    "TensorMultiPredictor: term reads column {c} but x has only {} columns",
+                    x_new.ncols()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Row-wise Kronecker of the (optionally centred) marginal designs. If
+    /// `deriv_axis` is `Some(axis)` the margin reading that column uses its
+    /// derivative; if `axis` matches no margin column the result is zero.
+    fn tensor_design(&self, x_new: ArrayView2<f64>, deriv_axis: Option<usize>) -> Array2<f64> {
+        let mut acc: Option<Array2<f64>> = None;
+        let mut any_deriv_margin = false;
+        for (m, &col) in self.cols.iter().enumerate() {
+            let cr = CrSpline::new(self.knots[m].clone()).expect("invalid stored knots");
+            let x_col = x_new.slice(ndarray::s![.., col..col + 1]);
+            let raw = match deriv_axis {
+                Some(ax) if ax == col => {
+                    any_deriv_margin = true;
+                    cr.d1(x_col, 0)
+                }
+                _ => cr.evaluate(x_col),
+            };
+            let margin_design = match &self.margin_centrings[m] {
+                Some(cm) => raw.dot(cm),
+                None => raw,
+            };
+            acc = Some(match acc {
+                None => margin_design,
+                Some(prev) => row_kron(prev.view(), margin_design.view()),
+            });
+        }
+        let mut out = acc.expect("tensor must have >= 1 margin");
+        // If differentiating wrt an axis that no margin reads, the product
+        // rule gives identically zero.
+        if let Some(_ax) = deriv_axis {
+            if !any_deriv_margin {
+                out.fill(0.0);
+            }
+        }
+        out
+    }
+}
+
+/// Fit-time helper for n-margin tensor products. Mirrors
+/// [`TensorTermFit`] but generalises to `D >= 2` margins and supports both
+/// `te` (uncentred marginals) and `ti` (per-margin sum-to-zero so main
+/// effects are excluded).
+pub(super) struct TensorMultiTermFit {
+    /// `(n, prod_k - 1)` design in the centred frame.
+    pub(super) design: Array2<f64>,
+    /// Per-margin penalties in the centred frame. Length `D` (one
+    /// smoothing parameter per margin).
+    pub(super) s_list_term: Vec<Array2<f64>>,
+    pub(super) predictor: TensorMultiPredictor,
+}
+
+impl TensorMultiTermFit {
+    /// Build an n-margin `te(...)` term (uncentred marginals).
+    pub(super) fn build_te(
+        x: ArrayView2<f64>,
+        cols: &[usize],
+        k: &[usize],
+        bs: &[MarginKind],
+    ) -> Result<Self> {
+        Self::build_impl(x, cols, k, bs, /*interaction=*/ false)
+    }
+
+    /// Build an n-margin `ti(...)` term — pure interaction with each
+    /// margin's main effect removed via a per-margin sum-to-zero
+    /// constraint applied BEFORE the Kronecker product (mgcv `ti`'s
+    /// `mc[i] = TRUE` for every margin).
+    pub(super) fn build_ti(
+        x: ArrayView2<f64>,
+        cols: &[usize],
+        k: &[usize],
+        bs: &[MarginKind],
+    ) -> Result<Self> {
+        Self::build_impl(x, cols, k, bs, /*interaction=*/ true)
+    }
+
+    fn build_impl(
+        x: ArrayView2<f64>,
+        cols: &[usize],
+        k: &[usize],
+        bs: &[MarginKind],
+        interaction: bool,
+    ) -> Result<Self> {
+        let d = cols.len();
+        if d < 2 {
+            return Err(GamrsError::InvalidParameter(format!(
+                "n-margin tensor term must have >= 2 margins (got {d})"
+            )));
+        }
+        if k.len() != d || bs.len() != d {
+            return Err(GamrsError::InvalidParameter(format!(
+                "n-margin tensor term: cols ({d}), k ({}), bs ({}) lengths must match",
+                k.len(),
+                bs.len()
+            )));
+        }
+        // Distinct columns.
+        for i in 0..d {
+            for j in (i + 1)..d {
+                if cols[i] == cols[j] {
+                    return Err(GamrsError::InvalidParameter(format!(
+                        "n-margin tensor term must have distinct margin columns \
+                         (cols[{i}] == cols[{j}] == {})",
+                        cols[i]
+                    )));
+                }
+            }
+        }
+        for &b in bs {
+            let MarginKind::Cr = b;
+        }
+
+        // Per-margin: build CR basis, evaluate raw design, optionally apply
+        // a per-margin sum-to-zero constraint (ti), and form the rescaled
+        // marginal penalty in the (possibly centred) marginal frame.
+        let mut knots: Vec<ndarray::Array1<f64>> = Vec::with_capacity(d);
+        let mut margin_centrings: Vec<Option<Array2<f64>>> = Vec::with_capacity(d);
+        let mut margin_designs: Vec<Array2<f64>> = Vec::with_capacity(d);
+        let mut margin_penalties: Vec<Array2<f64>> = Vec::with_capacity(d);
+        let mut margin_dims: Vec<usize> = Vec::with_capacity(d);
+
+        for m in 0..d {
+            let x_col = x.column(cols[m]);
+            let cr = CrSpline::with_quantile_knots(x_col, k[m])?;
+            knots.push(cr.knots().to_owned());
+            let x_view = x.slice(ndarray::s![.., cols[m]..cols[m] + 1]);
+            let raw_design = cr.evaluate(x_view);
+            let s_raw = cr.penalties().pop().unwrap();
+            let s_rescaled = rescale_by_leading_eig(s_raw)?;
+
+            if interaction {
+                // ti: sum-to-zero on this margin so its main effect drops.
+                let cr_for_stz = CrSpline::new(cr.knots().to_owned())?;
+                let stz = SumToZero::from_fit_design(cr_for_stz, raw_design.view());
+                let cm = stz.matrix().to_owned();
+                let centred_design = raw_design.dot(&cm);
+                let centred_pen = cm.t().dot(&s_rescaled).dot(&cm);
+                margin_dims.push(cm.ncols());
+                margin_designs.push(centred_design);
+                margin_penalties.push(centred_pen);
+                margin_centrings.push(Some(cm));
+            } else {
+                // te: uncentred marginal (mgcv mc[i] = FALSE).
+                margin_dims.push(k[m]);
+                margin_designs.push(raw_design);
+                margin_penalties.push(s_rescaled);
+                margin_centrings.push(None);
+            }
+        }
+
+        // Row-wise Kronecker over all margins → raw tensor design.
+        let mut raw_design: Option<Array2<f64>> = None;
+        for md in &margin_designs {
+            raw_design = Some(match raw_design {
+                None => md.clone(),
+                Some(prev) => row_kron(prev.view(), md.view()),
+            });
+        }
+        let raw_design = raw_design.expect(">= 2 margins guaranteed above");
+        let prod_k: usize = margin_dims.iter().product();
+        debug_assert_eq!(raw_design.ncols(), prod_k);
+
+        // Per-margin tensor penalties: S_m lifted to the full product space
+        // as I ⊗ ... ⊗ S_m ⊗ ... ⊗ I (S_m in slot m).
+        let mut s_te_raw: Vec<Array2<f64>> = Vec::with_capacity(d);
+        for m in 0..d {
+            let left: usize = margin_dims[..m].iter().product();
+            let right: usize = margin_dims[(m + 1)..].iter().product();
+            let s_lifted = kron_identity_sandwich(left, margin_penalties[m].view(), right);
+            debug_assert_eq!(s_lifted.shape(), &[prod_k, prod_k]);
+            s_te_raw.push(s_lifted);
+        }
+
+        // Single sum-to-zero constraint on the WHOLE tensor product.
+        let t = raw_design.sum_axis(ndarray::Axis(0));
+        let centring = crate::transform::nullspace_householder_pub(t.view());
+        let design = raw_design.dot(&centring);
+
+        // Rotate penalties through the tensor-level constraint.
+        let s_list_term: Vec<Array2<f64>> = s_te_raw
+            .iter()
+            .map(|s| centring.t().dot(s).dot(&centring))
+            .collect();
+
+        let predictor = TensorMultiPredictor {
+            cols: cols.to_vec(),
+            knots,
+            margin_centrings,
+            centring,
+        };
+
+        Ok(Self {
+            design,
+            s_list_term,
+            predictor,
+        })
+    }
+}
+
+// =============================================================================
 // Tensor-specific math helpers.
 // =============================================================================
 
@@ -282,6 +533,35 @@ fn kron_with_identity_right(s: ndarray::ArrayView2<f64>, k: usize) -> Array2<f64
             }
             for r in 0..k {
                 out[[i * k + r, j * k + r]] = v;
+            }
+        }
+    }
+    out
+}
+
+/// Kronecker sandwich `I_left ⊗ S ⊗ I_right`. Produces a
+/// `(left*m*right, left*n*right)` matrix used to lift a single margin's
+/// `(m, n)` penalty into the full n-margin tensor-product coefficient
+/// space. Column index in the product space is `((a * m) + i) * right + r`
+/// for left-block `a`, S-row/col `i`, right-block `r`.
+fn kron_identity_sandwich(left: usize, s: ndarray::ArrayView2<f64>, right: usize) -> Array2<f64> {
+    let m = s.nrows();
+    let n = s.ncols();
+    let rows = left * m * right;
+    let cols = left * n * right;
+    let mut out = Array2::<f64>::zeros((rows, cols));
+    for a in 0..left {
+        for i in 0..m {
+            for j in 0..n {
+                let v = s[[i, j]];
+                if v == 0.0 {
+                    continue;
+                }
+                let row_base = (a * m + i) * right;
+                let col_base = (a * n + j) * right;
+                for r in 0..right {
+                    out[[row_base + r, col_base + r]] = v;
+                }
             }
         }
     }

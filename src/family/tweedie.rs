@@ -22,11 +22,21 @@ pub struct Tweedie {
     pub p: f64,
     /// Dispersion parameter.
     pub phi: f64,
+    /// When `true` (mgcv `tw()`): `p` is profiled — there are 2 shape
+    /// params `[log φ, p_transform]` and the outer Newton estimates `p`
+    /// jointly. When `false` (mgcv `Tweedie(p=val)`): `p` is held CONSTANT
+    /// at the constructed value — there is 1 shape param `[log φ]` and the
+    /// p-axis is dropped from every shape derivative so Newton optimizes φ
+    /// (+ λ) only. See `tweedie_log` (profile) vs `tweedie_log_fixed_p`.
+    pub profile_p: bool,
 }
 
 #[derive(Clone)]
 pub struct TweedieVariance {
     pub p: f64,
+    /// Mirror of `Tweedie::profile_p` so `set_shape_params` knows whether
+    /// the incoming slice carries a `p_transform` entry to consume.
+    pub profile_p: bool,
 }
 
 impl Loss for Tweedie {
@@ -132,18 +142,33 @@ impl Loss for Tweedie {
     // at `scripts/diagnostics/tweedie_parity_layered.py`.
 
     fn n_shape_params(&self) -> usize {
-        2
+        // profile-p: [log φ, p_transform]; fixed-p: [log φ] only.
+        if self.profile_p {
+            2
+        } else {
+            1
+        }
     }
     /// mgcv `build_outer_search_vector`: TweedieLogPhi step cap 1.0,
-    /// TweedieP-transform step cap 2.0.
+    /// TweedieP-transform step cap 2.0. Fixed-p drops the p-axis cap.
     fn shape_axis_step_caps(&self) -> Vec<f64> {
-        vec![1.0, 2.0]
+        if self.profile_p {
+            vec![1.0, 2.0]
+        } else {
+            vec![1.0]
+        }
     }
     fn set_shape_params(&mut self, params: &[f64]) {
         debug_assert_eq!(
             params.len(),
-            2,
-            "Tweedie expects 2 shape params [log φ, p_transform]"
+            self.n_shape_params(),
+            "Tweedie expects {} shape param(s) ({})",
+            self.n_shape_params(),
+            if self.profile_p {
+                "[log φ, p_transform]"
+            } else {
+                "[log φ] (p fixed)"
+            }
         );
         // φ floor — keep > 1e-6 so the series log-W stays well-conditioned.
         self.phi = params[0].exp().max(1e-6);
@@ -151,15 +176,22 @@ impl Loss for Tweedie {
         // Smyth series mode j_max = y^(2-p)/(φ(2-p)) doesn't blow up. mgcv
         // does the same clamp in `tw()`. Without this Newton would
         // probe p → 1 or p → 2 and the series would run for billions of
-        // iterations (each obs).
-        let s = 1.0 / (1.0 + (-params[1]).exp());
-        self.p = (1.0 + s).clamp(1.05, 1.95);
+        // iterations (each obs). In fixed-p mode there is no p_transform
+        // entry — `self.p` stays at its constructed value untouched.
+        if self.profile_p {
+            let s = 1.0 / (1.0 + (-params[1]).exp());
+            self.p = (1.0 + s).clamp(1.05, 1.95);
+        }
     }
     fn get_shape_params(&self) -> Vec<f64> {
-        // logit(p - 1): θ_p such that p = 1 + sigmoid(θ_p).
-        let s = self.p - 1.0;
-        let theta_p = (s / (1.0 - s).max(1e-15)).ln();
-        vec![self.phi.ln(), theta_p]
+        if self.profile_p {
+            // logit(p - 1): θ_p such that p = 1 + sigmoid(θ_p).
+            let s = self.p - 1.0;
+            let theta_p = (s / (1.0 - s).max(1e-15)).ln();
+            vec![self.phi.ln(), theta_p]
+        } else {
+            vec![self.phi.ln()]
+        }
     }
 
     /// Analytic Tweedie shape-score gradient — Phase-1 v0.2 port
@@ -210,6 +242,7 @@ impl Loss for Tweedie {
         let p = self.p;
         let onep = 1.0 - p;
         let twop = 2.0 - p;
+        let profile_p = self.profile_p;
         let inv_onep = 1.0 / onep;
         let inv_twop = 1.0 / twop;
         let inv_onep2 = inv_onep * inv_onep;
@@ -276,6 +309,13 @@ impl Loss for Tweedie {
         //     [-Σ log W]/d(log φ)  → -Σ dlog_w_drho
         let g_log_phi = -dp / (2.0 * phi) - 0.5 * mp + sum_l_base - sum_dlog_w_drho;
 
+        // Fixed-p mode: only the log-φ axis is a shape parameter; p stays
+        // constant, so the p-transform gradient component is dropped (the
+        // outer Newton never updates p).
+        if !profile_p {
+            return Some(ndarray::Array1::from_vec(vec![g_log_phi]));
+        }
+
         // d/dp terms (envelope, ignoring ∂log|H|/∂p):
         //   [Dp/(2φ)]    → (1/(2φ)) · Σ ∂D/∂p
         //   [-Mp/2·log(2πφ)] → 0
@@ -295,13 +335,59 @@ impl VarianceFn for TweedieVariance {
         mu.max(1e-300).powf(self.p)
     }
     fn set_shape_params(&mut self, params: &[f64]) {
-        debug_assert_eq!(params.len(), 2, "TweedieVariance expects 2 shape params");
-        let s = 1.0 / (1.0 + (-params[1]).exp());
-        self.p = (1.0 + s).clamp(1.05, 1.95);
+        if self.profile_p {
+            debug_assert_eq!(
+                params.len(),
+                2,
+                "TweedieVariance (profile-p) expects 2 shape params"
+            );
+            let s = 1.0 / (1.0 + (-params[1]).exp());
+            self.p = (1.0 + s).clamp(1.05, 1.95);
+        } else {
+            // Fixed-p: slice is [log φ] only; p stays constant.
+            debug_assert_eq!(
+                params.len(),
+                1,
+                "TweedieVariance (fixed-p) expects 1 shape param [log φ]"
+            );
+        }
     }
 }
 
-/// Phase 9 convenience constructor — Tweedie + log link at given (p, φ).
+/// Phase 9 convenience constructor — **profile-p** Tweedie + log link at
+/// given init `(p, φ)` (mgcv `tw()`). `p` is estimated jointly with `φ`
+/// and the smoothing params: 2 shape params `[log φ, p_transform]`.
 pub fn tweedie_log(p: f64, phi: f64) -> Family<Tweedie, LogLink, TweedieVariance> {
-    Family::new(Tweedie { p, phi }, LogLink, TweedieVariance { p })
+    Family::new(
+        Tweedie {
+            p,
+            phi,
+            profile_p: true,
+        },
+        LogLink,
+        TweedieVariance {
+            p,
+            profile_p: true,
+        },
+    )
+}
+
+/// **Fixed-p** Tweedie + log link (mgcv `Tweedie(p=val, link="log")`).
+/// `p` is held CONSTANT at the supplied value — only `φ` (and the
+/// smoothing params) are estimated. There is a single shape param
+/// `[log φ]`; the p-axis is dropped from every shape derivative so the
+/// outer Newton never moves `p`.
+pub fn tweedie_log_fixed_p(p: f64, phi: f64) -> Family<Tweedie, LogLink, TweedieVariance> {
+    Family::new(
+        Tweedie {
+            p,
+            phi,
+            profile_p: false,
+        },
+        LogLink,
+        TweedieVariance {
+            p,
+            profile_p: false,
+        },
+    )
 }
