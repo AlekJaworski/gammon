@@ -27,3 +27,17 @@ features = ["python"]
 module-name = "gamrs._gamrs_native"
 python-source = "python"
 manifest-path = "Cargo.toml"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+# Tiered suite (see tests/python/conftest.py):
+#   smoke  — fast API + regression guards (sub-second)
+#   parity — mgcv reference parity over all families (high coverage)
+#   slow   — large-n parity fixtures, deselected by default
+# Default run = smoke + parity. Full battery: pytest -m "smoke or parity or slow".
+addopts = "-m 'not slow' -q"
+markers = [
+    "smoke: fast essential correctness + regression guards",
+    "parity: numerical parity against mgcv reference fixtures",
+    "slow: large-n parity fixtures (run explicitly with -m slow)",
+]

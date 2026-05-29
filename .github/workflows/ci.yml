@@ -28,6 +28,13 @@ jobs:
         # Benches were ported to the current `Array2<f64>` fit API in
         # task #105 so `--all-targets` no longer skips them.
         run: cargo clippy --all-targets -- -D warnings
+      - name: cargo check (python feature)
+        # Default features do NOT include `python`, so `cargo test` never
+        # compiles src/python.rs. On 2026-05-29 that let an accidental
+        # file truncation (ad0821e) ship to a release tag. This step
+        # compiles the python cfg path on every push so a broken
+        # src/python.rs fails CI even before the wheel build.
+        run: cargo check --features python
       - name: cargo test (release)
         run: cargo test --release
 
@@ -50,21 +57,11 @@ jobs:
         run: |
           source .venv/bin/activate
           maturin develop --release --features python
-      - name: Python smoke test
+      - name: pytest (full battery incl. slow)
+        # Runs the tiered Python suite under tests/python: smoke (API +
+        # regression guards) + parity (mgcv reference parity across all
+        # families) + slow (large-n fixtures). The whole battery is well
+        # under a second of fits, so CI runs every tier.
         run: |
           source .venv/bin/activate
-          python -c "
-          import numpy as np
-          import pandas as pd
-          from gamrs import Gam, CrTerm
-          rng = np.random.default_rng(0)
-          n = 200
-          x = rng.uniform(0, 1, n)
-          y = np.sin(2 * np.pi * x) + rng.normal(0, 0.2, n)
-          df = pd.DataFrame({'x': x, 'y': y})
-          g = Gam(terms=[CrTerm('x', k=10)])
-          g.fit(df[['x']], df['y'])
-          mu = g.predict(df[['x']])
-          assert mu.shape == (n,)
-          print('python smoke OK')
-          "
+          python -m pytest tests/python -m "smoke or parity or slow"
