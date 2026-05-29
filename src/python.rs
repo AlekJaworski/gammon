@@ -67,6 +67,18 @@ impl PyFittedGam {
         self.inner.beta.clone().into_pyarray(py)
     }
 
+    /// Composable post-fit primitive: add `delta` to the model intercept
+    /// (β₀), shifting every prediction by `delta`. Family-agnostic mechanism
+    /// — the *policy* for choosing `delta` lives in the caller. The quantile
+    /// module (`gamrs._quantile`) uses it for qgam-style coverage calibration
+    /// (set β₀ so empirical training coverage matches τ), keeping that policy
+    /// out of the core fit. No-op on an (impossible) empty coefficient vector.
+    fn shift_intercept(&mut self, delta: f64) {
+        if !self.inner.beta.is_empty() {
+            self.inner.beta[0] += delta;
+        }
+    }
+
     /// Fitted log smoothing parameters (one per term). Returns a 1-D
     /// float64 ndarray of length `n_terms` — `len 1` for single-smooth
     /// fits (`Cr` / `Re` / `CrStable`), `len T` for `Additive { terms }`.

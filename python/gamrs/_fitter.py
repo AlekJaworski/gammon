@@ -117,6 +117,10 @@ class Gam:
         self.tweedie_p = tweedie_p
         self.negbin_theta = negbin_theta
         self.r = int(r) if r is not None else None
+        # Quantile (ELF) config — set by gamrs._quantile.fit_quantile so the
+        # single Gam.fit lands at the right (τ, σ). Default None → native τ=0.5.
+        self._elf_tau: Optional[float] = None
+        self._elf_sigma: Optional[float] = None
         if family == "ocat" and self.r is None:
             raise ValueError(
                 "family='ocat' requires r=K (number of ordered categories, K >= 3)"
@@ -209,6 +213,15 @@ class Gam:
             out["tweedie_p"] = float(self.tweedie_p)
         if self.family == "ocat":
             out["r"] = int(self.r)
+        # Quantile (ELF): emit τ (always — the native default is 0.5) and σ
+        # when configured, so the single Gam.fit lands at the right (τ, σ)
+        # directly. `gamrs._quantile.fit_quantile` sets these before fit()
+        # so it fits ONCE (no fit-then-replace), matching mgcv_rust.
+        if self.family in ("quantile", "elf"):
+            out["tau"] = float(getattr(self, "_elf_tau", None) or 0.5)
+            elf_sigma = getattr(self, "_elf_sigma", None)
+            if elf_sigma is not None:
+                out["elf_sigma"] = float(elf_sigma)
         return out
 
     # ------------------------ fit / predict --------------------------- #

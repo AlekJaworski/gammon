@@ -98,6 +98,33 @@ def _fit_elf_native(
     )
 
 
+def _calibrate_quantile_intercept(
+    fitted: Any, x_2d: np.ndarray, y: np.ndarray, tau: float
+) -> float:
+    """qgam-style coverage calibration (policy; ported from mgcv_rust).
+
+    After the ELF fit, shift the intercept so the empirical training coverage
+    matches τ: ``shift = τ-th order statistic of (y − μ̂)`` (floor-index, the
+    exact convention of mgcv_rust's native ``calibrate_quantile_intercept``),
+    then apply it via the core's generic :meth:`shift_intercept` primitive.
+    Cheap (one predict + one quantile) and family-agnostic mechanism — the
+    quantile-specific policy lives here, not in the Rust core.
+
+    Returns the applied shift.
+    """
+    # ELF uses an identity link, so the link-scale prediction IS μ̂.
+    mu = np.asarray(fitted.predict(x_2d), dtype=np.float64).ravel()
+    resid = np.asarray(y, dtype=np.float64).ravel() - mu
+    resid = resid[np.isfinite(resid)]
+    if resid.size == 0:
+        raise ValueError("cannot calibrate quantile intercept from non-finite residuals")
+    resid.sort()
+    idx = int(np.clip(np.floor((resid.size - 1) * tau), 0, resid.size - 1))
+    shift = float(resid[idx])
+    fitted.shift_intercept(shift)
+    return shift
+
+
 def _cv_loss_at_sigma(
     sigma: float,
     x_2d: np.ndarray,
@@ -230,6 +257,8 @@ def fit_quantile(
     seed: int = 0,
     xatol: float = 0.05,
     sigma: Optional[float] = None,
+    coverage_calibrate: bool = False,
+    preset: Optional[str] = None,
 ) -> Gam:
     """Fit a quantile (ELF) GAM with σ chosen by K-fold pinball CV.
 
@@ -251,16 +280,40 @@ def fit_quantile(
       xatol: Brent tolerance on ``log σ`` (default 0.05).
       sigma: if given, skip CV and fit at this σ directly (escape hatch
         for callers that already have a tuned σ̂).
+      coverage_calibrate: if True, after the fit shift the intercept so the
+        empirical training coverage matches τ (qgam-style coverage
+        calibration, ported from mgcv_rust). Cheap post-fit step.
+      preset: convenience bundles ported from mgcv_rust's OOS quantile paths:
+
+        - ``"fast_oos"``: heuristic σ (native, NO CV) + coverage calibration.
+          The speed/quality balance — fits in one ELF pass; matches mgcv_rust
+          OOS pinball at a fraction of the CV cost.
+        - ``"quality_oos"``: CV-tuned σ + coverage calibration.
 
     Returns:
-      A fitted :class:`gamrs.Gam` with two extra attributes attached:
+      A fitted :class:`gamrs.Gam` with extra attributes attached:
 
-      - ``sigma_``: the σ used in the final fit.
+      - ``sigma_``: the σ used in the final fit (``0.0`` = native heuristic).
       - ``tune_info_``: the :func:`tune_quantile_sigma` info dict
-        (``None`` when ``sigma`` was supplied directly).
+        (``None`` when σ was not CV-tuned).
+      - ``coverage_shift_``: the applied coverage-calibration shift, or
+        ``None`` when ``coverage_calibrate`` was off.
     """
     if not 0.0 < tau < 1.0:
         raise ValueError(f"tau must be in (0, 1); got tau={tau}")
+
+    # Preset resolution mirrors mgcv_rust._quantile.fit_quantile.
+    if preset is not None:
+        if preset == "fast_oos":
+            coverage_calibrate = True
+            if sigma is None:
+                sigma = 0.0  # native heuristic σ — skips the CV path below
+        elif preset == "quality_oos":
+            coverage_calibrate = True  # σ stays CV-tuned (sigma is None)
+        else:
+            raise ValueError(
+                f"unknown quantile preset {preset!r}; expected 'fast_oos' or 'quality_oos'"
+            )
 
     info: Optional[dict[str, Any]] = None
     if sigma is None:
@@ -276,27 +329,31 @@ def fit_quantile(
             xatol=xatol,
         )
 
-    # Build a fitted Gam wrapper at the tuned (τ, σ). We construct the
-    # Gam, run the standard .fit() path so all wrapper state (predictors,
-    # X, y, term metadata) is consistent, then replace `_fitted` with a
-    # native ELF fit at the desired (τ, σ). The `Gam.fit` path always
-    # sets `_gamrs_family='elf'` for family='quantile', so the native
-    # call we run here matches the wrapper's stored family exactly.
+    # Build + fit the Gam ONCE at the target (τ, σ). We plumb τ/σ through the
+    # Gam's ELF config so `g.fit()` lands at the right fit directly — no
+    # fit-then-replace double pass (matches mgcv_rust's single fit). The
+    # `Gam.fit` path sets `_gamrs_family='elf'` for family='quantile'.
     g = Gam(family="quantile", k_default=int(k), design=design)
+    g._elf_tau = float(tau)  # type: ignore[attr-defined]
+    g._elf_sigma = float(sigma)  # type: ignore[attr-defined]
     g.fit(X, y)
-    x_2d_full, _ = to_2d_with_columns(X, None)
-    y_full = to_1d_array(y, name="y")
-    g._fitted = _fit_elf_native(
-        np.ascontiguousarray(x_2d_full, dtype=np.float64),
-        np.ascontiguousarray(y_full, dtype=np.float64),
-        tau=tau,
-        sigma=float(sigma),
-        k=k,
-        design=design,
-    )
+
+    # qgam-style coverage calibration (policy lives in this module; the
+    # intercept shift is applied via the core's generic shift_intercept).
+    coverage_shift: Optional[float] = None
+    if coverage_calibrate:
+        x_2d_full, _ = to_2d_with_columns(X, None)
+        y_full = to_1d_array(y, name="y")
+        coverage_shift = _calibrate_quantile_intercept(
+            g._fitted,
+            np.ascontiguousarray(x_2d_full, dtype=np.float64),
+            np.ascontiguousarray(y_full, dtype=np.float64),
+            tau,
+        )
 
     # v0.x parity: expose σ̂ + the calibration trace on the fitted Gam.
     g.sigma_ = float(sigma)  # type: ignore[attr-defined]
     g.tau_ = float(tau)  # type: ignore[attr-defined]
     g.tune_info_ = info  # type: ignore[attr-defined]
+    g.coverage_shift_ = coverage_shift  # type: ignore[attr-defined]
     return g
