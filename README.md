@@ -5,13 +5,13 @@ six composable trait layers (`Basis`, `BasisTransform`, `Loss`/`Link`/`VarianceF
 `InnerSolver`, `ScoreDerivatives`, `OuterSolver`). Designed for parity with
 R's `mgcv` and the sibling `mgcv_rust` crate.
 
-**Status: alpha.** Multi-smooth additive (`y ~ s(x0) + s(x1)`) and tensor
-products (`te(x0, x1)`) both ship in this release — the latter leap-frogs
-`mgcv_rust`. Shape-aware families (scat, NegBin, Tweedie, Ocat, ELF) are
-still single-smooth-only; production users with multi-smooth shape-aware
-models should stay on `mgcv-rust` for now.
+**Status: beta.** Multi-smooth additive (`y ~ s(x0) + s(x1)`), n-margin tensor
+products (`te(x0, x1, …)` / `ti(…)`) and thin-plate splines (`s(x0, x1, bs="tp")`)
+all ship. NegBin and Tweedie now fit multi-smooth too, and Tweedie supports both
+profile-p (`tw()`) and fixed-p (`Tweedie(p)`) via the `tweedie_p` toggle. The
+remaining single-smooth-only families are scat/TDist, Ocat, and ELF/quantile.
 
-## What's in this alpha
+## What's in this beta
 
 ### Families (all 1-D parity, 10 families)
 
@@ -25,7 +25,7 @@ models should stay on `mgcv-rust` for now.
 | Gamma           | log      | PIRLS        | 1-D Newton (prof φ) | ~2e-2              |
 | InverseGaussian | log      | PIRLS        | 1-D Newton (prof φ) | ~3e-4              |
 | NegBin          | log      | PIRLS        | 2-D joint Newton    | ~9e-7              |
-| Tweedie         | log      | PIRLS        | 3-D joint Newton    | ~2e-1              |
+| Tweedie         | log      | PIRLS        | 3-D joint Newton    | ~5e-3              |
 | TDist (scat)    | identity | PIRLS        | 3-D joint Newton    | ~2e-2              |
 | Ocat            | logit    | gam.fit5     | joint β + threshold | smoke              |
 | Quantile (ELF)  | identity | Armijo BT    | 1-D Newton          | smoke              |
@@ -47,14 +47,11 @@ models should stay on `mgcv-rust` for now.
 PyO3 bindings + numpy. sklearn-like with `vcov`, `predict_ci`, `predict_diff`,
 serialize/deserialize, GamPredictor for inference-only deployment.
 
-## Not in this alpha (follow-ups)
+## Not in this beta (follow-ups)
 
-- **Multi-smooth shape-aware families** — scat/TDist, NegBin, Tweedie, Ocat,
-  ELF/quantile gated at single-smooth via runtime error. Lifting θ packing
-  from `[ρ, shape…]` to `[ρ_0, …, ρ_{T-1}, shape…]` is tracked.
-- **`s(x0, x1)` TPRS** — isotropic thin-plate; separate basis kind from `te()`.
-- **3+ margin tensor products** `te(x0, x1, x2)` — mechanical generalization.
-- **`ti(x0, x1)`** centred tensor interaction — needs main-effect orthogonalisation.
+- **Multi-smooth scat/Ocat/ELF** — scat/TDist, Ocat and ELF/quantile are still
+  gated at single-smooth. (NegBin and Tweedie multi-smooth now ship: the
+  shape-aware θ packing `[ρ_0, …, ρ_{T-1}, shape…]` works for those two.)
 
 ## Use (Rust)
 
@@ -124,8 +121,9 @@ Layer 6   FittedGam          ←  predict, predict_ci, predict_diff, vcov, seria
 
 ## Versioning
 
-`0.1.0-alpha.x` indicates pre-stable. Breaking changes are expected on every
-minor bump until shape-aware multi-smooth lands.
+Beta (`0.4.x`). The API is stabilising; minor bumps may still carry breaking
+changes until the remaining shape-aware families (scat/Ocat/ELF) gain
+multi-smooth support and the 1.0 surface is locked.
 
 ## License
 
