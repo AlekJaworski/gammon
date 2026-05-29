@@ -40,6 +40,24 @@ def _ensure_1d_float64(arr: Any, *, name: str) -> np.ndarray:
     return a
 
 
+def _ensure_2d_float64(arr: Any, *, name: str) -> np.ndarray:
+    """Coerce ``arr`` to a 2-D ``(n, d)`` ``float64`` contiguous ``ndarray``.
+
+    1-D inputs of shape ``(n,)`` are reshaped to ``(n, 1)``. The Rust
+    native ``fit`` expects 2-D x since the cram::fit lift to
+    ``Array2<f64>`` (task #96) — but pass-through helpers retain the
+    1-D-friendly notebook ergonomics by reshaping here.
+    """
+    a = np.ascontiguousarray(np.asarray(arr, dtype=np.float64))
+    if a.ndim == 1:
+        a = a.reshape(-1, 1)
+    if a.ndim != 2:
+        raise ValueError(
+            f"{name} must be 1-D or 2-D; got ndim={a.ndim} (shape={a.shape})"
+        )
+    return a
+
+
 class GAM:
     """Coerce-and-forward wrapper around :func:`gamrs._gamrs_native.fit`.
 
@@ -72,7 +90,7 @@ class GAM:
         design: Optional[str] = None,
         **family_kwargs: Any,
     ) -> "GAM":
-        x_arr = _ensure_1d_float64(x, name="x")
+        x_arr = _ensure_2d_float64(x, name="x")
         y_arr = _ensure_1d_float64(y, name="y")
         if x_arr.shape[0] != y_arr.shape[0]:
             raise ValueError(
@@ -99,7 +117,7 @@ class GAM:
 
     def predict(self, x: Any, *, scale: str = "link") -> np.ndarray:
         f = self._require_fitted()
-        x_arr = _ensure_1d_float64(x, name="x")
+        x_arr = _ensure_2d_float64(x, name="x")
         if scale == "link":
             return np.asarray(f.predict(x_arr))
         if scale == "response":
@@ -110,7 +128,7 @@ class GAM:
         self, x: Any, *, level: float = 0.95, scale: str = "response"
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         f = self._require_fitted()
-        x_arr = _ensure_1d_float64(x, name="x")
+        x_arr = _ensure_2d_float64(x, name="x")
         mean, lo, hi = f.predict_ci(x_arr, float(level), scale)
         return np.asarray(mean), np.asarray(lo), np.asarray(hi)
 
@@ -118,8 +136,8 @@ class GAM:
         self, x_a: Any, x_b: Any, *, level: float = 0.95
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         f = self._require_fitted()
-        a = _ensure_1d_float64(x_a, name="x_a")
-        b = _ensure_1d_float64(x_b, name="x_b")
+        a = _ensure_2d_float64(x_a, name="x_a")
+        b = _ensure_2d_float64(x_b, name="x_b")
         diff, lo, hi = f.predict_diff(a, b, float(level))
         return np.asarray(diff), np.asarray(lo), np.asarray(hi)
 
@@ -207,9 +225,22 @@ class TeTerm:
     k: Tuple[int, int] = (10, 10)
 
 
+@dataclass(frozen=True)
+class TpsTerm:
+    """Isotropic thin-plate regression spline `s(x_cols, bs='tp')` —
+    one smoothing parameter per term, arbitrary number of input
+    margins. Read from `cols` columns of `x`.
+
+    `cols` is a tuple of column indices (length ≥ 2). `k` is the
+    truncated-eigenbasis dimension (defaults to ``10 * len(cols)``).
+    """
+    cols: Tuple[int, ...]
+    k: Optional[int] = None
+
+
 # Sum type at the Python boundary. Type-checked closed set — adding a
 # new term kind extends this union (a library-controlled change).
-Term = Union[CrTerm, CrStableTerm, ReTerm, TeTerm]
+Term = Union[CrTerm, CrStableTerm, ReTerm, TeTerm, TpsTerm]
 
 
 def _term_to_tuple(term: Term) -> tuple:
@@ -229,9 +260,13 @@ def _term_to_tuple(term: Term) -> tuple:
             "te",
             (int(term.k[0]), int(term.k[1])),
         )
+    if isinstance(term, TpsTerm):
+        cols_tup = tuple(int(c) for c in term.cols)
+        k_val = int(term.k) if term.k is not None else 10 * len(cols_tup)
+        return (cols_tup, "tp", k_val)
     raise TypeError(
         f"unknown term type {type(term).__name__}; expected one of "
-        "CrTerm / CrStableTerm / ReTerm / TeTerm"
+        "CrTerm / CrStableTerm / ReTerm / TeTerm / TpsTerm"
     )
 
 

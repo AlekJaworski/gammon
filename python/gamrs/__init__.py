@@ -44,6 +44,7 @@ from ._low_level import (
     ReTerm,
     TeTerm,
     Term,
+    TpsTerm,
     fit_additive,
 )
 from ._fitter import Gam, GAMFitter
@@ -63,6 +64,7 @@ __all__ = [
     "CrStableTerm",
     "ReTerm",
     "TeTerm",
+    "TpsTerm",
     "Term",
     "fit_additive",
     # qgam-style σ-calibration (task #111).

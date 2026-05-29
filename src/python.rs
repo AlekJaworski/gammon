@@ -1083,7 +1083,32 @@ fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<Term
         // where cols_tuple = (col_a, col_b) and k_tuple = (k_a, k_b).
         let first = tup.get_item(0)?;
         let basis: String = tup.get_item(1)?.extract()?;
-        let term = if basis == "te" {
+        let term = if basis == "tp" {
+            // Tps tuple: (cols_tuple, "tp", k). `cols_tuple` may be of
+            // arbitrary length ≥ 2 (the smooth is isotropic over its
+            // input dims). `k` is a single int.
+            let cols_tup: &Bound<'_, pyo3::types::PyTuple> =
+                first.cast::<pyo3::types::PyTuple>().map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "fit_additive: tps term {j} first element must be a tuple of column indices"
+                    ))
+                })?;
+            if cols_tup.len() < 2 {
+                return Err(PyValueError::new_err(format!(
+                    "fit_additive: tps term {j} cols tuple must have at least 2 elements"
+                )));
+            }
+            let mut cols: Vec<usize> = Vec::with_capacity(cols_tup.len());
+            for ci in 0..cols_tup.len() {
+                cols.push(cols_tup.get_item(ci)?.extract()?);
+            }
+            let k: usize = if tup.len() >= 3 {
+                tup.get_item(2)?.extract()?
+            } else {
+                10 * cols.len()
+            };
+            TermSpec::Tps { cols, k }
+        } else if basis == "te" {
             let cols_tup: &Bound<'_, pyo3::types::PyTuple> =
                 first.cast::<pyo3::types::PyTuple>().map_err(|_| {
                     PyValueError::new_err(format!(
@@ -1148,7 +1173,7 @@ fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<Term
                 "re" => TermSpec::Re { col },
                 other => {
                     return Err(PyValueError::new_err(format!(
-                        "fit_additive: term {j} basis must be 'cr', 'cr_stable', 're', or 'te'; \
+                        "fit_additive: term {j} basis must be 'cr', 'cr_stable', 're', 'te', or 'tp'; \
                          got {other:?}"
                     )))
                 }
