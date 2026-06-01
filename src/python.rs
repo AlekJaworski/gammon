@@ -668,11 +668,15 @@ impl PyFittedGam {
             log_det_lambda_s += adj_rank_j * rho_slice[j] + prep.log_pseudo_det_s_list[j];
         }
         let dp = fit.deviance + bsb_total;
-        // log|H| — `fit.log_det_a()` returns the Fisher-W A's log|det| via
-        // the stored factorisation. When `use_newton_irls() = true` PIRLS
-        // populates `log_det_h_override` with the Newton-W path; pick that
-        // when present (mirrors the score body in `envelope.rs`).
-        let log_det_h = fit.log_det_h_override.unwrap_or_else(|| fit.log_det_a());
+        // log|H| — `fit.log_det_a()` returns the Fisher-W A's log|det|
+        // via the stored factorisation. When `use_newton_irls() = true`
+        // we lazily compute the Newton-W path via the trait method
+        // (mgcv_rust port: Newton-A is built at score time, not PIRLS
+        // time — see `src/reml/mod.rs:460-483`). Mirrors the score body
+        // in `envelope.rs`.
+        let log_det_h = inner
+            .lazy_newton_log_det_h(&fit, &rho_slice)
+            .unwrap_or_else(|| fit.log_det_a());
         let mp = prep.mp;
 
         // FixedAtOneProfile: φ=1 for NegBin (dispersion lives in θ).

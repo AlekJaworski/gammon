@@ -407,6 +407,42 @@ pub trait InnerSolver {
     /// Solve the penalised inner system at the given log-λ vector.
     /// `rho.len() == 1` in Phase 0 (single smoothing parameter).
     fn fit(&self, rho: &Array1<f64>) -> Result<Self::Fit>;
+
+    /// **Lazy Newton-A log|H|** at the converged β. Returns `None` when the
+    /// family is canonical-link / doesn't opt into Newton-IRLS (the
+    /// canonical Fisher H's `log|A|` off the fit's `a_factor` is then the
+    /// right object). For non-canonical Newton-IRLS families (NegBin,
+    /// InverseGaussian + log, …) returns `Some(log|X'·W_newton·X + λS|)`.
+    ///
+    /// **Why on the trait, not on `Fit`**: building Newton-A requires
+    /// access to the inner solver's `x_design` / `y` / `family` (link,
+    /// variance, prior weights) — the `GaussianInnerFit` doesn't carry
+    /// those. Default returns `None` so the closed-form Gaussian / ocat /
+    /// quantile inners short-circuit without paying the O(p³) cost. Port
+    /// of mgcv_rust `src/reml/mod.rs:460-483` (the Newton-A log|H| block
+    /// in the REML score evaluator, NOT inside `fit_pirls_cached`).
+    #[allow(unused_variables)]
+    fn lazy_newton_log_det_h(&self, fit: &Self::Fit, rho: &Array1<f64>) -> Option<f64> {
+        None
+    }
+
+    /// **Lazy Tk·KK' / IFT inputs** at the converged β. Returns `None`
+    /// when not on the Newton-IRLS path (canonical-link Fisher: term
+    /// vanishes by envelope). For non-canonical Newton-IRLS families
+    /// returns `Some({a1, lev_uw, eta1_per_term, tr_a_newton_inv_s_per_term,
+    /// a_newton_inv, ...})` — used by `EnvelopeScore` (IG path) and
+    /// `ShapeAwareEnvelopeScore::analytic_shape_grad_via_ift` (NegBin
+    /// shape gradient). Port of mgcv_rust
+    /// `src/reml/mod.rs::reml_gradient_mgcv_exact_ift_newton_at_beta`
+    /// (`src/reml/mod.rs:2347-2487`). Default returns `None`.
+    #[allow(unused_variables)]
+    fn lazy_tk_kkt_inputs(
+        &self,
+        fit: &Self::Fit,
+        rho: &Array1<f64>,
+    ) -> Option<crate::inner::TkKKTInputs> {
+        None
+    }
 }
 
 /// Coordinate system the score reports in. Used by downstream consumers

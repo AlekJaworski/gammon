@@ -244,7 +244,7 @@ where
                 // `reml_grad_ocat_theta_block_analytic` (ocat_joint.rs:123-236)
                 // generalised to any Loss that supplies Level-1 derivatives.
                 let shape_grad =
-                    self.analytic_shape_grad_via_ift(&fit, &family, &level1, n_terms)?;
+                    self.analytic_shape_grad_via_ift(&fit, &family, &level1, n_terms, &rho_slice)?;
                 debug_assert_eq!(shape_grad.len(), n_shape);
                 for k in 0..n_shape {
                     g[n_terms + k] = shape_grad[k];
@@ -281,6 +281,7 @@ where
         family: &Family<L, K, V>,
         level1: &Level1ShapeDerivs,
         _n_terms_for_layout: usize,
+        rho_slice: &[f64],
     ) -> Result<Array1<f64>> {
         let n = fit.n;
         let p = fit.p;
@@ -298,12 +299,34 @@ where
         // the same: passes Newton observed-info weights into the C IFT
         // routine which differentiates Newton-A's log|H|.
         //
-        // When no Newton-A is available (ocat goes through OcatInner with
-        // gam.fit5 weights that ARE the Newton convention by construction),
-        // fall back to Fisher-A via fit.a_factor — ocat's identity link
-        // makes Newton-A ≡ Fisher-A anyway.
+        // **Computed LAZILY here** (mgcv_rust pattern: `src/reml/mod.rs:
+        // 2347-2487`'s `reml_gradient_mgcv_exact_ift_newton_at_beta`
+        // builds Newton-A pieces at gradient time, not in PIRLS) — port
+        // of v0.x's `compute_tk_kkt_inputs` moved out of `pirls::fit()`
+        // so value-FD probes don't pay the O(p³) eigh cost.
+        let lazy_tk_kkt = if family.loss.use_newton_irls() {
+            let prior_w = self
+                .prior_weights
+                .clone()
+                .unwrap_or_else(|| Array1::ones(fit.n));
+            let rho_arr = Array1::from(rho_slice.to_vec());
+            let s_total = crate::design::combined_s(&self.s_list, &rho_arr);
+            crate::inner::pirls::lazy_tk_kkt_inputs(
+                family,
+                &self.y,
+                &fit.mu,
+                &fit.beta,
+                &prior_w,
+                &self.x_design,
+                &self.s_list,
+                &s_total,
+                &rho_arr,
+            )
+        } else {
+            None
+        };
         let newton_a_inv: Option<&ndarray::Array2<f64>> =
-            fit.tk_kkt_inputs.as_ref().map(|t| &t.a_newton_inv);
+            lazy_tk_kkt.as_ref().map(|t| &t.a_newton_inv);
 
         // η-coord conversion of the μ-coord Level-1 derivatives. mgcv R's
         // `gam.fit4.r::dDeta()` (lines 5-78) converts via the link-Jacobian
@@ -397,9 +420,10 @@ where
         }
 
         // h_diag[i] = X_i' H⁻¹ X_i. With Newton-A, this is the precomputed
-        // `lev_uw` from TkKKTInputs (line `pirls.rs::compute_tk_kkt_inputs`
-        // already computed it as `x_iᵀ · A_newton⁻¹ · x_i`).
-        let h_diag: Array1<f64> = if let Some(tk) = fit.tk_kkt_inputs.as_ref() {
+        // `lev_uw` from the lazy TkKKTInputs above (`lazy_tk_kkt_inputs`
+        // computed it as `x_iᵀ · A_newton⁻¹ · x_i` — port of v0.x
+        // `compute_tk_kkt_inputs`).
+        let h_diag: Array1<f64> = if let Some(tk) = lazy_tk_kkt.as_ref() {
             tk.lev_uw.clone()
         } else {
             // Fisher path: solve A_inv·X' column-wise and reduce.

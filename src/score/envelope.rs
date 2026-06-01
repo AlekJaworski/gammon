@@ -282,14 +282,23 @@ where
         let tr_hinv_xtwx = (inner.p as f64) - tr_hinv_s_lambda_total;
 
         // `log|H|` — defaults to the backend's `log|A|` off the Fisher
-        // factor; PIRLS overrides this with the Newton-W `Σ log|λ_i|`
-        // when the loss opts into the Newton path (non-canonical
-        // InverseGaussian + log) so we match v0.x
-        // `src/reml/mod.rs:436-459`. `tr(H⁻¹S)` continues to use Fisher
-        // H per v0.x's `system.tr_a` convention (the score's
-        // `(n − tr_a)` denominator expects Fisher).
+        // factor; lazily compute the Newton-W `Σ log|λ_i|` via the
+        // `InnerSolver::lazy_newton_log_det_h` trait method when the loss
+        // opts into the Newton path (non-canonical InverseGaussian + log)
+        // so we match v0.x `src/reml/mod.rs:436-459`. `tr(H⁻¹S)` continues
+        // to use Fisher H per v0.x's `system.tr_a` convention (the
+        // score's `(n − tr_a)` denominator expects Fisher).
+        //
+        // **Lazy computation pattern** (mgcv_rust port): the Newton-A
+        // pieces used to be materialised inside `PirlsInner::fit` (eigh
+        // per inner fit — O(p³) regression on NegBin bench). Moved out
+        // per `src/pirls/mod.rs::fit_pirls_cached` shape — the score
+        // body computes them on demand here, once per probe.
         let log_det_h_fisher = inner.log_det_a();
-        let log_det_h = inner.log_det_h_override.unwrap_or(log_det_h_fisher);
+        let log_det_h = self
+            .inner
+            .lazy_newton_log_det_h(inner, theta)
+            .unwrap_or(log_det_h_fisher);
         // log|λS|+ for multi-smooth: Σ_j (rank_j · ρ_j + log_pseudo_det_j).
         let mut log_det_lambda_s = 0.0_f64;
         for j in 0..n_terms {
@@ -372,8 +381,9 @@ where
         // (PIRLS supplies `eta1_per_term[k]`). The trace contribution also
         // switches to the per-term Newton-A trace so the gradient stays
         // internally consistent (uses one A everywhere).
-        let has_tk_kkt = inner.tk_kkt_inputs.is_some();
-        if let Some(ref tk) = inner.tk_kkt_inputs {
+        let lazy_tk_kkt = self.inner.lazy_tk_kkt_inputs(inner, theta);
+        let has_tk_kkt = lazy_tk_kkt.is_some();
+        if let Some(ref tk) = lazy_tk_kkt {
             debug_assert_eq!(
                 tk.eta1_per_term.len(),
                 n_terms,

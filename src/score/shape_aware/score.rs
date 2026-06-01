@@ -251,18 +251,35 @@ where
                 Some(p) => p,
                 None => return 1e12,
             };
-        // Use the Newton-W `log|H|` override when the inner solver provided
-        // one (NegBin / InverseGaussian / similar non-canonical-link
-        // families opting into `Loss::use_newton_irls()`). Otherwise the
-        // Fisher A factor's `log|H|` is the correct REML object — same
-        // selection rule that `EnvelopeScore::evaluate` uses
-        // (`src/score/envelope.rs:292`). Without this, the shape-aware
-        // path FD-of-value differentiates the Fisher `log|H|` while the
-        // analytic shape gradient at `gradient.rs:307-468` uses Newton-A⁻¹
-        // in its IFT formula — the resulting mismatch shows up as the
-        // 6-23% rel-err on the `log θ` axis of
-        // `negbin_multismooth_analytic_grad_matches_fd`.
-        let log_det_h = fit.log_det_h_override.unwrap_or_else(|| fit.log_det_a());
+        // Use the Newton-W `log|H|` when the family opts into
+        // `Loss::use_newton_irls()` (NegBin / InverseGaussian / similar
+        // non-canonical-link). Computed **lazily** here — not inside
+        // PIRLS — to match mgcv_rust's pattern (its `fit_pirls_cached`
+        // returns no Newton-A pieces; the score evaluator at
+        // `src/reml/mod.rs:460-483` builds them on demand). Cholesky-
+        // first via `lazy_newton_log_det_h` is O(p³/3) on the PSD α>0
+        // path (NegBin always; IG most of the time) — vs the O(3p³)
+        // eigh that previously ran per inner fit. Falls back to the
+        // Fisher A factor's `log|H|` for canonical-link families and
+        // when the Newton path bails out.
+        let log_det_h = if family.loss.use_newton_irls() {
+            let prior_w = self
+                .prior_weights
+                .clone()
+                .unwrap_or_else(|| ndarray::Array1::ones(fit.n));
+            let s_total = crate::design::combined_s(&self.s_list, &ndarray::Array1::from(rho_slice.to_vec()));
+            crate::inner::pirls::lazy_newton_log_det_h(
+                family,
+                &self.y,
+                &fit.mu,
+                &prior_w,
+                &self.x_design,
+                &s_total,
+            )
+            .unwrap_or_else(|| fit.log_det_a())
+        } else {
+            fit.log_det_a()
+        };
         let ls_sum: f64 = self
             .y
             .iter()

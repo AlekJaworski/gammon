@@ -13,6 +13,321 @@ use super::{
     CholeskySolver, GaussianInnerFit, LinearSolver,
 };
 
+/// Vectorised Newton score weights `w_newton[i] = wf · α` at converged β.
+/// No Fisher fallback — negative α stay negative. Port of mgcv_rust
+/// `src/pirls/row_step.rs::compute_newton_score_weights` (line 117-127);
+/// consumed by the lazy Newton log|H| / Tk·KK' helpers below.
+pub(crate) fn newton_score_weights<L, K, V>(
+    family: &Family<L, K, V>,
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    prior_w: &Array1<f64>,
+) -> Array1<f64>
+where
+    L: Loss + Clone,
+    K: Link + Clone,
+    V: VarianceFn + Clone,
+{
+    let n = y.len();
+    let mut w_newton = Array1::<f64>::zeros(n);
+    for i in 0..n {
+        let mu_i = mu[i];
+        let var_i = family.variance.variance(mu_i).max(1e-300);
+        let g_prime_mu = family.link.d_link_dmu(mu_i);
+        let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+        let v_prime = family.variance.d_variance(mu_i);
+        let v1n = v_prime / var_i;
+        let g_double_prime = family.link.d2_link_dmu(mu_i);
+        let g2n = g_double_prime / g_prime_mu;
+        let c_resid = y[i] - mu_i;
+        let alpha = 1.0 + c_resid * (v1n + g2n);
+        w_newton[i] = prior_w[i] * wf * alpha;
+    }
+    w_newton
+}
+
+/// Lazy Newton log|H| at converged β. Standalone port of mgcv_rust
+/// `src/reml/mod.rs:460-483`. Builds `A_score = X' diag(W_newton) X + λS`
+/// then factors:
+/// - **Cholesky first** (`2·Σ log L_ii`) — succeeds when α > 0 everywhere
+///   (NegBin: always; IG + log: ~57% of fixtures). O(p³/3).
+/// - **eigh fallback** (`Σ log|λᵢ|`) when Cholesky fails (indefinite A).
+///   O(~3p³).
+///
+/// Returns `None` if neither path produces finite output (caller falls back
+/// to the Fisher H's log|H|).
+pub(crate) fn lazy_newton_log_det_h<L, K, V>(
+    family: &Family<L, K, V>,
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    prior_w: &Array1<f64>,
+    x_design: &Array2<f64>,
+    s_total: &Array2<f64>,
+) -> Option<f64>
+where
+    L: Loss + Clone,
+    K: Link + Clone,
+    V: VarianceFn + Clone,
+{
+    use ndarray_linalg::{Cholesky, Eigh, UPLO};
+    let n = x_design.nrows();
+    let p = x_design.ncols();
+
+    let w_newton = newton_score_weights(family, y, mu, prior_w);
+    for &w in w_newton.iter() {
+        if !w.is_finite() {
+            return None;
+        }
+    }
+
+    // Build A_score = X' diag(W_newton) X + λS (single combined penalty).
+    // BLAS-accelerated form: WX = diag(w)·X (per-row scale), then X'·WX.
+    // Mirrors mgcv_rust `src/reml/mod.rs:2366-2373`'s in-place row scaling
+    // followed by `x.t().dot(&wx)`. Manual triple-loop was the dominant
+    // O(n·p²) cost on the NegBin bench — replacing with BLAS .dot() drops
+    // it by an order of magnitude.
+    let mut wx = x_design.clone();
+    for i in 0..n {
+        let wi = w_newton[i];
+        for j in 0..p {
+            wx[[i, j]] *= wi;
+        }
+    }
+    let mut a_score: Array2<f64> = x_design.t().dot(&wx);
+    for j in 0..p {
+        for l in 0..p {
+            a_score[[j, l]] += s_total[[j, l]];
+        }
+    }
+    // Symmetrise defensively before factor.
+    for j in 0..p {
+        for l in (j + 1)..p {
+            let avg = 0.5 * (a_score[[j, l]] + a_score[[l, j]]);
+            a_score[[j, l]] = avg;
+            a_score[[l, j]] = avg;
+        }
+    }
+
+    // PSD-fast path: Cholesky. Cheap log|H| = 2·Σ log L_ii.
+    if let Ok(l) = a_score.cholesky(UPLO::Lower) {
+        let mut log_det = 0.0_f64;
+        for i in 0..p {
+            let lii = l[[i, i]];
+            if !lii.is_finite() || lii.abs() < 1e-300 {
+                return None;
+            }
+            log_det += lii.ln();
+        }
+        return Some(2.0 * log_det);
+    }
+
+    // Indefinite-A fallback — eigh.
+    let eigs = match a_score.eigh(UPLO::Lower) {
+        Ok((eigs, _)) => eigs,
+        Err(_) => return None,
+    };
+    let mut log_det = 0.0_f64;
+    for e in eigs.iter() {
+        let ae = e.abs();
+        if ae < 1e-300 || !ae.is_finite() {
+            return None;
+        }
+        log_det += ae.ln();
+    }
+    Some(log_det)
+}
+
+/// Lazy Tk·KK' / IFT inputs at converged β. Standalone port of mgcv_rust
+/// `src/reml/mod.rs::reml_gradient_mgcv_exact_ift_newton_at_beta`
+/// (`src/reml/mod.rs:2347-2487`) — builds `A_newton = X' diag(w_newton) X +
+/// λS`, factors via Cholesky-first (eigh fallback), forms `A_newton⁻¹`,
+/// then assembles `{a1, lev_uw, eta1_per_term, tr_a_newton_inv_s_per_term}`.
+///
+/// Returns `None` on factor failure (caller bails to no-Tk·KK' branch).
+pub(crate) fn lazy_tk_kkt_inputs<L, K, V>(
+    family: &Family<L, K, V>,
+    y: &Array1<f64>,
+    mu: &Array1<f64>,
+    beta: &Array1<f64>,
+    prior_w: &Array1<f64>,
+    x_design: &Array2<f64>,
+    s_list: &[Array2<f64>],
+    s_total: &Array2<f64>,
+    rho: &Array1<f64>,
+) -> Option<super::TkKKTInputs>
+where
+    L: Loss + Clone,
+    K: Link + Clone,
+    V: VarianceFn + Clone,
+{
+    use ndarray_linalg::{Cholesky, Eigh, UPLO};
+    let n = x_design.nrows();
+    let p = x_design.ncols();
+
+    // Newton weights w_newton[i] = wf · α — NO prior_w factor (mgcv_rust's
+    // `compute_newton_score_weights` uses pure family weights; prior_w is
+    // applied separately in the score formula). Match v0.x's
+    // `compute_tk_kkt_inputs` which used `wf · α` without prior_w.
+    let mut w_newton = Array1::<f64>::zeros(n);
+    for i in 0..n {
+        let mu_i = mu[i];
+        let var_i = family.variance.variance(mu_i).max(1e-300);
+        let g_prime_mu = family.link.d_link_dmu(mu_i);
+        let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+        let v_prime = family.variance.d_variance(mu_i);
+        let v1n = v_prime / var_i;
+        let g_double_prime = family.link.d2_link_dmu(mu_i);
+        let g2n = g_double_prime / g_prime_mu;
+        let c_resid = y[i] - mu_i;
+        let alpha = 1.0 + c_resid * (v1n + g2n);
+        w_newton[i] = wf * alpha;
+        if !w_newton[i].is_finite() {
+            return None;
+        }
+    }
+
+    // Build A_newton = X' diag(w_newton) X + λS. BLAS form (see
+    // `lazy_newton_log_det_h` for the same pattern, mirroring mgcv_rust
+    // `src/reml/mod.rs:2366-2373`).
+    let mut wx = x_design.clone();
+    for i in 0..n {
+        let wi = w_newton[i];
+        for j in 0..p {
+            wx[[i, j]] *= wi;
+        }
+    }
+    let mut a_newton: Array2<f64> = x_design.t().dot(&wx);
+    for j in 0..p {
+        for l in 0..p {
+            a_newton[[j, l]] += s_total[[j, l]];
+        }
+    }
+    // Symmetrise.
+    for j in 0..p {
+        for l in (j + 1)..p {
+            let avg = 0.5 * (a_newton[[j, l]] + a_newton[[l, j]]);
+            a_newton[[j, l]] = avg;
+            a_newton[[l, j]] = avg;
+        }
+    }
+
+    // A_newton⁻¹ — Cholesky-first (PSD common case for NegBin α>0); eigh
+    // fallback for indefinite spectra (IG + log ~43% negative-α path).
+    let a_inv: Array2<f64> = if let Ok(l) = a_newton.cholesky(UPLO::Lower) {
+        // Materialise inverse via column-wise back-solve.
+        let mut a_inv = Array2::<f64>::zeros((p, p));
+        for col in 0..p {
+            let mut e_j = Array1::<f64>::zeros(p);
+            e_j[col] = 1.0;
+            let z = super::chol_forward_solve(&l, e_j.view());
+            let x_col = super::chol_back_solve(&l, z.view());
+            for i in 0..p {
+                a_inv[[i, col]] = x_col[i];
+            }
+        }
+        a_inv
+    } else {
+        let (eigs, eigvecs) = match a_newton.eigh(UPLO::Lower) {
+            Ok(p) => p,
+            Err(_) => return None,
+        };
+        let mut a_inv = Array2::<f64>::zeros((p, p));
+        for k in 0..p {
+            let lam_k = eigs[k];
+            if !lam_k.is_finite() || lam_k.abs() < 1e-300 {
+                return None;
+            }
+            let inv_lam_k = 1.0 / lam_k;
+            for i in 0..p {
+                let vi = eigvecs[[i, k]];
+                for j in 0..p {
+                    a_inv[[i, j]] += inv_lam_k * vi * eigvecs[[j, k]];
+                }
+            }
+        }
+        a_inv
+    };
+
+    // a1[i]: v0.x `src/reml/mod.rs:2392-2415`. Newton branch uses
+    // w_newton[i] (signed).
+    let mut a1 = Array1::<f64>::zeros(n);
+    for i in 0..n {
+        let mu_i = mu[i];
+        let var_i = family.variance.variance(mu_i).max(1e-300);
+        let g_prime_mu = family.link.d_link_dmu(mu_i);
+        if g_prime_mu.abs() < 1e-12 {
+            continue;
+        }
+        let v_prime = family.variance.d_variance(mu_i);
+        let v1n = v_prime / var_i;
+        let v_double_prime = family.variance.d2_variance(mu_i);
+        let v2n = v_double_prime / var_i;
+        let g_double_prime = family.link.d2_link_dmu(mu_i);
+        let g2n = g_double_prime / g_prime_mu;
+        let g_triple_prime = family.link.d3_link_dmu(mu_i);
+        let g3n = g_triple_prime / g_prime_mu;
+        let c_resid = y[i] - mu_i;
+        let alpha_raw = 1.0 + c_resid * (v1n + g2n);
+        let alpha = if alpha_raw <= 0.0 { 1.0 } else { alpha_raw };
+        let xx = v2n - v1n * v1n + g3n - g2n * g2n;
+        let alpha1 = (-(v1n + g2n) + c_resid * xx) / alpha;
+        a1[i] = w_newton[i] * (alpha1 - v1n - 2.0 * g2n) * g_prime_mu.recip();
+    }
+
+    // lev_uw[i] = x_iᵀ A_newton⁻¹ x_i. BLAS form: XAi = X · A⁻¹ (n,p),
+    // then lev_uw[i] = Σ_j X[i,j] · XAi[i,j]. Port of mgcv_rust
+    // `src/reml/mod.rs:2404-2412` (`let xa = x.dot(&a_inv); ...`).
+    let xa: Array2<f64> = x_design.dot(&a_inv);
+    let mut lev_uw = Array1::<f64>::zeros(n);
+    for i in 0..n {
+        let mut s = 0.0_f64;
+        for j in 0..p {
+            s += xa[[i, j]] * x_design[[i, j]];
+        }
+        lev_uw[i] = s;
+    }
+
+    // Per-term b1_k = -λ_k · A_newton⁻¹ · S_k · β; eta1_k = X · b1_k;
+    // tr(A_newton⁻¹ · S_k). Multi-smooth port of mgcv_rust
+    // `src/reml/mod.rs:2401-2484`.
+    let m = s_list.len();
+    debug_assert_eq!(
+        rho.len(),
+        m,
+        "lazy_tk_kkt_inputs: rho.len()={} must match s_list.len()={m}",
+        rho.len()
+    );
+    let mut eta1_per_term: Vec<Array1<f64>> = Vec::with_capacity(m);
+    let mut tr_a_newton_inv_s_per_term: Vec<f64> = Vec::with_capacity(m);
+    for k in 0..m {
+        let lambda_k = rho[k].exp();
+        let s_k = &s_list[k];
+        // b1_k = -λ_k · A⁻¹ · S_k · β, then eta1_k = X · b1_k.
+        let s_k_beta = s_k.dot(beta);
+        let a_inv_s_k_beta = a_inv.dot(&s_k_beta);
+        let b1_k = a_inv_s_k_beta.mapv(|v| -lambda_k * v);
+        eta1_per_term.push(x_design.dot(&b1_k));
+        // tr(A⁻¹ · S_k) = Σ_{i,j} A⁻¹[i,j] · S_k[j,i].
+        let mut tr_k = 0.0_f64;
+        for i in 0..p {
+            for j in 0..p {
+                tr_k += a_inv[[i, j]] * s_k[[j, i]];
+            }
+        }
+        tr_a_newton_inv_s_per_term.push(tr_k);
+    }
+    let _ = prior_w; // kept for signature uniformity with the score-weights helper
+    let sign_w = Array1::<f64>::ones(n);
+    Some(super::TkKKTInputs {
+        a1,
+        lev_uw,
+        eta1_per_term,
+        tr_a_newton_inv_s_per_term,
+        a_newton_inv: a_inv,
+        working_weights_sign: sign_w,
+    })
+}
+
 /// `crate::traits::InnerSolver` impl for any `Family<L, K, V>` via PIRLS.
 ///
 /// Standard penalised iteratively-reweighted least squares loop:
@@ -91,6 +406,59 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
         );
         let s_total = crate::design::combined_s(&self.s_list, rho);
         self.pirls_loop(s_total, rho)
+    }
+
+    /// Newton-A log|H| at converged β. Computed lazily here so PIRLS
+    /// itself doesn't pay the O(p³) cost per inner fit (mgcv_rust pattern
+    /// — `fit_pirls_cached` returns no Newton pieces, the score evaluator
+    /// at `src/reml/mod.rs:460-483` builds them when needed).
+    fn lazy_newton_log_det_h(&self, fit: &Self::Fit, rho: &Array1<f64>) -> Option<f64> {
+        if !self.family.loss.use_newton_irls() {
+            return None;
+        }
+        let n = self.x_design.nrows();
+        let prior_w: Array1<f64> = self
+            .prior_weights
+            .clone()
+            .unwrap_or_else(|| Array1::ones(n));
+        let s_total = crate::design::combined_s(&self.s_list, rho);
+        lazy_newton_log_det_h(
+            &self.family,
+            &self.y,
+            &fit.mu,
+            &prior_w,
+            &self.x_design,
+            &s_total,
+        )
+    }
+
+    /// Tk·KK' / IFT inputs at converged β. Lazy — see [`InnerSolver::
+    /// lazy_tk_kkt_inputs`] docstring.
+    fn lazy_tk_kkt_inputs(
+        &self,
+        fit: &Self::Fit,
+        rho: &Array1<f64>,
+    ) -> Option<super::TkKKTInputs> {
+        if !self.family.loss.use_newton_irls() {
+            return None;
+        }
+        let n = self.x_design.nrows();
+        let prior_w: Array1<f64> = self
+            .prior_weights
+            .clone()
+            .unwrap_or_else(|| Array1::ones(n));
+        let s_total = crate::design::combined_s(&self.s_list, rho);
+        lazy_tk_kkt_inputs(
+            &self.family,
+            &self.y,
+            &fit.mu,
+            &fit.beta,
+            &prior_w,
+            &self.x_design,
+            &self.s_list,
+            &s_total,
+            rho,
+        )
     }
 }
 
@@ -352,38 +720,20 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             working_rss += working_weights[i] * r * r;
         }
 
-        // For non-canonical-link families that opt into the Newton IRLS
-        // path (`Loss::use_newton_irls() = true`), mgcv evaluates the REML
-        // score's `log|H|` term against the **Newton** weight matrix
-        // (`wf · α`, no per-row Fisher fallback — negative α stay
-        // negative). The Fisher H above remains the right object for
-        // PIRLS's stability and for `tr(H⁻¹S)` (v0.x's
-        // `system.tr_a`), but `log|H|` switches to the Newton W. Ported
-        // from `src/reml/mod.rs:436-459` — closes the InverseGaussian +
-        // log mgcv parity gap (~0.22 in log|H| → ~3e-4 → ~3e-5 on μ̂).
-        // Tk·KK' / Newton-log|H| paths run with the combined `s_total` —
-        // they don't see individual term penalties (94b single-smooth
-        // gating: the Newton-IRLS path is wired only for `s_list.len() == 1`
-        // families today; multi-smooth Newton-IRLS would need per-term
-        // η₁_j derivatives, deferred).
-        let log_det_h_override = if self.family.loss.use_newton_irls() {
-            self.score_log_det_h_newton(&mu, &prior_w, &s_total)
-        } else {
-            None
-        };
-
-        // Pre-compute Tk·KK' gradient inputs for non-canonical-link
-        // families. The score body adds `Σ a1[i] · η₁[i] · sign(w[i]) ·
-        // lev_uw[i]` to its ρ-gradient (v0.x `src/reml/mod.rs::
-        // reml_gradient_mgcv_exact_ift_inner_at_beta`, lines 2068-2176).
-        // For canonical links a1 ≡ 0 by envelope on the W-β chain — we
-        // skip the inputs entirely so the score body sees `tk_kkt_inputs
-        // = None` and short-circuits.
-        let tk_kkt_inputs = if self.family.loss.use_newton_irls() {
-            self.compute_tk_kkt_inputs(&mu, &beta, &s_total, rho)
-        } else {
-            None
-        };
+        // **Newton log|H| and Tk·KK' are computed LAZILY by consumers** —
+        // not here. Port of mgcv_rust `src/pirls/mod.rs::fit_pirls_cached`
+        // (lines 1020-1240): mgcv_rust's PIRLS returns only `(β, μ,
+        // working_weights)` and the REML score evaluator builds Newton-A
+        // pieces at gradient time (mgcv_rust `src/reml/mod.rs:460-483`
+        // for log|H|; `src/reml/mod.rs:2347-2487` for Tk·KK'). Doing it
+        // here was an O(p³) eigh per inner fit — 25-30× perf regression
+        // on the NegBin bench. See `super::pirls::lazy_newton_log_det_h`
+        // and `super::pirls::lazy_tk_kkt_inputs` for the moved code.
+        let log_det_h_override: Option<f64> = None;
+        let tk_kkt_inputs: Option<super::TkKKTInputs> = None;
+        // Keep `rho` referenced (was previously consumed by
+        // `compute_tk_kkt_inputs(... rho)` — kept for grep-symmetry).
+        let _ = rho;
 
         // Per-obs `∂W/∂η` for the analytic outer-Newton Hessian's W-chain
         // term. **Always the Fisher W derivative** — `W_F(μ) = prior_w /
@@ -436,280 +786,6 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             dw_deta: Some(dw_deta),
             x_design: Some(self.x_design.clone()),
         })
-    }
-
-    /// Compute the per-row Tk·KK' bits for non-canonical-link families.
-    /// Mirrors v0.x `src/reml/mod.rs::reml_gradient_mgcv_exact_ift_inner_at_beta`
-    /// at lines 2073-2107: builds `a1[i]` (the Newton-mode IFT weight
-    /// derivative) and the unweighted leverage `lev_uw[i] = x_iᵀ A⁻¹ x_i`.
-    ///
-    /// **Uses eigendecomposition** on the Newton A (not the configured
-    /// `LinearSolver`) because the IG + log path produces a potentially
-    /// **indefinite** A — Cholesky and LU both fail on indefinite matrices.
-    /// `eigh` handles this; the Newton A is symmetric by construction so
-    /// it's the right tool regardless of the score backend.
-    ///
-    /// `a1[i]` formula (mgcv `gdi.c:2556`, Newton path):
-    /// ```text
-    ///   α   = 1 + (y-μ)·(V'/V + g''/g')              (PIRLS curvature factor)
-    ///   xx  = V''/V - (V'/V)² + g'''/g' - (g''/g')²
-    ///   α₁  = (-(V'/V + g''/g') + (y-μ)·xx) / α
-    ///   a1  = w·(α₁ - V'/V - 2·g''/g') / g'(μ)
-    /// ```
-    /// Fisher fallback for `α ≤ 0` (matches `compute_irls_wz`):
-    /// ```text
-    ///   a1 = -w·(V'/V + 2·g''/g') / g'(μ)
-    /// ```
-    fn compute_tk_kkt_inputs(
-        &self,
-        mu: &Array1<f64>,
-        beta: &Array1<f64>,
-        s_total: &Array2<f64>,
-        rho: &Array1<f64>,
-    ) -> Option<super::TkKKTInputs> {
-        // s_total = Σ_k λ_k·S_k goes into A_newton; the per-term η₁_k
-        // requires the per-term λ_k·S_k separately for b1_k = -λ_k·A⁻¹·S_k·β.
-        // Port of mgcv_rust reml_gradient_mgcv_exact_ift_newton_at_beta
-        // at src/reml/mod.rs:2401-2484 — multi-smooth `b1[:,k]` columns.
-        let lambda = 1.0_f64;
-        use ndarray_linalg::{Eigh, UPLO};
-        let n = self.x_design.nrows();
-        let p = self.x_design.ncols();
-        // Newton weights `w_newton[i] = wf · α` (NO Fisher fallback —
-        // negative entries stay negative so the Newton A matches v0.x).
-        let mut w_newton = Array1::<f64>::zeros(n);
-        for i in 0..n {
-            let mu_i = mu[i];
-            let var_i = self.family.variance.variance(mu_i).max(1e-300);
-            let g_prime_mu = self.family.link.d_link_dmu(mu_i);
-            let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
-            let v_prime = self.family.variance.d_variance(mu_i);
-            let v1n = v_prime / var_i;
-            let g_double_prime = self.family.link.d2_link_dmu(mu_i);
-            let g2n = g_double_prime / g_prime_mu;
-            let c_resid = self.y[i] - mu_i;
-            let alpha = 1.0 + c_resid * (v1n + g2n);
-            w_newton[i] = wf * alpha;
-            if !w_newton[i].is_finite() {
-                return None;
-            }
-        }
-        // Build A_newton = X' diag(w_newton) X + λS.
-        let mut a_newton = Array2::<f64>::zeros((p, p));
-        for k in 0..n {
-            let wk = w_newton[k];
-            for j in 0..p {
-                let xkj_w = self.x_design[[k, j]] * wk;
-                for l in 0..p {
-                    a_newton[[j, l]] += xkj_w * self.x_design[[k, l]];
-                }
-            }
-        }
-        for j in 0..p {
-            for l in 0..p {
-                a_newton[[j, l]] += lambda * s_total[[j, l]];
-            }
-        }
-        // Symmetrise to clean FP drift before eigh.
-        for j in 0..p {
-            for l in (j + 1)..p {
-                let avg = 0.5 * (a_newton[[j, l]] + a_newton[[l, j]]);
-                a_newton[[j, l]] = avg;
-                a_newton[[l, j]] = avg;
-            }
-        }
-        // A⁻¹ from eigendecomposition (handles indefinite spectra).
-        let (eigs, eigvecs) = match a_newton.eigh(UPLO::Lower) {
-            Ok(p) => p,
-            Err(_) => return None,
-        };
-        let mut a_inv = Array2::<f64>::zeros((p, p));
-        for k in 0..p {
-            let lam_k = eigs[k];
-            if !lam_k.is_finite() || lam_k.abs() < 1e-300 {
-                return None;
-            }
-            let inv_lam_k = 1.0 / lam_k;
-            for i in 0..p {
-                let vi = eigvecs[[i, k]];
-                for j in 0..p {
-                    a_inv[[i, j]] += inv_lam_k * vi * eigvecs[[j, k]];
-                }
-            }
-        }
-        // a1[i]: v0.x `src/reml/mod.rs:2392-2415`. Newton branch uses
-        // w_newton[i] (signed).
-        let mut a1 = Array1::<f64>::zeros(n);
-        for i in 0..n {
-            let mu_i = mu[i];
-            let var_i = self.family.variance.variance(mu_i).max(1e-300);
-            let g_prime_mu = self.family.link.d_link_dmu(mu_i);
-            if g_prime_mu.abs() < 1e-12 {
-                continue;
-            }
-            let v_prime = self.family.variance.d_variance(mu_i);
-            let v1n = v_prime / var_i;
-            let v_double_prime = self.family.variance.d2_variance(mu_i);
-            let v2n = v_double_prime / var_i;
-            let g_double_prime = self.family.link.d2_link_dmu(mu_i);
-            let g2n = g_double_prime / g_prime_mu;
-            let g_triple_prime = self.family.link.d3_link_dmu(mu_i);
-            let g3n = g_triple_prime / g_prime_mu;
-            let c_resid = self.y[i] - mu_i;
-            let alpha_raw = 1.0 + c_resid * (v1n + g2n);
-            let alpha = if alpha_raw <= 0.0 { 1.0 } else { alpha_raw };
-            let xx = v2n - v1n * v1n + g3n - g2n * g2n;
-            let alpha1 = (-(v1n + g2n) + c_resid * xx) / alpha;
-            a1[i] = w_newton[i] * (alpha1 - v1n - 2.0 * g2n) * g_prime_mu.recip();
-        }
-        // `lev_uw[i] = x_iᵀ A_newton⁻¹ x_i`.
-        let mut lev_uw = Array1::<f64>::zeros(n);
-        for i in 0..n {
-            let mut s = 0.0_f64;
-            for j in 0..p {
-                let mut acc = 0.0_f64;
-                for l in 0..p {
-                    acc += a_inv[[j, l]] * self.x_design[[i, l]];
-                }
-                s += self.x_design[[i, j]] * acc;
-            }
-            lev_uw[i] = s;
-        }
-        // Per-term `b1_k = -λ_k · A_newton⁻¹ · S_k · β`, then
-        // `eta1_k = X · b1_k`. Multi-smooth port of mgcv_rust
-        // `reml_gradient_mgcv_exact_ift_newton_at_beta` (src/reml/mod.rs:2401).
-        let _ = lambda; // retained for symmetry with mgcv comment; λ_k built per-k below.
-        let m = self.s_list.len();
-        debug_assert_eq!(
-            rho.len(),
-            m,
-            "compute_tk_kkt_inputs: rho.len()={} must match s_list.len()={m}",
-            rho.len()
-        );
-        let mut eta1_per_term: Vec<Array1<f64>> = Vec::with_capacity(m);
-        let mut tr_a_newton_inv_s_per_term: Vec<f64> = Vec::with_capacity(m);
-        for k in 0..m {
-            let lambda_k = rho[k].exp();
-            let s_k = &self.s_list[k];
-            let s_k_beta = s_k.dot(beta);
-            let mut a_inv_s_k_beta = Array1::<f64>::zeros(p);
-            for j in 0..p {
-                let mut acc = 0.0_f64;
-                for l in 0..p {
-                    acc += a_inv[[j, l]] * s_k_beta[l];
-                }
-                a_inv_s_k_beta[j] = acc;
-            }
-            let mut b1_k = Array1::<f64>::zeros(p);
-            for j in 0..p {
-                b1_k[j] = -lambda_k * a_inv_s_k_beta[j];
-            }
-            eta1_per_term.push(self.x_design.dot(&b1_k));
-            // tr(A_newton⁻¹ · S_k). Per-term so the score's
-            // `λ_k·tr(H⁻¹S_k)/2` term matches the Newton A used in tk_kkt.
-            let mut tr_k = 0.0_f64;
-            for i in 0..p {
-                for j in 0..p {
-                    tr_k += a_inv[[i, j]] * s_k[[j, i]];
-                }
-            }
-            tr_a_newton_inv_s_per_term.push(tr_k);
-        }
-        // s_total used in A_newton above already encodes Σ_k λ_k·S_k —
-        // keep an explicit reference for the (suppressed) unused-var lint.
-        let _ = s_total;
-        // sign(w) factor; v0.x's gdi.c:856 derivation shows it cancels
-        // with diagKKt's |w|, so we use 1.0 everywhere (no sign factor).
-        let sign_w = Array1::<f64>::ones(n);
-        Some(super::TkKKTInputs {
-            a1,
-            lev_uw,
-            eta1_per_term,
-            tr_a_newton_inv_s_per_term,
-            a_newton_inv: a_inv,
-            working_weights_sign: sign_w,
-        })
-    }
-
-    /// Build `A_score = X' diag(W_newton) X + λS` at the converged β and
-    /// return `Σ log|λ_i|` via symmetric eigendecomposition. `W_newton` is
-    /// the row-wise observed-info weight `wf · α` *without* the per-row
-    /// Fisher fallback used by the inner PIRLS step — negative α stay
-    /// negative so `A_score` is potentially indefinite. Returns `None` if
-    /// any eigenvalue is non-finite or numerically zero (the caller then
-    /// falls back to the Fisher H's `log|H|`).
-    ///
-    /// Mirrors v0.x `src/reml/mod.rs:436-459` and `src/linalg.rs::
-    /// log_abs_det_symmetric`. Used only when the loss opts into
-    /// `use_newton_irls`; canonical-link families never reach here.
-    fn score_log_det_h_newton(
-        &self,
-        mu: &Array1<f64>,
-        prior_w: &Array1<f64>,
-        s_total: &Array2<f64>,
-    ) -> Option<f64> {
-        let lambda = 1.0_f64;
-        use ndarray_linalg::{Eigh, UPLO};
-
-        let n = self.x_design.nrows();
-        let p = self.x_design.ncols();
-        let mut w_newton = Array1::<f64>::zeros(n);
-        for i in 0..n {
-            let mu_i = mu[i];
-            let var_i = self.family.variance.variance(mu_i).max(1e-300);
-            let g_prime_mu = self.family.link.d_link_dmu(mu_i);
-            let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
-            let v_prime = self.family.variance.d_variance(mu_i);
-            let v1n = v_prime / var_i;
-            let g_double_prime = self.family.link.d2_link_dmu(mu_i);
-            let g2n = g_double_prime / g_prime_mu;
-            let c_resid = self.y[i] - mu_i;
-            let alpha = 1.0 + c_resid * (v1n + g2n);
-            // No Fisher fallback here — keep sign(alpha). The
-            // potentially indefinite A is handled by `eigh` below.
-            let w_i = prior_w[i] * wf * alpha;
-            if !w_i.is_finite() {
-                return None;
-            }
-            w_newton[i] = w_i;
-        }
-        // Build A_score = X' diag(W_newton) X + λS.
-        let mut a_score = Array2::<f64>::zeros((p, p));
-        for k in 0..n {
-            let wk = w_newton[k];
-            for j in 0..p {
-                let xkj_w = self.x_design[[k, j]] * wk;
-                for l in 0..p {
-                    a_score[[j, l]] += xkj_w * self.x_design[[k, l]];
-                }
-            }
-        }
-        for j in 0..p {
-            for l in 0..p {
-                a_score[[j, l]] += lambda * s_total[[j, l]];
-            }
-        }
-        // Symmetrise defensively against FP drift from the manual loop.
-        for j in 0..p {
-            for l in (j + 1)..p {
-                let avg = 0.5 * (a_score[[j, l]] + a_score[[l, j]]);
-                a_score[[j, l]] = avg;
-                a_score[[l, j]] = avg;
-            }
-        }
-        let eigs = match a_score.eigh(UPLO::Lower) {
-            Ok((eigs, _)) => eigs,
-            Err(_) => return None,
-        };
-        let mut log_det = 0.0_f64;
-        for e in eigs.iter() {
-            let ae = e.abs();
-            if ae < 1e-300 || !ae.is_finite() {
-                return None;
-            }
-            log_det += ae.ln();
-        }
-        Some(log_det)
     }
 
     fn compute_deviance(&self, mu: &Array1<f64>, prior_w: &Array1<f64>) -> f64 {
