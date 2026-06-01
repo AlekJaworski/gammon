@@ -185,13 +185,17 @@ pub struct TkKKTInputs {
     pub a1: ndarray::Array1<f64>,
     /// Unweighted leverage `x_iᵀ A_newton⁻¹ x_i`.
     pub lev_uw: ndarray::Array1<f64>,
-    /// `η₁ = ∂η/∂ρ = -λ · X · A_newton⁻¹ · S · β` (length n).
-    pub eta1: ndarray::Array1<f64>,
-    /// `tr(A_newton⁻¹ · S)` — override for the score's `tr(H⁻¹S)` term
-    /// that must use the same Newton A as the rest of the Tk·KK'
-    /// machinery. Without this the gradient's `tr` and `tk_kkt` would
-    /// derive from different A matrices.
-    pub tr_a_newton_inv_s: f64,
+    /// Per-term `η₁_k = ∂η/∂ρ_k = -λ_k · X · A_newton⁻¹ · S_k · β` (each
+    /// length n). Length = m smooths. Single-smooth families just have
+    /// `eta1_per_term.len() == 1`. Port of mgcv_rust
+    /// `reml_gradient_mgcv_exact_ift_newton_at_beta` (multi-smooth
+    /// `eta1[:, k]` columns at `src/reml/mod.rs:2401-2402`).
+    pub eta1_per_term: Vec<ndarray::Array1<f64>>,
+    /// Per-term `tr(A_newton⁻¹ · S_k)` — override for the score's
+    /// `λ_k·tr(H⁻¹S_k)` term that must use the same Newton A as the
+    /// Tk·KK' machinery. Without this the gradient's `tr` and `tk_kkt`
+    /// would derive from different A matrices.
+    pub tr_a_newton_inv_s_per_term: Vec<f64>,
     /// Unused now (kept for backward compat with the field name); will
     /// drop on v0.3 alongside any other `sign(w)` traces.
     pub working_weights_sign: ndarray::Array1<f64>,

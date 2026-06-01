@@ -174,6 +174,29 @@ pub trait Loss {
         None
     }
 
+    /// `Σᵢ ∂ls(y_i; scale) / ∂θ_k` for k in 0..n_shape_params — the
+    /// shape-axis derivatives of the **total** saturated log-likelihood,
+    /// summed across observations. The IFT analytic shape gradient at
+    /// `shape_aware/gradient.rs:343` subtracts this per shape axis (mgcv
+    /// `gam.fit5.r:1668`, the `-ls$d1` row of the shape block).
+    ///
+    /// Default returns `vec![0.0; n_shape]` — correct for any family whose
+    /// `saturated_log_lik` is θ-independent (ocat: ls≡0;
+    /// Bernoulli/Poisson/Gaussian: ls depends only on y/φ). Families with
+    /// θ-dependent ls (NegBin, scat/TDist, Tweedie shape derivatives) MUST
+    /// override.
+    ///
+    /// Prior weights are NOT applied here — the caller multiplies in
+    /// `wt[i]` at the assembly step.
+    fn sum_saturated_log_lik_dtheta(
+        &self,
+        _y: ndarray::ArrayView1<f64>,
+        _scale: f64,
+        _prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Vec<f64> {
+        vec![0.0; self.n_shape_params()]
+    }
+
     /// Per-family rank adjustment applied at the score-formula's
     /// `Σ rank·log λ` term. Default 0 (use the mathematically-correct
     /// positive-eigenvalue count). Ocat returns −1 to match v0.x's mgcv

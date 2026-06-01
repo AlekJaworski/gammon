@@ -1,6 +1,6 @@
 //! Negative Binomial with log link.
 
-use crate::traits::{Loss, VarianceFn};
+use crate::traits::{Level1ShapeDerivs, Loss, VarianceFn};
 
 use super::link::LogLink;
 use super::Family;
@@ -95,6 +95,146 @@ impl Loss for NegBin {
     }
     fn get_shape_params(&self) -> Vec<f64> {
         vec![self.theta.ln()]
+    }
+
+    /// Non-canonical log link → use Newton observed-info IRLS weight, not
+    /// Fisher. mgcv's `nb()` runs through gam.fit5 which is observed-info
+    /// at the score level; gamrs's PIRLS Newton-IRLS path is the same
+    /// `wf·α = ½·Dmu2(η)` quantity (verified by NegBin derivation, see
+    /// docs/level1_shape_derivs_conventions.md). Opting in makes the
+    /// trait convention `Level1ShapeDerivs::dmu3 = ∂³D/∂μ³` consistent with
+    /// the inner-solver W at score/shape_aware/gradient.rs:147.
+    fn use_newton_irls(&self) -> bool {
+        true
+    }
+
+    /// Match mgcv's per-family inner-PIRLS β-change tolerance for NegBin.
+    /// mgcv calls `fit_pirls_cached(... tolerance = 1e-8 ...)` at
+    /// `src/lib.rs:1277` for `Family::NegBin`. gamrs's general `PirlsOpts::default`
+    /// uses `1e-9`, which stops one decimal later. Mirrors the ocat
+    /// override.
+    fn pirls_dev_rel_tol(&self) -> f64 {
+        1.0e-8
+    }
+
+    /// Per-row Level-1 NegBin derivatives `(Dmu3, Dth, Dmuth, Dmu2th)` for
+    /// the shape-aware envelope score's Tk·KK' β-chain term in the
+    /// ρ-gradient (`src/score/shape_aware/gradient.rs:147`) and for the
+    /// analytic shape (`log θ`) gradient via the IFT path.
+    ///
+    /// Convention `dmu3 := ∂³D/∂μ³` per the `Level1ShapeDerivs` doc; the
+    /// consumer mathematically requires `½·dmu3 = ∂W/∂η`, which holds
+    /// because gamrs opts NegBin into Newton-IRLS weights `W = ½·Dmu2(η)`
+    /// via `use_newton_irls()` above. See
+    /// `docs/level1_shape_derivs_conventions.md` for the full derivation.
+    ///
+    /// Derivatives from `Dmu(μ) = -2y/μ + 2(θ+y)/(μ+θ)`:
+    /// - **Dmu3** = `∂³D/∂μ³` = `-4y/μ³ + 4(θ+y)/(μ+θ)³`.
+    /// - **Dth** = `θ · ∂D/∂θ` = `-2θ·log((y+θ)/(μ+θ)) - 2θ(μ-y)/(μ+θ)`.
+    /// - **Dmuth** = `θ · ∂Dmu/∂θ` = `2θ(μ-y)/(μ+θ)²`.
+    /// - **Dmu2th** = `θ · ∂Dmu²/∂θ` = `2θ(2y+θ-μ)/(μ+θ)³`.
+    ///
+    /// `log θ` transform: `∂/∂(log θ) = θ · ∂/∂θ` — all θ-derivatives carry
+    /// the leading `θ` factor. Prior weights are baked in (mirrors ocat).
+    /// `eta` is converted to `μ = exp(η)` (log link).
+    fn level1_shape_derivatives(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        eta: ndarray::ArrayView1<f64>,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<Level1ShapeDerivs> {
+        Some(negbin_dd_level1(y, eta, self.theta, prior_w))
+    }
+
+    /// `Σᵢ ∂ls_i/∂(log θ)` — closed form for NegBin. The saturated log-lik
+    /// `ls(y; θ) = lgamma(y+θ) - lgamma(θ) - lgamma(y+1) + y·log(y/(y+θ))
+    /// + θ·log(θ/(y+θ))` has θ-derivative (via lgamma' = digamma):
+    /// `∂ls/∂θ = ψ(y+θ) - ψ(θ) + log(θ/(y+θ))`. With `α = log θ` the chain
+    /// factor is `θ`, so `∂ls/∂α = θ·[ψ(y+θ) - ψ(θ) + log(θ/(y+θ))]`. The
+    /// IFT shape-gradient consumer at `gradient.rs:343` subtracts the
+    /// returned sum to close the `gam.fit5.r:1668 -ls$d1` row — without
+    /// this, NegBin's IFT shape gradient ships the wrong sign because ocat
+    /// (the original Level1 client) has `ls ≡ 0` and the consumer skipped
+    /// the term.
+    fn sum_saturated_log_lik_dtheta(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        _scale: f64,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Vec<f64> {
+        use crate::special::digamma;
+        let theta = self.theta;
+        let psi_theta = digamma(theta);
+        let mut acc = 0.0_f64;
+        for i in 0..y.len() {
+            let yi = y[i];
+            let wt = prior_w.map(|w| w[i]).unwrap_or(1.0);
+            let yt = yi + theta;
+            // ∂ls / ∂(log θ) = θ · [ψ(y+θ) - ψ(θ) + log(θ/(y+θ))]
+            let term = theta * (digamma(yt) - psi_theta + (theta / yt).ln());
+            acc += wt * term;
+        }
+        vec![acc]
+    }
+}
+
+/// Per-row Level-1 NegBin derivatives at the converged η for the current
+/// θ — port-spirit of `ocat::ocat_dd_level1` for the single-shape-param
+/// NegBin case. Returns `(Dmu3, Dth, Dmuth, Dmu2th)` in the
+/// `Level1ShapeDerivs` layout: `Dmu3` is length-`n`, the other three are
+/// `(n × 1)` (NegBin has one shape param `α = log θ`).
+///
+/// `eta` is on the linear-predictor scale; we map to `μ = exp(η)` (log
+/// link). Prior weights are multiplied into every row (mgcv convention,
+/// matching ocat's level-1 impl). `μ` is floored at `1e-300` to keep the
+/// closed-form ratios finite at the saturation boundary.
+pub fn negbin_dd_level1(
+    y: ndarray::ArrayView1<f64>,
+    eta: ndarray::ArrayView1<f64>,
+    theta: f64,
+    prior_w: Option<ndarray::ArrayView1<f64>>,
+) -> Level1ShapeDerivs {
+    use ndarray::{Array1, Array2};
+    let n = y.len();
+    debug_assert_eq!(eta.len(), n);
+
+    let mut dmu3 = Array1::<f64>::zeros(n);
+    let mut dth = Array2::<f64>::zeros((n, 1));
+    let mut dmuth = Array2::<f64>::zeros((n, 1));
+    let mut dmu2th = Array2::<f64>::zeros((n, 1));
+
+    for i in 0..n {
+        let wt_i = prior_w.map(|w| w[i]).unwrap_or(1.0);
+        let yi = y[i];
+        let mu_i = eta[i].exp().max(1e-300);
+        let mut_t = mu_i + theta;
+
+        // ∂³D/∂μ³ = -4y/μ³ + 4(θ+y)/(μ+θ)³.
+        let mu3 = mu_i * mu_i * mu_i;
+        let mut_t3 = mut_t * mut_t * mut_t;
+        dmu3[i] = wt_i * (-4.0 * yi / mu3 + 4.0 * (theta + yi) / mut_t3);
+
+        // ∂D/∂(log θ): branch on y=0 only to avoid log(0).
+        let log_ratio = if yi > 0.0 {
+            ((yi + theta) / mut_t).ln()
+        } else {
+            (theta / mut_t).ln()
+        };
+        dth[[i, 0]] = wt_i * theta * (-2.0 * log_ratio - 2.0 * (mu_i - yi) / mut_t);
+
+        // ∂Dmu/∂(log θ) = 2θ(μ - y)/(μ+θ)².
+        let mut_t2 = mut_t * mut_t;
+        dmuth[[i, 0]] = wt_i * theta * 2.0 * (mu_i - yi) / mut_t2;
+
+        // ∂Dmu²/∂(log θ) = 2θ(2y + θ - μ)/(μ+θ)³.
+        dmu2th[[i, 0]] = wt_i * theta * 2.0 * (2.0 * yi + theta - mu_i) / mut_t3;
+    }
+
+    Level1ShapeDerivs {
+        dmu3,
+        dth,
+        dmuth,
+        dmu2th,
     }
 }
 

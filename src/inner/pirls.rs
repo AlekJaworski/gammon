@@ -290,7 +290,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         // skip the inputs entirely so the score body sees `tk_kkt_inputs
         // = None` and short-circuits.
         let tk_kkt_inputs = if self.family.loss.use_newton_irls() {
-            self.compute_tk_kkt_inputs(&mu, &beta, &s_total)
+            self.compute_tk_kkt_inputs(&mu, &beta, &s_total, rho)
         } else {
             None
         };
@@ -370,9 +370,12 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         mu: &Array1<f64>,
         beta: &Array1<f64>,
         s_total: &Array2<f64>,
+        rho: &Array1<f64>,
     ) -> Option<super::TkKKTInputs> {
-        // s_total already encodes `Σ_j λ_j S_j`; the algebra below treats
-        // it as the combined `λS` from the single-smooth derivation.
+        // s_total = Σ_k λ_k·S_k goes into A_newton; the per-term η₁_k
+        // requires the per-term λ_k·S_k separately for b1_k = -λ_k·A⁻¹·S_k·β.
+        // Port of mgcv_rust reml_gradient_mgcv_exact_ift_newton_at_beta
+        // at src/reml/mod.rs:2401-2484 — multi-smooth `b1[:,k]` columns.
         let lambda = 1.0_f64;
         use ndarray_linalg::{Eigh, UPLO};
         let n = self.x_design.nrows();
@@ -477,38 +480,57 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             }
             lev_uw[i] = s;
         }
-        // `b1 = -λ · A_newton⁻¹ · S · β`, then `eta1 = X · b1`.
-        let s_beta = s_total.dot(beta);
-        let mut a_inv_s_beta = Array1::<f64>::zeros(p);
-        for j in 0..p {
-            let mut acc = 0.0_f64;
-            for l in 0..p {
-                acc += a_inv[[j, l]] * s_beta[l];
-            }
-            a_inv_s_beta[j] = acc;
-        }
-        let mut b1 = Array1::<f64>::zeros(p);
-        for j in 0..p {
-            b1[j] = -lambda * a_inv_s_beta[j];
-        }
-        let eta1 = self.x_design.dot(&b1);
-        // tr(A_newton⁻¹ S). v0.x's `_newton_at_beta` uses this for the
-        // gradient's `λ·tr(A⁻¹S)/2` term so it matches the rest of the
-        // Tk·KK' machinery (all derived against Newton A).
-        let mut tr_a_newton_inv_s = 0.0_f64;
-        for i in 0..p {
+        // Per-term `b1_k = -λ_k · A_newton⁻¹ · S_k · β`, then
+        // `eta1_k = X · b1_k`. Multi-smooth port of mgcv_rust
+        // `reml_gradient_mgcv_exact_ift_newton_at_beta` (src/reml/mod.rs:2401).
+        let _ = lambda; // retained for symmetry with mgcv comment; λ_k built per-k below.
+        let m = self.s_list.len();
+        debug_assert_eq!(
+            rho.len(),
+            m,
+            "compute_tk_kkt_inputs: rho.len()={} must match s_list.len()={m}",
+            rho.len()
+        );
+        let mut eta1_per_term: Vec<Array1<f64>> = Vec::with_capacity(m);
+        let mut tr_a_newton_inv_s_per_term: Vec<f64> = Vec::with_capacity(m);
+        for k in 0..m {
+            let lambda_k = rho[k].exp();
+            let s_k = &self.s_list[k];
+            let s_k_beta = s_k.dot(beta);
+            let mut a_inv_s_k_beta = Array1::<f64>::zeros(p);
             for j in 0..p {
-                tr_a_newton_inv_s += a_inv[[i, j]] * s_total[[j, i]];
+                let mut acc = 0.0_f64;
+                for l in 0..p {
+                    acc += a_inv[[j, l]] * s_k_beta[l];
+                }
+                a_inv_s_k_beta[j] = acc;
             }
+            let mut b1_k = Array1::<f64>::zeros(p);
+            for j in 0..p {
+                b1_k[j] = -lambda_k * a_inv_s_k_beta[j];
+            }
+            eta1_per_term.push(self.x_design.dot(&b1_k));
+            // tr(A_newton⁻¹ · S_k). Per-term so the score's
+            // `λ_k·tr(H⁻¹S_k)/2` term matches the Newton A used in tk_kkt.
+            let mut tr_k = 0.0_f64;
+            for i in 0..p {
+                for j in 0..p {
+                    tr_k += a_inv[[i, j]] * s_k[[j, i]];
+                }
+            }
+            tr_a_newton_inv_s_per_term.push(tr_k);
         }
+        // s_total used in A_newton above already encodes Σ_k λ_k·S_k —
+        // keep an explicit reference for the (suppressed) unused-var lint.
+        let _ = s_total;
         // sign(w) factor; v0.x's gdi.c:856 derivation shows it cancels
         // with diagKKt's |w|, so we use 1.0 everywhere (no sign factor).
         let sign_w = Array1::<f64>::ones(n);
         Some(super::TkKKTInputs {
             a1,
             lev_uw,
-            eta1,
-            tr_a_newton_inv_s,
+            eta1_per_term,
+            tr_a_newton_inv_s_per_term,
             working_weights_sign: sign_w,
         })
     }

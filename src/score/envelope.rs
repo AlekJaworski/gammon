@@ -274,17 +274,8 @@ where
             bsb_total += lambda_j[j] * bsb_j;
             tr_hinv_s_lambda_total += lambda_j[j] * tr_hinv_s_j;
         }
-        // For the Tk·KK' Newton path (non-canonical-link, single-smooth
-        // only — see PirlsInner): the cached `tr_a_newton_inv_s` is the
-        // Newton-A trace against the combined `s_total`. Use it for the
-        // gradient's `λ·tr(H⁻¹S)/2` aggregate (mirrors v0.x); per-term
-        // Newton traces are not yet wired (multi-smooth Newton-IRLS is
-        // out of scope for 94b).
-        let tr_hinv_s_combined_for_grad = inner
-            .tk_kkt_inputs
-            .as_ref()
-            .map(|tk| tk.tr_a_newton_inv_s)
-            .unwrap_or(tr_hinv_s_lambda_total);
+        // Tk·KK' Newton path (non-canonical-link): per-term Newton-A traces
+        // when present, otherwise Fisher per-term. Used per-k below.
 
         // Identity: tr(H⁻¹ X'WX) = p - Σ_j λ_j·tr(H⁻¹ S_j). Fisher
         // version for the σ²-grad denominator (mgcv convention).
@@ -373,34 +364,45 @@ where
                 - 0.5 * (self.rank_s_list[j] as f64);
         }
 
-        // Tk·KK' contribution for non-canonical-link families. The W
-        // matrix used in `log|H|` depends on β (through μ), so
-        // `d(log|H|)/dρ` carries the explicit term
-        // `Σᵢ a1[i] · η₁[i] · sign(w[i]) · lev_uw[i]` (v0.x
-        // `src/reml/mod.rs::reml_gradient_mgcv_exact_ift_inner_at_beta`).
-        // Currently wired only for single-smooth (s_list.len() == 1) —
-        // multi-smooth Tk·KK' would need per-term η₁_j = -λ_j·X·A⁻¹·S_j·β
-        // derivatives. Falls back to the Fisher-trace gradient when
-        // multi-smooth + use_newton_irls is requested (debug_assert
-        // guards in PirlsInner ensure this).
+        // Tk·KK' contribution for non-canonical-link families. The W matrix
+        // used in `log|H|` depends on β (through μ), so `d(log|H|)/dρ_k`
+        // carries the explicit Tk·KK' term `Σᵢ a1[i] · η₁_k[i] · lev_uw[i]`
+        // — port of mgcv_rust `reml_gradient_mgcv_exact_ift_newton_at_beta`
+        // (`src/reml/mod.rs:2480-2483`). For multi-smooth, η₁_k is per-term
+        // (PIRLS supplies `eta1_per_term[k]`). The trace contribution also
+        // switches to the per-term Newton-A trace so the gradient stays
+        // internally consistent (uses one A everywhere).
         let has_tk_kkt = inner.tk_kkt_inputs.is_some();
         if let Some(ref tk) = inner.tk_kkt_inputs {
             debug_assert_eq!(
-                n_terms, 1,
-                "EnvelopeScore: Tk·KK' Newton-IRLS path only supports single-smooth fits"
+                tk.eta1_per_term.len(),
+                n_terms,
+                "EnvelopeScore: eta1_per_term length {} must equal n_terms {}",
+                tk.eta1_per_term.len(),
+                n_terms
+            );
+            debug_assert_eq!(
+                tk.tr_a_newton_inv_s_per_term.len(),
+                n_terms,
+                "EnvelopeScore: tr_a_newton_inv_s_per_term length {} must equal n_terms {}",
+                tk.tr_a_newton_inv_s_per_term.len(),
+                n_terms
             );
             let n = inner.n;
-            let mut tk_kkt = 0.0_f64;
-            for i in 0..n {
-                tk_kkt += tk.a1[i] * tk.eta1[i] * tk.lev_uw[i];
+            for k in 0..n_terms {
+                let mut tk_kkt = 0.0_f64;
+                let eta1_k = &tk.eta1_per_term[k];
+                for i in 0..n {
+                    tk_kkt += tk.a1[i] * eta1_k[i] * tk.lev_uw[i];
+                }
+                // Rewrite this term's gradient to use the Newton-A trace +
+                // Tk·KK' β-chain contribution (vs the Fisher-only branch
+                // computed above) — mirrors mgcv_rust:2482-2483.
+                g[k] = lambda_j[k] * bsb_per_term[k] / (2.0 * score_sigma2)
+                    + 0.5 * lambda_j[k] * tk.tr_a_newton_inv_s_per_term[k]
+                    - 0.5 * (self.rank_s_list[k] as f64)
+                    + 0.5 * tk_kkt;
             }
-            // Single-smooth: also rewrite the trace contribution to use
-            // the Newton-A version so the Tk·KK' machinery is self-
-            // consistent (matches v0.x `reml_gradient_mgcv_exact_ift_newton_at_beta`).
-            g[0] = lambda_j[0] * bsb_per_term[0] / (2.0 * score_sigma2)
-                + 0.5 * lambda_j[0] * tr_hinv_s_combined_for_grad
-                - 0.5 * (self.rank_s_list[0] as f64)
-                + 0.5 * tk_kkt;
         }
 
         // Analytic-Hessian chain term `∂σ²/∂ρ` (closed-form profiles only).

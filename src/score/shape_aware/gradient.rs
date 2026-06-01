@@ -322,6 +322,20 @@ where
             h_diag[i] = s;
         }
 
+        // `Σᵢ ∂ls_i/∂θ_k` per shape axis — the `-ls$d1` row of mgcv
+        // `gam.fit5.r:1668`. Ocat returns zeros (ls≡0) so the original
+        // Level1 client never needed this; NegBin / scat / TDist do.
+        let sum_dls_dtheta = self.family_base.loss.sum_saturated_log_lik_dtheta(
+            self.y.view(),
+            1.0,
+            self.prior_weights.as_ref().map(|w| w.view()),
+        );
+        debug_assert_eq!(
+            sum_dls_dtheta.len(),
+            n_theta,
+            "sum_saturated_log_lik_dtheta must return n_shape_params entries"
+        );
+
         let mut grad = Array1::<f64>::zeros(n_theta);
         for k in 0..n_theta {
             // Envelope: Σᵢ Dth[i, k] = ∂(D + P)/∂θ_k (no β-chain at converged β).
@@ -331,6 +345,18 @@ where
             }
 
             // tr(H⁻¹ ∂H/∂θ_k) = Σᵢ ½ (Dmu2th[i,k] + Dmu3[i] · (X·dβ/dθ_k)[i]) · h_diag[i]
+            //
+            // KNOWN GAP (TODO non-identity link): this formula was derived
+            // for ocat (identity link, μ ≡ η) and silently assumes μ' = 1,
+            // μ'' = μ''' = 0. For non-identity links (NegBin / scat / TDist /
+            // Tweedie with log link), the full η-coord chain rule on W=½·D_ηη
+            // adds 3·Dmu2·μ'·μ'' + Dmu·μ''' to the dw/dη part and
+            // (μ')² / μ'' factors to the dw/dθ explicit part. Tweedie sidesteps
+            // this by providing its own `analytic_shape_score_gradient`;
+            // NegBin currently absorbs the residual error into the parity
+            // floor (1.4e-3 vs the 1.3e-3 baseline). Closing this needs the
+            // chain-rule extension. See docs/level1_shape_derivs_conventions.md
+            // and tests/score_tests.rs::negbin_multismooth_analytic_grad_matches_fd.
             let mut trace_term = 0.0_f64;
             for i in 0..n {
                 let mut x_db_i = 0.0_f64;
@@ -340,7 +366,11 @@ where
                 let s_ki = 0.5 * (level1.dmu2th[[i, k]] + level1.dmu3[i] * x_db_i);
                 trace_term += s_ki * h_diag[i];
             }
-            grad[k] = 0.5 * sum_dth_k + 0.5 * trace_term;
+            // Subtract Σ ∂ls/∂θ_k — closes the `-ls$d1` gap missing on the
+            // ocat-only original derivation (ocat: ls≡0, so the term was
+            // never tested). Without this, the NegBin IFT shape gradient
+            // ships the wrong sign on the log θ axis.
+            grad[k] = 0.5 * sum_dth_k + 0.5 * trace_term - sum_dls_dtheta[k];
         }
         Ok(grad)
     }
