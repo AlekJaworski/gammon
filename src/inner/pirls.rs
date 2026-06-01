@@ -531,6 +531,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             lev_uw,
             eta1_per_term,
             tr_a_newton_inv_s_per_term,
+            a_newton_inv: a_inv,
             working_weights_sign: sign_w,
         })
     }

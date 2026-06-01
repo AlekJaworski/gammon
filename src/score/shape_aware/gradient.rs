@@ -289,38 +289,137 @@ where
         debug_assert_eq!(level1.dmu2th.shape(), level1.dth.shape());
         debug_assert_eq!(level1.dmu3.len(), n);
 
-        // dβ/dθ_k = −H⁻¹ · X' · Dmuth[:, k] / 2 via the fit's factor.
-        // We solve column-by-column to avoid materialising H⁻¹.
+        // Newton-A inverse (and per-row Newton leverage) if the family is
+        // on the Newton-IRLS path (NegBin, IG, scat). The score-side
+        // `log|H|` override uses Newton-A's `Σ log|λ_i|`, so the analytic
+        // θ-gradient MUST differentiate the same A — `fit.a_factor` is
+        // Fisher-A which doesn't match. mgcv R's `gam.fit4.r:gdi2` does
+        // the same: passes Newton observed-info weights into the C IFT
+        // routine which differentiates Newton-A's log|H|.
+        //
+        // When no Newton-A is available (ocat goes through OcatInner with
+        // gam.fit5 weights that ARE the Newton convention by construction),
+        // fall back to Fisher-A via fit.a_factor — ocat's identity link
+        // makes Newton-A ≡ Fisher-A anyway.
+        let newton_a_inv: Option<&ndarray::Array2<f64>> =
+            fit.tk_kkt_inputs.as_ref().map(|t| &t.a_newton_inv);
+
+        // η-coord conversion of the μ-coord Level-1 derivatives. mgcv R's
+        // `gam.fit4.r::dDeta()` (lines 5-78) converts via the link-Jacobian
+        // factors before plugging into the C `gdi2` IFT machinery — this
+        // is exactly the missing piece for non-identity-link families.
+        //
+        // Per-row factors (g'(μ) = `d_link_dmu`, etc):
+        //   ig1 = 1 / g'(μ) = dμ/dη
+        //   g2g = g''(μ) / g'(μ)²
+        //   g3g = g'''(μ) / g'(μ)³
+        //
+        // η-coord derivatives (gam.fit4.r:47-51 + `Deta3` at :49):
+        //   Detath  = Dmuth · ig1
+        //   Deta2th = Dmu2th · ig1²  −  Dmuth · g2g · ig1
+        //   Deta3   = Dmu3 · ig1³ − 3·Dmu2·g2g·ig1² + Dmu·(3·g2g² − g3g)·ig1
+        //
+        // For identity link (`ig1=1, g2g=g3g=0`) all three collapse to
+        // the μ-coord values, preserving ocat behaviour exactly. For log
+        // link (`ig1=μ, g2g=−1, g3g=2`) the factors above match the
+        // hand-derived chain rule for W = ½·D_ηη.
+        //
+        // Note: mgcv_rust's `tweedie_joint.rs` plugs μ-coord derivs into
+        // the IFT formula directly (no `dDeta` conversion) and its parity
+        // tests only check μ predictions, so the bug was never exposed
+        // there. gamrs diverges from mgcv_rust here and follows mgcv R.
+        let mut ig1 = Array1::<f64>::zeros(n);
+        let mut g2g = Array1::<f64>::zeros(n);
+        let mut g3g = Array1::<f64>::zeros(n);
+        let mut dmu_arr = Array1::<f64>::zeros(n);
+        let mut dmu2_arr = Array1::<f64>::zeros(n);
+        for i in 0..n {
+            let mu_i = fit.mu[i];
+            let gp = self.family_base.link.d_link_dmu(mu_i);
+            let gpp = self.family_base.link.d2_link_dmu(mu_i);
+            let gppp = self.family_base.link.d3_link_dmu(mu_i);
+            if gp.abs() < 1e-300 {
+                // Defensive — link Jacobian shouldn't vanish at converged μ.
+                ig1[i] = 0.0;
+                g2g[i] = 0.0;
+                g3g[i] = 0.0;
+            } else {
+                ig1[i] = 1.0 / gp;
+                g2g[i] = gpp / (gp * gp);
+                g3g[i] = gppp / (gp * gp * gp);
+            }
+            // Dmu / Dmu2 are not in Level1ShapeDerivs (yet); compute from
+            // the Loss directly. Prior weights are NOT applied here — the
+            // η-coord derivative formulas use the unweighted base values
+            // and the prior_w is already baked into Dmuth/Dmu2th/Dmu3 per
+            // the existing ocat convention.
+            let wt_i = self.prior_weights.as_ref().map(|w| w[i]).unwrap_or(1.0);
+            dmu_arr[i] = wt_i * self.family_base.loss.d_loss_dmu(self.y[i], mu_i);
+            dmu2_arr[i] = wt_i * self.family_base.loss.d2_loss_dmu(self.y[i], mu_i);
+        }
+
+        // Per-row Deta3[i] = Dmu3·ig1³ − 3·Dmu2·g2g·ig1² + Dmu·(3·g2g² − g3g)·ig1.
+        let mut deta3 = Array1::<f64>::zeros(n);
+        for i in 0..n {
+            let ig1_i = ig1[i];
+            let ig1_2 = ig1_i * ig1_i;
+            let ig1_3 = ig1_2 * ig1_i;
+            let g2g_i = g2g[i];
+            let g3g_i = g3g[i];
+            deta3[i] = level1.dmu3[i] * ig1_3 - 3.0 * dmu2_arr[i] * g2g_i * ig1_2
+                + dmu_arr[i] * (3.0 * g2g_i * g2g_i - g3g_i) * ig1_i;
+        }
+
+        // dβ/dθ_k = −H⁻¹ · X' · Detath[:, k] / 2 (η-coord IFT).
+        // When `newton_a_inv` is available, use it directly — matches the
+        // Newton-A `log|H|` the score formula uses. Otherwise fall back to
+        // the Fisher-A factor stored on the fit (ocat's case).
         let mut dbeta_dtheta = Array2::<f64>::zeros((p, n_theta));
         for k in 0..n_theta {
-            let dmuth_k = level1.dmuth.column(k);
-            let rhs: Array1<f64> = self.x_design.t().dot(&dmuth_k) * 0.5;
-            let v = S::solve(&fit.a_factor, rhs.view());
-            for r in 0..p {
-                dbeta_dtheta[[r, k]] = -v[r];
+            let mut detath_k = Array1::<f64>::zeros(n);
+            for i in 0..n {
+                detath_k[i] = level1.dmuth[[i, k]] * ig1[i];
+            }
+            let rhs: Array1<f64> = self.x_design.t().dot(&detath_k) * 0.5;
+            if let Some(a_inv) = newton_a_inv {
+                // dβ/dθ = -A_newton⁻¹ · X' · Detath / 2.
+                let v: Array1<f64> = a_inv.dot(&rhs);
+                for r in 0..p {
+                    dbeta_dtheta[[r, k]] = -v[r];
+                }
+            } else {
+                let v = S::solve(&fit.a_factor, rhs.view());
+                for r in 0..p {
+                    dbeta_dtheta[[r, k]] = -v[r];
+                }
             }
         }
 
-        // h_diag[i] = X_i' H⁻¹ X_i.  v0.x materialises H⁻¹ once and does
-        // O(np²) per row; we do the same but via the fit's factor with
-        // column solves of H⁻¹·X' (still O(np²) on dense X, p small).
-        // Build A_inv·X' by solving column-wise.
-        let mut a_inv_xt = Array2::<f64>::zeros((p, n));
-        for i in 0..n {
-            let xi = self.x_design.row(i).to_owned();
-            let col = S::solve(&fit.a_factor, xi.view());
-            for r in 0..p {
-                a_inv_xt[[r, i]] = col[r];
+        // h_diag[i] = X_i' H⁻¹ X_i. With Newton-A, this is the precomputed
+        // `lev_uw` from TkKKTInputs (line `pirls.rs::compute_tk_kkt_inputs`
+        // already computed it as `x_iᵀ · A_newton⁻¹ · x_i`).
+        let h_diag: Array1<f64> = if let Some(tk) = fit.tk_kkt_inputs.as_ref() {
+            tk.lev_uw.clone()
+        } else {
+            // Fisher path: solve A_inv·X' column-wise and reduce.
+            let mut a_inv_xt = Array2::<f64>::zeros((p, n));
+            for i in 0..n {
+                let xi = self.x_design.row(i).to_owned();
+                let col = S::solve(&fit.a_factor, xi.view());
+                for r in 0..p {
+                    a_inv_xt[[r, i]] = col[r];
+                }
             }
-        }
-        let mut h_diag = Array1::<f64>::zeros(n);
-        for i in 0..n {
-            let mut s = 0.0_f64;
-            for r in 0..p {
-                s += self.x_design[[i, r]] * a_inv_xt[[r, i]];
+            let mut h_diag_local = Array1::<f64>::zeros(n);
+            for i in 0..n {
+                let mut s = 0.0_f64;
+                for r in 0..p {
+                    s += self.x_design[[i, r]] * a_inv_xt[[r, i]];
+                }
+                h_diag_local[i] = s;
             }
-            h_diag[i] = s;
-        }
+            h_diag_local
+        };
 
         // `Σᵢ ∂ls_i/∂θ_k` per shape axis — the `-ls$d1` row of mgcv
         // `gam.fit5.r:1668`. Ocat returns zeros (ls≡0) so the original
@@ -344,26 +443,21 @@ where
                 sum_dth_k += level1.dth[[i, k]];
             }
 
-            // tr(H⁻¹ ∂H/∂θ_k) = Σᵢ ½ (Dmu2th[i,k] + Dmu3[i] · (X·dβ/dθ_k)[i]) · h_diag[i]
-            //
-            // KNOWN GAP (TODO non-identity link): this formula was derived
-            // for ocat (identity link, μ ≡ η) and silently assumes μ' = 1,
-            // μ'' = μ''' = 0. For non-identity links (NegBin / scat / TDist /
-            // Tweedie with log link), the full η-coord chain rule on W=½·D_ηη
-            // adds 3·Dmu2·μ'·μ'' + Dmu·μ''' to the dw/dη part and
-            // (μ')² / μ'' factors to the dw/dθ explicit part. Tweedie sidesteps
-            // this by providing its own `analytic_shape_score_gradient`;
-            // NegBin currently absorbs the residual error into the parity
-            // floor (1.4e-3 vs the 1.3e-3 baseline). Closing this needs the
-            // chain-rule extension. See docs/level1_shape_derivs_conventions.md
-            // and tests/score_tests.rs::negbin_multismooth_analytic_grad_matches_fd.
+            // tr(H⁻¹ ∂H/∂θ_k) = Σᵢ ½·(Deta2th[i,k] + Deta3[i]·x_db_i)·h_diag[i]
+            // where (mgcv R `gam.fit4.r:51`):
+            //   Deta2th[i,k] = Dmu2th[i,k]·ig1²[i] − Dmuth[i,k]·g2g[i]·ig1[i]
+            // and Deta3 is precomputed above. For identity link this
+            // collapses to ½·(Dmu2th + Dmu3·x_db) — preserving ocat exactly.
             let mut trace_term = 0.0_f64;
             for i in 0..n {
                 let mut x_db_i = 0.0_f64;
                 for j in 0..p {
                     x_db_i += self.x_design[[i, j]] * dbeta_dtheta[[j, k]];
                 }
-                let s_ki = 0.5 * (level1.dmu2th[[i, k]] + level1.dmu3[i] * x_db_i);
+                let ig1_i = ig1[i];
+                let deta2th_ki = level1.dmu2th[[i, k]] * ig1_i * ig1_i
+                    - level1.dmuth[[i, k]] * g2g[i] * ig1_i;
+                let s_ki = 0.5 * (deta2th_ki + deta3[i] * x_db_i);
                 trace_term += s_ki * h_diag[i];
             }
             // Subtract Σ ∂ls/∂θ_k — closes the `-ls$d1` gap missing on the

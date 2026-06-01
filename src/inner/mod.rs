@@ -196,6 +196,14 @@ pub struct TkKKTInputs {
     /// Tk·KK' machinery. Without this the gradient's `tr` and `tk_kkt`
     /// would derive from different A matrices.
     pub tr_a_newton_inv_s_per_term: Vec<f64>,
+    /// `A_newton⁻¹` — the dense inverse of the Newton observed-info A
+    /// matrix at converged β. The shape-aware IFT analytic θ-gradient
+    /// uses this (NOT `fit.a_factor`, which is Fisher-A) so it
+    /// differentiates the SAME `log|H|` that the score's Newton override
+    /// computes — mgcv `gam.fit4.r:gdi2` consistency. Materialised once
+    /// by `compute_tk_kkt_inputs` via the same eigendecomposition that
+    /// builds `a1` / `lev_uw`.
+    pub a_newton_inv: ndarray::Array2<f64>,
     /// Unused now (kept for backward compat with the field name); will
     /// drop on v0.3 alongside any other `sign(w)` traces.
     pub working_weights_sign: ndarray::Array1<f64>,

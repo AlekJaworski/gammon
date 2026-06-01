@@ -363,6 +363,47 @@ fn debug_tweedie_real_data_grad_walk() {
     }
 }
 
+/// Verifies `Loss::sum_saturated_log_lik_dtheta` against an FD of the
+/// summed `saturated_log_lik` directly — isolates the ∂Σls/∂(log θ)
+/// term from the broader IFT pipeline so a wrong-sign or factor bug
+/// gets a clean signal here, not entangled with PIRLS.
+#[test]
+fn negbin_sum_sat_loglik_dtheta_matches_fd() {
+    use gamrs::family::negbin_log;
+    use gamrs::traits::Loss;
+    let y = Array1::from_vec(vec![0.0, 1.0, 2.0, 3.0, 7.0, 11.0, 0.0, 4.0]);
+    for theta in [0.3_f64, 1.0, 1.5, 4.0, 10.0] {
+        let fam = negbin_log(theta);
+        let analytic = fam.loss.sum_saturated_log_lik_dtheta(y.view(), 1.0, None);
+
+        // FD in log θ space (matches what the shape-grad consumer uses).
+        let h = 1e-5_f64;
+        let alpha = theta.ln();
+        let fam_plus = negbin_log((alpha + h).exp());
+        let fam_minus = negbin_log((alpha - h).exp());
+        let sum_plus: f64 = y
+            .iter()
+            .map(|&yi| fam_plus.loss.saturated_log_lik(yi, 1.0))
+            .sum();
+        let sum_minus: f64 = y
+            .iter()
+            .map(|&yi| fam_minus.loss.saturated_log_lik(yi, 1.0))
+            .sum();
+        let fd = (sum_plus - sum_minus) / (2.0 * h);
+        let rel = (analytic[0] - fd).abs() / (fd.abs() + 1.0);
+        eprintln!(
+            "θ={theta}  analytic={:+.6e}  fd={:+.6e}  rel={rel:.2e}",
+            analytic[0], fd
+        );
+        assert!(
+            rel < 1e-4,
+            "Σ ∂ls/∂(log θ) FD mismatch at θ={theta}: analytic={:+.6e} fd={:+.6e} rel={rel:.2e}",
+            analytic[0],
+            fd,
+        );
+    }
+}
+
 /// Architectural-boundary test for the multi-smooth Newton-IRLS Tk·KK'
 /// β-chain port. The new per-term `eta1_per_term` / `tr_a_newton_inv_s_per_term`
 /// machinery (PIRLS-side) plus the per-k score gradient assembly
