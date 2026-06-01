@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "gamrs"
-version = "0.4.1"
+version = "0.4.2"
 description = "GAM core (Rust) with sklearn-style Python bindings — beta"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -20,11 +20,16 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.20.0",
-    # SHASH err-param σ for the quantile fast_oos tail path (gamrs._shash).
-    # Lazy-imported with a graceful fallback, so it is not load-bearing for
-    # non-quantile use — but shipped by default so fast_oos is tail-accurate.
-    "scipy>=1.7",
 ]
+
+# scipy unlocks the SHASH err-param σ for `fit_quantile(preset="fast_oos")`
+# (tighter τ≈0.99 OOS pinball) and is required by the `quality_oos` CV path
+# (`tune_quantile_sigma`). `_shash.py` is lazy-imported with a graceful
+# fallback (elf_sigma=0 heuristic — the 0.4.0 behaviour), so the base wheel
+# works without it. Optional so the base wheel keeps building on Python
+# versions / platforms where scipy has no wheel yet (e.g. cp314).
+[project.optional-dependencies]
+quantile = ["scipy>=1.7"]
 
 [tool.maturin]
 features = ["python"]
