@@ -487,17 +487,20 @@ fn negbin_multismooth_analytic_grad_matches_fd() {
     // Per-axis tolerances:
     // - ρ axes (0, 1): 5% — these go through the well-tested
     //   Tk·KK' β-chain term using `0.5·dmu3·η₁_j·h_diag`.
-    // - log θ axis (2): 25% — the IFT formula at gradient.rs:343 carries
-    //   a known identity-link assumption for the trace term (Tweedie
-    //   sidesteps this via its own analytic_shape_score_gradient; ocat
-    //   has μ ≡ η so it doesn't matter). NegBin under log link
-    //   absorbs the chain-rule residual into a ~20% rel gap on the
-    //   shape axis. Documented as a TODO at gradient.rs and in
-    //   docs/level1_shape_derivs_conventions.md. This test catches the
-    //   `sum_saturated_log_lik_dtheta` term (without it, analytic flips
-    //   sign — rel jumps to ~130%).
+    // - log θ axis (2): 5% — was 25% pre-fix because the IFT formula at
+    //   `analytic_shape_grad_via_ift` called
+    //   `self.family_base.loss.sum_saturated_log_lik_dtheta(...)` against
+    //   the **construction-time** family (θ=3.0 from `negbin_log(3.0)`),
+    //   not the **perturbed** family from the current outer probe. The
+    //   `ls$d1` row was therefore stuck at the original θ, leaving an
+    //   O(10) residual on the log θ axis (6-23% rel-err). Fixed in
+    //   gradient.rs:430 — now reads `family.loss` (the probed family);
+    //   shape-axis residual drops to ~1e-4. Companion port (Newton-IRLS
+    //   in PIRLS + Newton-W `log|H|` in the shape-aware score path)
+    //   ensures the inner step's β stays stationary on the deviance, so
+    //   the envelope theorem holds bit-exactly.
     let rho_axes_bar = 5e-2;
-    let shape_axis_bar = 2.5e-1;
+    let shape_axis_bar = 5e-2;
     for theta_init in probes {
         let theta = Array1::from_vec(theta_init.to_vec());
         let (_v, g) = score.value_and_grad(&theta).unwrap();

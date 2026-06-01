@@ -251,7 +251,18 @@ where
                 Some(p) => p,
                 None => return 1e12,
             };
-        let log_det_h = fit.log_det_a();
+        // Use the Newton-W `log|H|` override when the inner solver provided
+        // one (NegBin / InverseGaussian / similar non-canonical-link
+        // families opting into `Loss::use_newton_irls()`). Otherwise the
+        // Fisher A factor's `log|H|` is the correct REML object — same
+        // selection rule that `EnvelopeScore::evaluate` uses
+        // (`src/score/envelope.rs:292`). Without this, the shape-aware
+        // path FD-of-value differentiates the Fisher `log|H|` while the
+        // analytic shape gradient at `gradient.rs:307-468` uses Newton-A⁻¹
+        // in its IFT formula — the resulting mismatch shows up as the
+        // 6-23% rel-err on the `log θ` axis of
+        // `negbin_multismooth_analytic_grad_matches_fd`.
+        let log_det_h = fit.log_det_h_override.unwrap_or_else(|| fit.log_det_a());
         let ls_sum: f64 = self
             .y
             .iter()

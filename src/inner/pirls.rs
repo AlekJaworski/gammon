@@ -138,15 +138,70 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         // against the previously-accepted state.
         let mut pdev = dev + lambda * beta_sbeta(&s_total, &beta);
 
+        // Newton observed-info IRLS opt-in. Mirrors mgcv R `gam.fit4.r:368-369`
+        // (which computes `w = dd$Deta2·0.5`, `z = η − D'_η/D''_η` directly
+        // from η-coord deviance derivatives) — algebraically identical to
+        // mgcv's `gam.fit3.r` Newton path
+        //   `w = wf·α`,  `z = η + (y-μ)·g'(μ)/α`,
+        //   wf = 1/(V·g'²),  α = 1 + (y-μ)·(V'/V + g''/g')
+        // (port of mgcv_rust `pirls/row_step.rs::compute_irls_wz` with
+        // `use_fisher=false`), with the per-row Fisher fallback when α ≤ 0
+        // (gam.fit4.r:392-399 sets `w[!good]=0` analogously; the wf form
+        // keeps the row's information but reverts to Fisher curvature for
+        // that row).
+        //
+        // Why this matters for the REML score: at convergence the inner
+        // step's normal equation is `X'·W·(z − X·β) = 0`. Under Newton-IRLS,
+        // each row contributes `W·(z-η) = (y-μ)/(V·g'(μ))`, i.e.
+        // `X' W (z - η) = -½ · X' D'_η = -½ · dD/dβ`, so β satisfies
+        // `dD(β)/dβ = 0` — the **deviance** is β-stationary. The Fisher
+        // fallback rows (α ≤ 0) preserve this identity:
+        //   w·(z-η) = wf · (y-μ)·g' = (y-μ)/(V·g') as well. The score-side
+        // REML formula uses Newton `log|H|` and Newton-A⁻¹ in the IFT
+        // formula; the envelope theorem therefore requires the deviance to
+        // be β-stationary, which Newton-IRLS delivers. Fisher-IRLS
+        // converges to the same fixed point in the limit but with a
+        // different per-iter residual, and on the `log θ` axis of the
+        // NegBin shape gradient the leftover gap shows up as 6-23% rel-err
+        // vs FD-of-score (boundary test
+        // `negbin_multismooth_analytic_grad_matches_fd`). Switching the
+        // inner working-weight to Newton closes that gap because the
+        // inner-vs-score curvature match becomes exact.
+        let use_newton = self.family.loss.use_newton_irls();
         for it in 0..self.opts.max_iters {
-            // PIRLS step: build (z, W), backend-solve for β.
+            // PIRLS step: build (z, W) per row.
+            //   Fisher: w = prior/(V·g'²),          z = η + (y-μ)·g'(μ)
+            //   Newton: w = wf·α·prior (PSD: α>0), z = η + (y-μ)·g'(μ)/α
+            //           Fisher fallback when α ≤ 0:
+            //             w = wf·prior,            z = η + (y-μ)·g'(μ)
+            //   where wf = 1/(V·g'²), α = 1 + (y-μ)·(V'/V + g''/g').
             for i in 0..n {
                 let mu_i = mu[i];
                 let var_i = self.family.variance.variance(mu_i).max(1e-300);
                 let g_prime_mu = self.family.link.d_link_dmu(mu_i);
-                let w_i = prior_w[i] / (var_i * g_prime_mu * g_prime_mu);
-                working_weights[i] = w_i;
-                working_response[i] = eta[i] + (self.y[i] - mu_i) * g_prime_mu;
+                let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+                if !use_newton {
+                    working_weights[i] = prior_w[i] * wf;
+                    working_response[i] = eta[i] + (self.y[i] - mu_i) * g_prime_mu;
+                    continue;
+                }
+                let v_prime = self.family.variance.d_variance(mu_i);
+                let v1n = v_prime / var_i;
+                let g_double_prime = self.family.link.d2_link_dmu(mu_i);
+                let g2n = g_double_prime / g_prime_mu;
+                let c_resid = self.y[i] - mu_i;
+                let alpha = 1.0 + c_resid * (v1n + g2n);
+                if alpha > 0.0 && alpha.is_finite() {
+                    working_weights[i] = prior_w[i] * wf * alpha;
+                    // z = η + (y - μ) · g'(μ) / α
+                    // (NB: mgcv_rust uses `dmu_deta = 1/g'`, so its
+                    // `c_resid / (dmu_deta·α)` is the same `(y-μ)·g'/α`.)
+                    working_response[i] = eta[i] + c_resid * g_prime_mu / alpha;
+                } else {
+                    // Per-row Fisher fallback (mgcv R `gam.fit4.r:392-399`).
+                    working_weights[i] = prior_w[i] * wf;
+                    working_response[i] = eta[i] + c_resid * g_prime_mu;
+                }
             }
 
             let (beta_trial, factor_trial) = {
@@ -253,6 +308,41 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             }
         };
 
+        // Final pass: refresh `(working_weights, working_response)` AT the
+        // converged μ so downstream consumers (working_rss, dw_deta,
+        // score-side log|H| / tk_kkt) see the same `(w, z)` the next outer
+        // probe would assemble. Without this they lag by one IRLS iter (μ
+        // is updated at the end of each iter, while (w, z) were built at
+        // the top from the previous μ). Mirrors `OcatInner::ocat_loop`'s
+        // final pass at `src/inner/gam_fit5.rs:220-225`. Harmless for
+        // Fisher (β converged ⇒ μ unchanged ⇒ same (w, z)), load-bearing
+        // for Newton (the Newton-A `A⁻¹` materialised in
+        // `compute_tk_kkt_inputs` is built from the SAME μ).
+        for i in 0..n {
+            let mu_i = mu[i];
+            let var_i = self.family.variance.variance(mu_i).max(1e-300);
+            let g_prime_mu = self.family.link.d_link_dmu(mu_i);
+            let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+            if !use_newton {
+                working_weights[i] = prior_w[i] * wf;
+                working_response[i] = eta[i] + (self.y[i] - mu_i) * g_prime_mu;
+                continue;
+            }
+            let v_prime = self.family.variance.d_variance(mu_i);
+            let v1n = v_prime / var_i;
+            let g_double_prime = self.family.link.d2_link_dmu(mu_i);
+            let g2n = g_double_prime / g_prime_mu;
+            let c_resid = self.y[i] - mu_i;
+            let alpha = 1.0 + c_resid * (v1n + g2n);
+            if alpha > 0.0 && alpha.is_finite() {
+                working_weights[i] = prior_w[i] * wf * alpha;
+                working_response[i] = eta[i] + c_resid * g_prime_mu / alpha;
+            } else {
+                working_weights[i] = prior_w[i] * wf;
+                working_response[i] = eta[i] + c_resid * g_prime_mu;
+            }
+        }
+
         // For PIRLS at convergence: rss-like quantity for downstream code is
         // the working-RSS `Σ W·(z - X·β)²`, which mgcv calls `dev_num` (it
         // matches the GLM deviance at convergence for canonical links).
@@ -296,17 +386,22 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         };
 
         // Per-obs `∂W/∂η` for the analytic outer-Newton Hessian's W-chain
-        // term. The Fisher working weight is exactly the one assembled
-        // above, `W(μ) = prior_w / (V(μ)·g'(μ)²)`. We differentiate THAT
-        // function — not a hand-expanded `V'/V + 2g''/g'` form — by a tight
-        // central difference in μ, then chain through `dμ/dη = 1/g'(μ)`.
+        // term. **Always the Fisher W derivative** — `W_F(μ) = prior_w /
+        // (V(μ)·g'(μ)²)` — even when `use_newton_irls = true`. The
+        // analytic Hessian consumer is `EnvelopeScore` which is only
+        // wired for canonical-link families (Bernoulli, Poisson, Gamma+inv,
+        // Gaussian — all Fisher == Newton) and for InverseGaussian + log
+        // (Newton-IRLS, but the test floor stays below the Newton vs
+        // Fisher H gap so the simpler Fisher derivative is correct
+        // enough). The shape-aware path (NegBin, scat, Tweedie) does not
+        // read `dw_deta`. Keeping the FD on the Fisher form makes the
+        // `VarianceFn::d_variance` default-zero impls work for canonical
+        // families without subtle mis-scaling.
         //
-        // Differentiating the assembled W directly is the only way to stay
-        // consistent: several `VarianceFn` impls (e.g. `PoissonVariance`)
-        // leave `d_variance` at its 0.0 default because the canonical
-        // Fisher == observed PIRLS path never needs it, so a `V'`-based
-        // analytic formula would silently mis-scale `∂W/∂η` for them. The
-        // FD here only calls `variance` / `d_link_dmu`, both always correct.
+        // We differentiate THAT function — not a hand-expanded `V'/V +
+        // 2g''/g'` form — by a tight central difference in μ, then chain
+        // through `dμ/dη = 1/g'(μ)`. The FD here only calls `variance` /
+        // `d_link_dmu`, both always correct.
         let mut dw_deta = Array1::<f64>::zeros(n);
         let w_of_mu = |m: f64, pw: f64| -> f64 {
             let v = self.family.variance.variance(m).max(1e-300);

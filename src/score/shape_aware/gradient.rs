@@ -244,7 +244,7 @@ where
                 // `reml_grad_ocat_theta_block_analytic` (ocat_joint.rs:123-236)
                 // generalised to any Loss that supplies Level-1 derivatives.
                 let shape_grad =
-                    self.analytic_shape_grad_via_ift(&fit, &level1, n_terms)?;
+                    self.analytic_shape_grad_via_ift(&fit, &family, &level1, n_terms)?;
                 debug_assert_eq!(shape_grad.len(), n_shape);
                 for k in 0..n_shape {
                     g[n_terms + k] = shape_grad[k];
@@ -278,6 +278,7 @@ where
     fn analytic_shape_grad_via_ift(
         &self,
         fit: &GaussianInnerFit<S>,
+        family: &Family<L, K, V>,
         level1: &Level1ShapeDerivs,
         _n_terms_for_layout: usize,
     ) -> Result<Array1<f64>> {
@@ -424,7 +425,16 @@ where
         // `Σᵢ ∂ls_i/∂θ_k` per shape axis — the `-ls$d1` row of mgcv
         // `gam.fit5.r:1668`. Ocat returns zeros (ls≡0) so the original
         // Level1 client never needed this; NegBin / scat / TDist do.
-        let sum_dls_dtheta = self.family_base.loss.sum_saturated_log_lik_dtheta(
+        //
+        // **Must read the PERTURBED family** (caller-provided `family`),
+        // NOT `self.family_base`: `family_base` holds the construction-time
+        // shape params (e.g. θ=3.0 from `negbin_log(3.0)`) and never sees
+        // outer-Newton probes. Without this fix, NegBin's analytic shape
+        // gradient on the `log θ` axis used `dls/dθ` at the original θ
+        // everywhere — which is *constant in the perturbed θ*, contributing
+        // an O(10) error on the shape axis (was 6-23% rel-err on the
+        // `negbin_multismooth_analytic_grad_matches_fd` test).
+        let sum_dls_dtheta = family.loss.sum_saturated_log_lik_dtheta(
             self.y.view(),
             1.0,
             self.prior_weights.as_ref().map(|w| w.view()),
