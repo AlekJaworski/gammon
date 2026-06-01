@@ -54,6 +54,33 @@ pub trait Profile<L: Loss> {
         tr_hinv_xtwx: f64,
         mp: usize,
     ) -> Option<f64>;
+
+    /// Analytic `∂σ²_score/∂ρ_i` for the outer-Newton Hessian.
+    ///
+    /// The envelope gradient is `g[j] = λ_j·bSb_j/(2σ²) + …`, so the
+    /// analytic Hessian needs the chain term `−(λ_j·bSb_j/(2σ⁴))·∂σ²/∂ρ_i`.
+    /// For the closed-form `σ² = Dp/(n−Mp)` profiles the cancellation
+    /// `∂Dp/∂ρ_i = λ_i·bSb_i` (penalised-deviance minimum / normal-equation
+    /// envelope identity) gives `∂σ²/∂ρ_i = λ_i·bSb_i/(n−Mp)`. For σ²≡1
+    /// families it is identically zero.
+    ///
+    /// Returns `None` when no closed form is available (e.g. Gamma's
+    /// Newton-on-φ profile) — the caller then keeps the finite-difference
+    /// Hessian for that family, never silently shipping a wrong analytic one.
+    ///
+    /// `bsb_per_term[i] = β'S_iβ`, `lambda_j[i] = exp(ρ_i)`. The default
+    /// returns `None` (conservative: opt in per profile).
+    fn dispersion_drho<S: LinearSolver>(
+        &self,
+        _loss: &L,
+        _inner: &GaussianInnerFit<S>,
+        _sigma2: f64,
+        _bsb_per_term: &[f64],
+        _lambda_j: &[f64],
+        _mp: usize,
+    ) -> Option<Vec<f64>> {
+        None
+    }
 }
 
 /// mgcv's two-σ² REML convention. Used by all profiled-φ GLM families.
@@ -92,6 +119,34 @@ impl<L: Loss> Profile<L> for MgcvTwoSigmaProfile {
         let score_sigma2 = loss.profile_score_sigma2(dp, inner.n, n_minus_mp, phi_init);
         Some(score_sigma2.max(1e-8))
     }
+
+    fn dispersion_drho<S: LinearSolver>(
+        &self,
+        loss: &L,
+        inner: &GaussianInnerFit<S>,
+        _sigma2: f64,
+        bsb_per_term: &[f64],
+        lambda_j: &[f64],
+        mp: usize,
+    ) -> Option<Vec<f64>> {
+        // Closed-form profiles only: σ² = Dp/(n−Mp), and the envelope
+        // identity ∂Dp/∂ρ_i = λ_i·β'S_iβ gives ∂σ²/∂ρ_i = λ_i·bSb_i/(n−Mp).
+        // Gamma (Newton-on-φ) returns `false` here → FD fallback.
+        if !loss.profile_sigma2_is_closed_form() {
+            return None;
+        }
+        let n_minus_mp = (inner.n as f64) - (mp as f64);
+        if n_minus_mp <= 0.0 {
+            return None;
+        }
+        Some(
+            lambda_j
+                .iter()
+                .zip(bsb_per_term.iter())
+                .map(|(&lam, &bsb)| lam * bsb / n_minus_mp)
+                .collect(),
+        )
+    }
 }
 
 /// σ² fixed at 1.0 for both score and gradient. Used by canonical GLM
@@ -113,6 +168,19 @@ impl<L: Loss> Profile<L> for FixedAtOneProfile {
         _mp: usize,
     ) -> Option<f64> {
         Some(1.0)
+    }
+
+    fn dispersion_drho<S: LinearSolver>(
+        &self,
+        _loss: &L,
+        _inner: &GaussianInnerFit<S>,
+        _sigma2: f64,
+        bsb_per_term: &[f64],
+        _lambda_j: &[f64],
+        _mp: usize,
+    ) -> Option<Vec<f64>> {
+        // σ² ≡ 1 is constant in ρ — no chain term.
+        Some(vec![0.0; bsb_per_term.len()])
     }
 }
 

@@ -294,6 +294,21 @@ impl<S: LinearSolver> ArmijoElfInner<S> {
 
         let _ = self.prior_weights.as_ref();
 
+        // Per-obs `∂W/∂η` for the analytic outer-Newton Hessian's W-chain.
+        // ELF is identity-link (μ = η) with `W = ½·∂²L/∂μ²`, so
+        // `∂W/∂η = ½·∂³L/∂μ³`. We get the third derivative by a tight
+        // central difference of `½·d2l_dmu` (the ELF sigmoid pieces are
+        // smooth; analytic d3 is not exposed by `elf_parts`).
+        let mut dw_deta = Array1::<f64>::zeros(n);
+        let hfd = 1e-5_f64;
+        for i in 0..n {
+            let wp =
+                0.5 * crate::family::elf_parts(self.y[i], eta[i] + hfd, tau, sigma, lambda_elf).d2l_dmu;
+            let wm =
+                0.5 * crate::family::elf_parts(self.y[i], eta[i] - hfd, tau, sigma, lambda_elf).d2l_dmu;
+            dw_deta[i] = (wp - wm) / (2.0 * hfd);
+        }
+
         Ok(GaussianInnerFit::<S> {
             beta,
             eta,
@@ -309,6 +324,8 @@ impl<S: LinearSolver> ArmijoElfInner<S> {
             a_factor,
             log_det_h_override: None,
             tk_kkt_inputs: None,
+            dw_deta: Some(dw_deta),
+            x_design: Some(self.x_design.clone()),
         })
     }
 }

@@ -113,6 +113,22 @@ pub struct GaussianInnerFit<S: LinearSolver = CholeskySolver> {
     ///   already owns `self.x_design`; this is just a handle so the
     ///   score doesn't need a parallel field.
     pub tk_kkt_inputs: Option<TkKKTInputs>,
+    /// Per-observation `∂W_ii/∂η_i` at convergence, or `None` when the
+    /// working weights are constant in η (Gaussian closed-form path).
+    ///
+    /// The analytic outer-Newton Hessian needs this because the gradient's
+    /// `½·λ_j·tr(A⁻¹S_j)` term has `A = X'WX + ΣλS` with `W = W(η(β(ρ)))`
+    /// for GLM / quantile families: `∂tr(A⁻¹S_j)/∂ρ_i` therefore carries a
+    /// `−tr(A⁻¹·X'(∂W/∂ρ_i)X·A⁻¹·S_j)` piece on top of the penalty part,
+    /// where `∂W/∂ρ_i = diag((∂W/∂η)·(X·dβ/dρ_i))`. Without it the analytic
+    /// Hessian is the fixed-W (Fisher) Hessian, which disagrees with the
+    /// finite-difference Hessian of the same gradient by O(1e-3) for PIRLS
+    /// families. Gaussian leaves it `None` (W constant ⇒ term vanishes).
+    pub dw_deta: Option<Array1<f64>>,
+    /// Design matrix `X` (cloned), populated only when `dw_deta` is `Some`
+    /// — the analytic Hessian's W-chain term needs `X·dβ/dρ` and the
+    /// leverage-like `(X·A⁻¹S_jA⁻¹·X')_{ii}`. Gaussian leaves it `None`.
+    pub x_design: Option<Array2<f64>>,
 }
 
 impl<S: LinearSolver> GaussianInnerFit<S> {

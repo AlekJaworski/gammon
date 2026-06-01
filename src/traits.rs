@@ -108,6 +108,20 @@ pub trait Loss {
         (dp / n_minus_mp.max(1.0)).max(1e-8)
     }
 
+    /// Whether `profile_score_sigma2` is the closed-form `Dp/(n−Mp)`.
+    /// `true` for every family that does NOT override `profile_score_sigma2`
+    /// (Gaussian, InverseGaussian, QuasiPoisson, QuasiBinomial). Gamma —
+    /// whose profile σ̂² is the root of a Newton-on-φ equation — overrides
+    /// this to `false`.
+    ///
+    /// The analytic outer-Newton Hessian uses this to decide whether it can
+    /// form `∂σ²/∂ρ_i = λ_i·β'S_iβ/(n−Mp)` in closed form; when `false` the
+    /// score keeps its finite-difference Hessian for that family rather than
+    /// shipping an approximate analytic one.
+    fn profile_sigma2_is_closed_form(&self) -> bool {
+        true
+    }
+
     /// Number of family-shape parameters this loss owns. Zero for
     /// Gaussian/Bernoulli/Poisson. TDist returns 2 (`log σ²`, `log(ν-2)`).
     /// Tweedie returns 2 (`log φ`, `p_transform`). Used by the outer Newton

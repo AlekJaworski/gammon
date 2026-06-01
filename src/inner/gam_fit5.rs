@@ -277,6 +277,10 @@ impl<S: LinearSolver> OcatInner<S> {
             a_factor,
             log_det_h_override: None,
             tk_kkt_inputs: None,
+            // ocat goes through the shape-aware score path, not the
+            // `EnvelopeScore` analytic Hessian — no `∂W/∂η` needed here.
+            dw_deta: None,
+            x_design: None,
         })
     }
 

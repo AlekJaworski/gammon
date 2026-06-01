@@ -178,5 +178,9 @@ fn gaussian_inner_solve_cached<S: LinearSolver>(
         a_factor,
         log_det_h_override: None,
         tk_kkt_inputs: None,
+        // Gaussian closed-form: working weights are constant in η ⇒ no
+        // `∂W/∂η` term in the analytic Hessian.
+        dw_deta: None,
+        x_design: None,
     })
 }

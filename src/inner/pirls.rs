@@ -295,6 +295,34 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             None
         };
 
+        // Per-obs `∂W/∂η` for the analytic outer-Newton Hessian's W-chain
+        // term. The Fisher working weight is exactly the one assembled
+        // above, `W(μ) = prior_w / (V(μ)·g'(μ)²)`. We differentiate THAT
+        // function — not a hand-expanded `V'/V + 2g''/g'` form — by a tight
+        // central difference in μ, then chain through `dμ/dη = 1/g'(μ)`.
+        //
+        // Differentiating the assembled W directly is the only way to stay
+        // consistent: several `VarianceFn` impls (e.g. `PoissonVariance`)
+        // leave `d_variance` at its 0.0 default because the canonical
+        // Fisher == observed PIRLS path never needs it, so a `V'`-based
+        // analytic formula would silently mis-scale `∂W/∂η` for them. The
+        // FD here only calls `variance` / `d_link_dmu`, both always correct.
+        let mut dw_deta = Array1::<f64>::zeros(n);
+        let w_of_mu = |m: f64, pw: f64| -> f64 {
+            let v = self.family.variance.variance(m).max(1e-300);
+            let gp = self.family.link.d_link_dmu(m);
+            pw / (v * gp * gp)
+        };
+        for i in 0..n {
+            let mu_i = mu[i];
+            let pw = prior_w[i];
+            let g_prime = self.family.link.d_link_dmu(mu_i);
+            // Scale the μ-step to the magnitude of μ for conditioning.
+            let hmu = 1e-6 * mu_i.abs().max(1e-3);
+            let dw_dmu = (w_of_mu(mu_i + hmu, pw) - w_of_mu(mu_i - hmu, pw)) / (2.0 * hmu);
+            dw_deta[i] = dw_dmu / g_prime; // dμ/dη = 1/g'(μ)
+        }
+
         Ok(GaussianInnerFit::<S> {
             beta,
             eta,
@@ -310,6 +338,8 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             a_factor,
             log_det_h_override,
             tk_kkt_inputs,
+            dw_deta: Some(dw_deta),
+            x_design: Some(self.x_design.clone()),
         })
     }
 

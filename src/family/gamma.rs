@@ -108,6 +108,13 @@ impl Loss for Gamma {
         }
         phi
     }
+
+    /// Gamma profiles σ̂² via Newton-on-φ (above), NOT the closed-form
+    /// `Dp/(n−Mp)`. The analytic outer-Newton Hessian therefore has no
+    /// simple `∂σ²/∂ρ` chain term for Gamma and falls back to FD.
+    fn profile_sigma2_is_closed_form(&self) -> bool {
+        false
+    }
 }
 
 impl VarianceFn for GammaVariance {

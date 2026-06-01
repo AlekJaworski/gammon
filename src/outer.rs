@@ -194,21 +194,59 @@ impl OuterSolver for NewtonWithHalving {
             }
 
             if !accepted {
-                // Step-halving exhausted — likely at a numerical optimum
-                // where the gradient is small but Newton's quadratic
-                // approximation can't find a strictly-decreasing step.
-                // Declare converged if `|grad|_∞` is small relative to
-                // the score scale. We keep a modestly-relaxed criterion
-                // here (rather than the strict `grad_tol_abs`) because
-                // double-precision FD Hessians on flat regions struggle
-                // to find a strictly-decreasing trial point — the
-                // gradient is what tells us we're at a minimum.
+                // Step-halving exhausted — Newton's quadratic approximation
+                // can't find a strictly-decreasing step from this point.
+                // Two distinct convergence cases:
+                //
+                //   (a) Interior minimum: `|grad|_∞` small relative to the
+                //       score scale. Double-precision FD Hessians on flat
+                //       regions can't find a strictly-decreasing trial,
+                //       but the gradient says we're there.
+                //
+                //   (b) KKT at active box constraint: the unconstrained
+                //       Newton step pushed entirely outside the box on
+                //       every axis where the step was non-trivial, so all
+                //       movement got clamped to zero. This is the
+                //       saturating-λ ridge: gradient stays bounded away
+                //       from zero, but axis bounds make the boundary a
+                //       constrained local optimum. (Score-relative
+                //       criterion (a) used to fire by accident here once
+                //       `|v|` drifted large enough.)
+                let kkt_at_boundary = axis_bounds.as_ref().map_or(false, |bnds| {
+                    // For each axis with any unconstrained Newton movement,
+                    // require that movement to point outside the active
+                    // bound. Vacuously true if the raw step is ~0 everywhere
+                    // (then case (a) applies).
+                    let mut any_movement = false;
+                    let mut all_blocked = true;
+                    for (i, &(lo, hi)) in bnds.iter().enumerate() {
+                        if i >= scaled_step.len() {
+                            continue;
+                        }
+                        let si = scaled_step[i];
+                        let eps_at_bound = 1e-12 * (theta[i].abs().max(1.0));
+                        let at_lo = (theta[i] - lo).abs() <= eps_at_bound;
+                        let at_hi = (hi - theta[i]).abs() <= eps_at_bound;
+                        // Only count "real" movement; tiny si is noise.
+                        let active_step = si.abs() > 1e-12 * (theta[i].abs().max(1.0));
+                        if active_step {
+                            any_movement = true;
+                            let pushes_out =
+                                (at_hi && si > 0.0) || (at_lo && si < 0.0);
+                            if !pushes_out {
+                                all_blocked = false;
+                            }
+                        }
+                    }
+                    any_movement && all_blocked
+                });
                 return Ok(OuterFit {
                     theta,
                     value: v,
                     grad_norm,
                     iterations: iter + 1,
-                    converged: grad_norm < 1e-3 * (v.abs() + 1.0),
+                    converged: kkt_at_boundary
+                        || grad_norm < 1e-3 * (v.abs() + 1.0),
                 });
             }
         }
