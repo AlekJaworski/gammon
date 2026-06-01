@@ -46,9 +46,10 @@ def test_fast_oos_on_par_with_mgcv_rust():
     for tau in fx["inputs"]["taus"]:
         ref = per_tau[str(tau)]["oos_pinball"]
         gam = gamrs.fit_quantile(x_tr, y_tr, tau, k=k, preset="fast_oos")
-        # fast_oos = heuristic σ (sentinel 0.0), no CV, with coverage calibration.
-        assert gam.sigma_ == 0.0
+        # fast_oos = SHASH err-param σ (no CV) + coverage calibration.
         assert gam.tune_info_ is None  # no CV ran
+        assert gam.co_ is not None and gam.sigma_ == gam.co_  # σ = co (SHASH/heuristic)
+        assert gam.sigma_ >= 0.0  # SHASH co (>0), or 0.0 if scipy/pilot deferred
         assert gam.coverage_shift_ is not None and np.isfinite(gam.coverage_shift_)
         q_te = np.asarray(gam.predict(x_te.reshape(-1, 1))).ravel()
         gpb = _pinball(y_te, q_te, tau)

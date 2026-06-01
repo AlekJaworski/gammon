@@ -98,6 +98,46 @@ def _fit_elf_native(
     )
 
 
+def _shash_co(x_2d: np.ndarray, y: np.ndarray, tau: float, k: int, design: str) -> float:
+    """qgam-faithful ELF scale ``co`` from a SHASH ``err``-param fit.
+
+    Ports mgcv_rust's ``fast_oos`` σ source (qgam ``.getErrParam``):
+
+    1. Gaussian pilot GAM (gamrs's own API) → μ₀ and per-smooth EDF.
+    2. ``var_hat = mean((y − μ₀)²)``; ``r_std = (y − μ₀)/sqrt(var_hat)``.
+    3. ``d_eff = 1 + Σ edf_smooths``.
+    4. ``err = compute_err_param(r_std, d_eff, [tau])`` (SHASH BFGS; the
+       documented ``err = 0.05`` fallback on divergence).
+    5. ``co = err · sqrt(2π·var_hat) / (2·ln 2)``.
+
+    Returns ``co`` (> 0); the native ELF fit then uses λ = σ = co (pass
+    ``elf_sigma = co``, ``elf_lambda`` unset — see ``src/fit/quantile.rs``).
+    Returns ``0.0`` to defer to the Rust σ heuristic when the pilot is
+    degenerate OR scipy/SHASH is unavailable (keeps scipy an optional boost,
+    not a hard requirement of the fast path).
+    """
+    g_pilot = Gam(family="gaussian", k_default=int(k), design=design)
+    g_pilot.fit(x_2d, y)
+    mu0 = np.asarray(g_pilot.predict(x_2d, scale="response"), dtype=np.float64).ravel()
+    resid = np.asarray(y, dtype=np.float64).ravel() - mu0
+    var_hat = float((resid**2).mean())
+    if not np.isfinite(var_hat) or var_hat <= 1e-12:
+        return 0.0
+    r_std = resid / np.sqrt(var_hat)
+    d_eff = 1.0 + float(np.sum(np.asarray(g_pilot.edf_, dtype=np.float64).ravel()))
+    try:
+        from ._shash import compute_err_param
+    except ImportError:
+        return 0.0  # scipy unavailable -> defer to the native Rust heuristic
+    try:
+        err = float(compute_err_param(r_std, d_eff, [float(tau)])[0])
+        if not np.isfinite(err) or err <= 0.0:
+            err = 0.05
+    except Exception:
+        err = 0.05  # SHASH BFGS divergence — qgam's documented default
+    return float(err * np.sqrt(2.0 * np.pi * var_hat) / (2.0 * np.log(2.0)))
+
+
 def _calibrate_quantile_intercept(
     fitted: Any, x_2d: np.ndarray, y: np.ndarray, tau: float
 ) -> float:
@@ -285,9 +325,11 @@ def fit_quantile(
         calibration, ported from mgcv_rust). Cheap post-fit step.
       preset: convenience bundles ported from mgcv_rust's OOS quantile paths:
 
-        - ``"fast_oos"``: heuristic σ (native, NO CV) + coverage calibration.
-          The speed/quality balance — fits in one ELF pass; matches mgcv_rust
-          OOS pinball at a fraction of the CV cost.
+        - ``"fast_oos"``: qgam-faithful SHASH err-param σ (NO CV) + coverage
+          calibration. The speed/quality balance — one ELF pass; matches
+          mgcv_rust OOS pinball into the extreme tail (τ≳0.95) at a fraction
+          of the CV cost. Falls back to the native σ heuristic if scipy is
+          absent.
         - ``"quality_oos"``: CV-tuned σ + coverage calibration.
 
     Returns:
@@ -303,17 +345,31 @@ def fit_quantile(
         raise ValueError(f"tau must be in (0, 1); got tau={tau}")
 
     # Preset resolution mirrors mgcv_rust._quantile.fit_quantile.
+    use_shash = False
     if preset is not None:
         if preset == "fast_oos":
             coverage_calibrate = True
-            if sigma is None:
-                sigma = 0.0  # native heuristic σ — skips the CV path below
+            use_shash = sigma is None  # SHASH σ unless the caller pinned σ
         elif preset == "quality_oos":
             coverage_calibrate = True  # σ stays CV-tuned (sigma is None)
         else:
             raise ValueError(
                 f"unknown quantile preset {preset!r}; expected 'fast_oos' or 'quality_oos'"
             )
+
+    # Coerce once — needed for the SHASH pilot and/or coverage calibration.
+    x_2d_full, _ = to_2d_with_columns(X, None)
+    y_full = to_1d_array(y, name="y")
+    x_2d_contig = np.ascontiguousarray(x_2d_full, dtype=np.float64)
+    y_contig = np.ascontiguousarray(y_full, dtype=np.float64)
+
+    # fast_oos σ: qgam-faithful SHASH err-param (closes the extreme-tail gap
+    # the bare Rust σ heuristic leaves at τ≳0.95). co=0.0 → defer to the Rust
+    # heuristic (degenerate pilot or scipy absent).
+    co_val: Optional[float] = None
+    if use_shash:
+        co_val = _shash_co(x_2d_contig, y_contig, float(tau), int(k), design)
+        sigma = co_val if co_val > 0.0 else 0.0  # σ = co; 0.0 = native heuristic
 
     info: Optional[dict[str, Any]] = None
     if sigma is None:
@@ -342,18 +398,12 @@ def fit_quantile(
     # intercept shift is applied via the core's generic shift_intercept).
     coverage_shift: Optional[float] = None
     if coverage_calibrate:
-        x_2d_full, _ = to_2d_with_columns(X, None)
-        y_full = to_1d_array(y, name="y")
-        coverage_shift = _calibrate_quantile_intercept(
-            g._fitted,
-            np.ascontiguousarray(x_2d_full, dtype=np.float64),
-            np.ascontiguousarray(y_full, dtype=np.float64),
-            tau,
-        )
+        coverage_shift = _calibrate_quantile_intercept(g._fitted, x_2d_contig, y_contig, tau)
 
     # v0.x parity: expose σ̂ + the calibration trace on the fitted Gam.
     g.sigma_ = float(sigma)  # type: ignore[attr-defined]
     g.tau_ = float(tau)  # type: ignore[attr-defined]
     g.tune_info_ = info  # type: ignore[attr-defined]
     g.coverage_shift_ = coverage_shift  # type: ignore[attr-defined]
+    g.co_ = co_val  # type: ignore[attr-defined]  # qgam ELF scale (=σ̂); None if not fast_oos
     return g

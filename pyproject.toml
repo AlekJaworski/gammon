@@ -20,6 +20,10 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.20.0",
+    # SHASH err-param σ for the quantile fast_oos tail path (gamrs._shash).
+    # Lazy-imported with a graceful fallback, so it is not load-bearing for
+    # non-quantile use — but shipped by default so fast_oos is tail-accurate.
+    "scipy>=1.7",
 ]
 
 [tool.maturin]
