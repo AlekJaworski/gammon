@@ -24,17 +24,36 @@ where
     P: Profile<L>,
     S: LinearSolver,
 {
-    /// Coupled `(value, grad, hess)` — replaces v0.1's
-    /// `hess_via_fd_on_grad` (2d full PIRLS solves per outer Newton iter).
+    /// Coupled `(value, grad, hess)` — three-way dispatch chosen at the
+    /// per-family level to match mgcv_rust's PIRLS-economy pattern.
     ///
     /// Recipe (per v0.x `src/reml/tweedie_joint.rs::
-    /// tweedie_theta_grad_hess_analytic`): ONE PIRLS solve at θ_center
-    /// → value + gradient. Hessian via partial-freeze central FD on the
-    /// analytic gradient — log-λ row re-converges PIRLS (β-chain matters
-    /// for λ); shape rows freeze β̂ (envelope theorem). For families
-    /// without `analytic_shape_score_gradient`, falls back to the v0.1
-    /// full FD-on-grad path. Type-level dispatch via the trait method's
-    /// `Some(...)` / `None` — no string config.
+    /// tweedie_theta_grad_hess_analytic` and mgcv_rust's NegBin path at
+    /// `src/smooth.rs:1866-1869` / `3562-3639`): ONE PIRLS solve at
+    /// θ_center → value + gradient. Hessian dispatch then matches the
+    /// cheapest correct FD pattern given what the family supplies:
+    ///
+    /// 1. **Closed-form shape-grad** (`Loss::analytic_shape_score_gradient
+    ///    = Some`): Tweedie. Hessian via partial-freeze FD on the
+    ///    analytic gradient — log-λ row re-converges PIRLS (2·M solves);
+    ///    shape rows freeze β̂ (0 solves). Total: 1 + 2·M PIRLS.
+    /// 2. **Level-1 IFT shape-grad** (`level1_shape_derivatives = Some`):
+    ///    NegBin, scat/TDist, Ocat. The shape gradient is analytic via
+    ///    the IFT path (`analytic_shape_grad_via_ift` at gradient.rs:278),
+    ///    so FD on `compute_value_grad` is FD-on-analytic — no chained-FD
+    ///    noise concern that v0.1's `hess_via_fd_on_value` was guarding
+    ///    against (it predates the IFT analytic shape gradient, added in
+    ///    commit 85946a1). Total: 1 + 2·d PIRLS solves (vs `on_value`'s
+    ///    `1 + 2·d²`). For NegBin d=2 (1-D smooth + 1 shape): 5 vs 9
+    ///    PIRLS. For d=3 (2-D smooth + 1 shape): 7 vs 19 — matches the
+    ///    "M-dim Newton + cheap shape-side" PIRLS economy mgcv_rust gets
+    ///    in `src/smooth.rs:2383` (analytic ρ-Hessian via
+    ///    `reml_hessian_mgcv_exact_ift`) plus `3562-3639` (3-evals 1-D
+    ///    profile-θ Newton).
+    /// 3. **No analytic gradient anywhere**: fall back to direct FD on
+    ///    the REML score value. None of gamrs's shipped families hit
+    ///    this branch today — kept as a safety net for hypothetical
+    ///    Loss impls without `level1_shape_derivatives`.
     ///
     /// `Loss::analytic_shape_score_hessian` is an optional override for
     /// the shape×shape block (defaults `None`; currently no gamrs family
@@ -61,13 +80,34 @@ where
                     ctx.phi_center,
                 )
                 .is_some();
+        // The IFT analytic shape-gradient path (gradient.rs:278) fires
+        // whenever the family supplies `level1_shape_derivatives` — even
+        // without the simpler closed-form `analytic_shape_score_gradient`.
+        // Check it on a tiny probe (just the per-row Level-1 derivs at the
+        // converged η̂) so the dispatch below can route NegBin / scat / Ocat
+        // off the slow `hess_via_fd_on_value` path.
+        let has_ift_shape_grad = n_shape == 0
+            || family
+                .loss
+                .level1_shape_derivatives(
+                    self.y.view(),
+                    fit.eta.view(),
+                    self.prior_weights.as_ref().map(|w| w.view()),
+                )
+                .is_some();
 
         let mut hess = if has_analytic_shape_grad {
+            // Tweedie path: 2·M PIRLS + 0 shape solves.
             self.hess_via_fd_frozen_beta(theta, &fit, &ctx)?
+        } else if has_ift_shape_grad {
+            // NegBin / scat / Ocat path: FD on the analytic envelope+IFT
+            // gradient. 2·d PIRLS solves total (vs `on_value`'s 1 + 2·d²).
+            // Matches mgcv_rust's M-dim ρ-Newton + 1-D shape-Newton PIRLS
+            // economy — see `src/smooth.rs:1866-1869` and `:2383`.
+            self.hess_via_fd_on_grad(theta)?
         } else {
-            // v0.x recipe: direct central FD on the REML score value.
-            // Eliminates the FD-of-FD chain noise that was driving
-            // gamrs's saturated-λ over-leap on scat/negbin/ocat.
+            // Safety-net path: direct FD on REML value. No gamrs family
+            // hits this today (NB/scat/Ocat all supply level-1 derivs).
             self.hess_via_fd_on_value(theta)?
         };
 
@@ -221,10 +261,13 @@ where
         Ok(h)
     }
 
-    /// v0.1 fallback path — central FD on the gradient with FULL PIRLS
-    /// re-converge at each ±h probe. Retained because Tweedie's mixed
-    /// shape×ρ Hessian rows use the analytic-grad-frozen-β route instead.
-    #[allow(dead_code)]
+    /// Central FD on the gradient with FULL PIRLS re-converge at each
+    /// ±h probe. Active for families whose `compute_value_grad` returns
+    /// an analytic gradient end-to-end (NegBin / scat / Ocat via the IFT
+    /// path at `gradient.rs:278`). Cost: `2·d` PIRLS solves per outer
+    /// Newton iter (vs `hess_via_fd_on_value`'s `1 + 2·d²`). Tweedie
+    /// uses the cheaper `hess_via_fd_frozen_beta` instead (closed-form
+    /// shape-grad bypasses the shape-row PIRLS solves entirely).
     fn hess_via_fd_on_grad(&self, theta: &Array1<f64>) -> Result<Array2<f64>> {
         let d = theta.len();
         let mut h = Array2::<f64>::zeros((d, d));
