@@ -592,11 +592,14 @@ where
         // `tr(A⁻¹ S_i A⁻¹ S_j)` products. Re-uses the inversion already
         // materialised by `compute_value_grad_from_fit` (stored in
         // `hin.a_inv`) so the analytic Hessian's linear-algebra cost is one
-        // O(p³) inversion total, not two.
-        let a_inv = if hin.a_inv.nrows() == inner.p {
-            hin.a_inv.clone()
+        // O(p³) inversion total, not two. Borrows when the cached version
+        // is usable to avoid an O(p²) clone per outer iter.
+        let a_inv_owned: Array2<f64>;
+        let a_inv: &Array2<f64> = if hin.a_inv.nrows() == inner.p {
+            &hin.a_inv
         } else {
-            inner.a_inv()
+            a_inv_owned = inner.a_inv();
+            &a_inv_owned
         };
 
         // Per-term: A⁻¹ S_j β  (the dβ/dρ_j direction without the −λ_j) and
@@ -644,7 +647,7 @@ where
                     //              = row_k(X·ainv_s[j]·A⁻¹) · row_k(X)
                     let mut lev_mj: Vec<Array1<f64>> = Vec::with_capacity(m);
                     for j in 0..m {
-                        let xmj = x.dot(&ainv_s[j]).dot(&a_inv); // (n×p)
+                        let xmj = x.dot(&ainv_s[j]).dot(a_inv); // (n×p)
                         let mut diag = Array1::<f64>::zeros(n);
                         for k in 0..n {
                             let mut s = 0.0;
