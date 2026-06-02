@@ -64,14 +64,14 @@ SCENARIOS = [
 ]
 
 
-def time_fit(engine_module, x, y, family: str, k: int = 20):
+def time_fit(engine_module, x, y, family: str, k: int = 20, **kwargs):
     df = pd.DataFrame({"x": x, "y": y})
     best = float("inf")
     last_gam = None
     for _ in range(RUNS):
         t0 = time.perf_counter()
         gam = engine_module.Gam(
-            predictors=["x"], target="y", family=family, k=k
+            predictors=["x"], target="y", family=family, k=k, **kwargs
         )
         gam.fit(df, df["y"])
         dt = (time.perf_counter() - t0) * 1000.0
@@ -88,30 +88,43 @@ def main():
 
     print(f"Large-n bench: best-of-{RUNS}, k=20, single smooth.\n")
     print(
-        f"{'family':>10s}  {'n':>8s}  {'gamrs ms':>9s}  {'mr ms':>9s}  "
-        f"{'speedup':>8s}  {'outer':>5s}  {'pirls_iters':>11s}"
+        f"{'family':>9s}  {'n':>8s}  "
+        f"{'gamrs':>8s}  "
+        f"{'mr REML':>8s}  {'mr fREML':>8s}  "
+        f"{'mr REML+disc':>13s}  {'mr fREML+disc':>14s}  "
+        f"{'best mr':>8s}  {'speedup':>8s}"
     )
-    print("-" * 80)
+    print("-" * 110)
     for family, synth in SCENARIOS:
         for n in N_VALUES:
             x, y, fam = synth(n)
+            # gamrs
             try:
-                g_ms, g_gam = time_fit(gamrs, x, y, fam)
-                g_stats = g_gam.fit_stats_
+                g_ms, _ = time_fit(gamrs, x, y, fam)
             except Exception as e:
                 g_ms = float("nan")
-                g_stats = {"outer_iterations": 0, "inner_pirls_iterations_total": 0}
                 print(f"  gamrs failed: {e}")
-            try:
-                mr_ms, _ = time_fit(mr, x, y, fam)
-            except Exception as e:
-                mr_ms = float("nan")
-                print(f"  mgcv_rust failed: {e}")
-            speedup = (mr_ms / g_ms) if (g_ms == g_ms and mr_ms == mr_ms and g_ms > 0) else float("nan")
+                continue
+            # mgcv_rust variants
+            results = {}
+            for label, kw in [
+                ("REML", {"method": "REML"}),
+                ("fREML", {"method": "fREML"}),
+                ("REML+disc", {"method": "REML", "discrete": True}),
+                ("fREML+disc", {"method": "fREML", "discrete": True}),
+            ]:
+                try:
+                    results[label], _ = time_fit(mr, x, y, fam, **kw)
+                except Exception:
+                    results[label] = float("nan")
+            best_mr = min(v for v in results.values() if v == v)
+            speedup = best_mr / g_ms
             print(
-                f"{family:>10s}  {n:>8d}  {g_ms:>9.2f}  {mr_ms:>9.2f}  "
-                f"{speedup:>7.2f}×  {g_stats['outer_iterations']:>5d}  "
-                f"{g_stats['inner_pirls_iterations_total']:>11d}"
+                f"{family:>9s}  {n:>8d}  "
+                f"{g_ms:>8.1f}  "
+                f"{results['REML']:>8.1f}  {results['fREML']:>8.1f}  "
+                f"{results['REML+disc']:>13.1f}  {results['fREML+disc']:>14.1f}  "
+                f"{best_mr:>8.1f}  {speedup:>7.2f}×"
             )
         print()
 
