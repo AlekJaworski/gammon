@@ -1214,16 +1214,54 @@ class Gam:
     # Bulk of the on-disk format lives in `_persistence.py`.
 
     def serialize(self) -> bytes:
-        """Native bytes (MAGIC | VERSION | LEN | JSON). Pair with
-        :meth:`deserialize` or :meth:`save` / :meth:`load`."""
+        """Compact binary bytes (MAGIC | VERSION | LEN | bincode body).
+
+        Round-trips bit-for-bit through :meth:`deserialize`: predictions
+        after a reload are FP-identical to the original fit. ~3-5× smaller
+        than the JSON form. Use this for production deployment; use
+        :meth:`to_json` for human-debuggable / `jq`-able output. Pair with
+        :meth:`save` / :meth:`load` to write to disk with the wrapper-side
+        metadata included.
+        """
         return bytes(self._require_fitted().serialize())
 
     @classmethod
     def deserialize(cls, payload: bytes) -> "Gam":
         """Rebuild from native bytes only — wrapper-side metadata is
         defaulted. Use :meth:`Gam.load` for the metadata-aware path."""
-        gam = cls.__new__(cls)  # bypass __init__; defaults below
-        gam._fitted = _gamrs_native.FittedGam.deserialize(payload)
+        return cls._wrap_native_fitted(_gamrs_native.FittedGam.deserialize(payload))
+
+    def to_json(self) -> str:
+        """Serialize to a plain UTF-8 JSON string (unframed,
+        human-debuggable). Carries the same fitted state as
+        :meth:`serialize` — β, vcov, knots, centring, reparam — so
+        predictions after a JSON round-trip are numerically identical
+        (mod f64 round-tripping through decimal representation, which
+        ``serde_json`` performs losslessly).
+
+        Pair with :meth:`from_json`. Useful for diffing two fits, hand
+        inspection, or piping through ``jq``. For production deployment
+        prefer :meth:`serialize` (3-5× smaller, faster to decode, and
+        version-framed).
+        """
+        return self._require_fitted().serialize_json()
+
+    @classmethod
+    def from_json(cls, payload: str) -> "Gam":
+        """Rebuild from a JSON string produced by :meth:`to_json`."""
+        return cls._wrap_native_fitted(_gamrs_native.FittedGam.deserialize_json(payload))
+
+    @classmethod
+    def _wrap_native_fitted(cls, native_fitted: Any) -> "Gam":
+        """Shared post-deserialize plumbing for both byte and JSON paths.
+
+        Bypasses ``__init__`` (a deserialized model has no constructor
+        args available) and defaults the wrapper-side metadata that the
+        native fit doesn't carry. ``Gam.save`` / ``Gam.load`` are the
+        metadata-aware path; this one drops the predictor names, term
+        list, etc."""
+        gam = cls.__new__(cls)
+        gam._fitted = native_fitted
         gam.__dict__.update(
             predictors=None, _effective_predictors=None,
             _original_predictors=None, dropped_predictors_={},

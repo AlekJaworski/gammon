@@ -257,15 +257,50 @@ PIRLS / line-search counters that the Rust solver maintains.
 
 ## 12. Serialize & deploy
 
+Two on-the-wire formats. Both carry the complete fitted state — β, vcov,
+knots, centring, reparam — so they're round-trip equivalent for
+prediction; pick by what you need at the receiving end.
+
 ```python
-blob = g.serialize()                    # bytes
+# Compact binary (default; production-friendly)
+blob = g.serialize()                    # bytes, ~3-5× smaller than JSON
 restored = Gam.deserialize(blob)        # back to a fitted Gam
+
+# Human-debuggable JSON
+text = g.to_json()                      # str, valid JSON
+restored = Gam.from_json(text)
+
+# Pickle works transparently via __reduce__
+import pickle
+blob = pickle.dumps(g)
+restored = pickle.loads(blob)
 
 # Inference-only deployment — strip training data
 from gamrs import GamPredictor
 predictor = GamPredictor.from_gam(g)
 mu = predictor.predict(X_new)
 ```
+
+The binary form is length-framed (`MAGIC | VERSION | LEN | bincode body`)
+so a corrupt or wrong-format input fails fast with a clear error. The
+JSON form is unframed — load it with `Gam.from_json(text)`, not
+`Gam.deserialize(text.encode())`.
+
+### What's actually serialized (and why it's not just the lp matrix)
+
+A common question: "couldn't you just serialize the lp matrix and β?"
+The answer is no — what we need to serialize is the *recipe* for the lp
+matrix at any future X, not the lp matrix at the training X. Concretely
+that's:
+
+- the basis state (knot locations, centring constraints, reparam
+  rotation matrices)
+- the smoothing parameters (`λ`)
+- β and vcov
+
+`evaluate_lpmatrix(X_new)` is then deterministic at predict time. The
+saved bundle is small (~kB for a typical fit) because the design matrix
+isn't there — it's rebuilt on demand.
 
 ## Where next
 

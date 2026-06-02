@@ -836,6 +836,25 @@ impl PyFittedGam {
         Ok(Self { inner })
     }
 
+    /// Serialize the fit to a plain UTF-8 JSON string (unframed,
+    /// human-debuggable). Carries the same fitted state as
+    /// :meth:`serialize` — β, vcov, knots, centring, reparam — so
+    /// predictions after a JSON round-trip are numerically identical
+    /// (mod f64 round-tripping through decimal representation, which
+    /// `serde_json` performs losslessly).
+    fn serialize_json(&self) -> PyResult<String> {
+        self.inner.serialize_json().map_err(map_err)
+    }
+
+    /// Classmethod: rebuild a :class:`FittedGam` from a JSON string
+    /// produced by :meth:`serialize_json`. Raises ``ValueError`` on
+    /// unparseable input.
+    #[classmethod]
+    fn deserialize_json(_cls: &Bound<'_, PyType>, s: &str) -> PyResult<Self> {
+        let inner = FittedGam::deserialize_json(s).map_err(map_err)?;
+        Ok(Self { inner })
+    }
+
     /// Python pickle protocol — `pickle.dumps(fit)` / `pickle.loads(...)`
     /// work transparently by routing through :meth:`serialize` /
     /// :meth:`deserialize`. Returns ``(_reconstruct, (bytes,))`` so the

@@ -255,6 +255,37 @@ def test_term_string_col_unknown_raises(rng):
         gamrs.Gam(terms=[gamrs.CrTerm("does_not_exist")]).fit(df[["a"]], df.y)
 
 
+def test_json_roundtrip_preserves_predictions(rng):
+    """Gam.to_json / Gam.from_json round-trip yields machine-epsilon
+    identical predictions to the original fit, just like serialize/
+    deserialize but in a human-debuggable plain-text form."""
+    pd = pytest.importorskip("pandas")
+    import json as stdlib_json
+    n = 200
+    df = pd.DataFrame({
+        "x0": rng.uniform(0, 10, n),
+        "x1": rng.uniform(-5, 5, n),
+    })
+    df["y"] = np.sin(df.x0) + 0.3 * df.x1**2 + rng.normal(0, 0.3, n)
+    X = df[["x0", "x1"]]
+    g = gamrs.Gam(
+        terms=[gamrs.CrTerm("x0", k=10), gamrs.CrTerm("x1", k=12)]
+    ).fit(X, df.y)
+
+    payload = g.to_json()
+    assert isinstance(payload, str)
+    # Valid JSON
+    parsed = stdlib_json.loads(payload)
+    assert "beta" in parsed
+    assert "edf_total" in parsed
+
+    g_roundtrip = gamrs.Gam.from_json(payload)
+    mu_orig = g.predict(X)
+    mu_back = g_roundtrip.predict(X)
+    # serde_json round-trips f64 through decimal — accept machine epsilon.
+    np.testing.assert_allclose(mu_orig, mu_back, rtol=1e-12, atol=1e-14)
+
+
 def test_subset_view_predict_ci(rng):
     """``gam[["x0"]].predict_ci(..., scale="deviation")`` returns the
     Wald CI on the masked η contribution. Same numbers as partial_effect."""
