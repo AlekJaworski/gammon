@@ -326,11 +326,12 @@ where
         profile,
         _solver: PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            stats: crate::stats::FitStats::new(),
+        stats: crate::stats::FitStats::new(),
     };
 
-    let outer_solver =
-        NewtonWithHalving::new(crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts());
+    let outer_solver = NewtonWithHalving::new(
+        crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts(),
+    );
     let outer = outer_solver.minimize(&score, theta0)?;
 
     // Final fit: reuse the score's inner_builder so the final PIRLS sees

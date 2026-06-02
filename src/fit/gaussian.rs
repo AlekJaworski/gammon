@@ -49,7 +49,8 @@ pub(crate) fn fit_gaussian_from_prep<S: LinearSolver>(
             prep.mp,
             prep.log_pseudo_det_s_list.clone(),
         );
-    let outer_solver = NewtonWithHalving::new(crate::outer::resolve_tuning(&score.loss).to_newton_opts());
+    let outer_solver =
+        NewtonWithHalving::new(crate::outer::resolve_tuning(&score.loss).to_newton_opts());
     let outer = outer_solver.minimize(&score, Array1::zeros(n_terms))?;
 
     let rho_hat = outer.theta.clone();

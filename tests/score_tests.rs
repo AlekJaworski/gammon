@@ -143,7 +143,7 @@ fn tweedie_analytic_shape_grad_matches_fd() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            stats: gamrs::stats::FitStats::new(),
+        stats: gamrs::stats::FitStats::new(),
     };
 
     let probes: &[[f64; 3]] = &[[0.5, 0.0, 0.0], [2.0, 0.5, 0.3], [1.0, -0.5, -0.2]];
@@ -224,7 +224,7 @@ fn tweedie_analytic_hess_matches_fd_on_grad() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            stats: gamrs::stats::FitStats::new(),
+        stats: gamrs::stats::FitStats::new(),
     };
 
     // 3 probes near (but not at) the optimum; far from the optimum
@@ -333,7 +333,7 @@ fn debug_tweedie_real_data_grad_walk() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            stats: gamrs::stats::FitStats::new(),
+        stats: gamrs::stats::FitStats::new(),
     };
 
     let probes: &[[f64; 3]] = &[
@@ -453,10 +453,7 @@ fn negbin_multismooth_analytic_grad_matches_fd() {
     // Build the same design path the 2-D parity test uses — proper
     // centering + per-term penalty embedding — so PIRLS doesn't blow up
     // on a hand-rolled rank-deficient basis.
-    let terms = vec![
-        TermSpec::Cr { col: 0, k: 8 },
-        TermSpec::Cr { col: 1, k: 8 },
-    ];
+    let terms = vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 8 }];
     let prep = Additive { terms }.prepare(x.view()).unwrap();
 
     let family_base = negbin_log(3.0);
@@ -475,18 +472,14 @@ fn negbin_multismooth_analytic_grad_matches_fd() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            stats: gamrs::stats::FitStats::new(),
+        stats: gamrs::stats::FitStats::new(),
     };
 
     // Probes: (ρ_0, ρ_1, log θ). Centred near the 2-D NB parity fit's
     // optimum (ρ̂ ≈ [3.4, 11.5], log θ̂ ≈ 1.1) so PIRLS converges cleanly
     // and FD noise stays low. Keep ρ moderately small to keep A_newton
     // well-conditioned across the central-FD step.
-    let probes: &[[f64; 3]] = &[
-        [1.0, 1.0, 1.0],
-        [2.0, 0.5, 0.8],
-        [0.5, 2.0, 1.3],
-    ];
+    let probes: &[[f64; 3]] = &[[1.0, 1.0, 1.0], [2.0, 0.5, 0.8], [0.5, 2.0, 1.3]];
 
     // FD noise: each FD probe re-runs PIRLS to convergence at a perturbed
     // θ. PIRLS's β_max_change tol (1e-8 for NB) bounds residual β-noise;
@@ -579,10 +572,7 @@ fn nb_hess_microbench() {
     }
     let x = Array2::from_shape_vec((n, 2), x_flat).unwrap();
     let y = Array1::from_vec(ys);
-    let terms = vec![
-        TermSpec::Cr { col: 0, k: 8 },
-        TermSpec::Cr { col: 1, k: 8 },
-    ];
+    let terms = vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 8 }];
     let prep = Additive { terms }.prepare(x.view()).unwrap();
 
     let family_base = negbin_log(3.0);
@@ -601,7 +591,7 @@ fn nb_hess_microbench() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            stats: gamrs::stats::FitStats::new(),
+        stats: gamrs::stats::FitStats::new(),
     };
     let theta = Array1::from_vec(vec![1.0, 1.0, 1.0]);
     // Warmup.
@@ -629,8 +619,7 @@ fn nb_hess_microbench() {
         "[microbench] NB 2-D value_and_grad only: {:.2} ms / call over {runs} runs",
         elapsed_g.as_secs_f64() * 1000.0 / runs as f64,
     );
-    let hess_cost_ms =
-        (elapsed.as_secs_f64() - elapsed_g.as_secs_f64()) * 1000.0 / runs as f64;
+    let hess_cost_ms = (elapsed.as_secs_f64() - elapsed_g.as_secs_f64()) * 1000.0 / runs as f64;
     eprintln!(
         "[microbench] NB 2-D Hessian marginal cost: {:.2} ms / call",
         hess_cost_ms.max(0.0),
@@ -674,7 +663,7 @@ fn nb_hess_microbench() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            stats: gamrs::stats::FitStats::new(),
+        stats: gamrs::stats::FitStats::new(),
     };
     let theta1 = Array1::from_vec(vec![1.0, 1.0]);
     for _ in 0..5 {
@@ -728,10 +717,7 @@ fn negbin_multismooth_analytic_hess_matches_fd_on_grad() {
     }
     let x = Array2::from_shape_vec((n, 2), x_flat).unwrap();
     let y = Array1::from_vec(ys);
-    let terms = vec![
-        TermSpec::Cr { col: 0, k: 8 },
-        TermSpec::Cr { col: 1, k: 8 },
-    ];
+    let terms = vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 8 }];
     let prep = Additive { terms }.prepare(x.view()).unwrap();
 
     let family_base = negbin_log(3.0);
@@ -750,7 +736,7 @@ fn negbin_multismooth_analytic_hess_matches_fd_on_grad() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            stats: gamrs::stats::FitStats::new(),
+        stats: gamrs::stats::FitStats::new(),
     };
 
     // 3 probes in the same area the gradient test uses.

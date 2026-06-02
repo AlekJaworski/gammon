@@ -59,12 +59,24 @@ fn additive_2d_nb_n600_k8_cr() {
     let y = Array1::from_vec(fx.inputs.y_train.clone());
 
     let terms = vec![
-        TermSpec::Cr { col: 0, k: fx.inputs.k[0] },
-        TermSpec::Cr { col: 1, k: fx.inputs.k[1] },
+        TermSpec::Cr {
+            col: 0,
+            k: fx.inputs.k[0],
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: fx.inputs.k[1],
+        },
     ];
     // init θ = 5.0 (mirrors parity_negbin.rs); θ is profiled jointly.
-    let fit = fit_with_design(negbin_log(5.0), Additive { terms }, x.view(), y.view(), None)
-        .expect("Additive NegBin fit failed");
+    let fit = fit_with_design(
+        negbin_log(5.0),
+        Additive { terms },
+        x.view(),
+        y.view(),
+        None,
+    )
+    .expect("Additive NegBin fit failed");
     assert!(fit.converged, "outer Newton did not converge");
     assert_eq!(fit.rho.len(), 2, "one smoothing param per term");
     assert_eq!(fit.edf_per_term.len(), 2);

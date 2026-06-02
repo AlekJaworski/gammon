@@ -335,8 +335,7 @@ where
                     b1[[r, k]] = -lam_k * ainv_sk_beta[r];
                 }
             }
-            let shape_slice: Vec<f64> =
-                theta.iter().skip(n_terms).copied().collect();
+            let shape_slice: Vec<f64> = theta.iter().skip(n_terms).copied().collect();
             *self.accepted_state.borrow_mut() = Some(super::score::AcceptedState {
                 beta: fit.beta.clone(),
                 b1,

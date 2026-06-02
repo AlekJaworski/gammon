@@ -21,7 +21,10 @@ use gamrs::fit_with_design;
 struct Lcg(u64);
 impl Lcg {
     fn next_f64(&mut self) -> f64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
     }
 }
@@ -57,7 +60,9 @@ fn run_one(n: usize) -> (f64, usize) {
     // Warm-up.
     let _ = fit_with_design(
         gaussian_identity(),
-        Additive { terms: terms.clone() },
+        Additive {
+            terms: terms.clone(),
+        },
         x.view(),
         y.view(),
         None,
@@ -70,7 +75,9 @@ fn run_one(n: usize) -> (f64, usize) {
     for _ in 0..runs {
         let fit = fit_with_design(
             gaussian_identity(),
-            Additive { terms: terms.clone() },
+            Additive {
+                terms: terms.clone(),
+            },
             x.view(),
             y.view(),
             None,

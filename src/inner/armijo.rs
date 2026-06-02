@@ -302,10 +302,10 @@ impl<S: LinearSolver> ArmijoElfInner<S> {
         let mut dw_deta = Array1::<f64>::zeros(n);
         let hfd = 1e-5_f64;
         for i in 0..n {
-            let wp =
-                0.5 * crate::family::elf_parts(self.y[i], eta[i] + hfd, tau, sigma, lambda_elf).d2l_dmu;
-            let wm =
-                0.5 * crate::family::elf_parts(self.y[i], eta[i] - hfd, tau, sigma, lambda_elf).d2l_dmu;
+            let wp = 0.5
+                * crate::family::elf_parts(self.y[i], eta[i] + hfd, tau, sigma, lambda_elf).d2l_dmu;
+            let wm = 0.5
+                * crate::family::elf_parts(self.y[i], eta[i] - hfd, tau, sigma, lambda_elf).d2l_dmu;
             dw_deta[i] = (wp - wm) / (2.0 * hfd);
         }
 

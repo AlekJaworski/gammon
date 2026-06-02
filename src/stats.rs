@@ -47,11 +47,13 @@ impl FitStats {
     }
 
     pub(crate) fn bump_line_search_trial(&self) {
-        self.line_search_trials.set(self.line_search_trials.get() + 1);
+        self.line_search_trials
+            .set(self.line_search_trials.get() + 1);
     }
 
     pub(crate) fn bump_no_refresh_attempt(&self) {
-        self.no_refresh_attempts.set(self.no_refresh_attempts.get() + 1);
+        self.no_refresh_attempts
+            .set(self.no_refresh_attempts.get() + 1);
     }
 
     pub(crate) fn bump_no_refresh_hit(&self) {

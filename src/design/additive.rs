@@ -349,9 +349,7 @@ impl DesignStrategy for Additive {
                         TermSpec::TeMulti { cols, k, bs } => {
                             (cols.clone(), k.clone(), bs.clone(), false)
                         }
-                        TermSpec::Ti { cols, k, bs } => {
-                            (cols.clone(), k.clone(), bs.clone(), true)
-                        }
+                        TermSpec::Ti { cols, k, bs } => (cols.clone(), k.clone(), bs.clone(), true),
                         _ => unreachable!(),
                     };
                     let fit = if interaction {

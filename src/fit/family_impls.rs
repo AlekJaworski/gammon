@@ -19,10 +19,9 @@ use crate::design::PreparedDesign;
 use crate::error::{GamrsError, Result};
 use crate::family::{
     bernoulli_logit, gamma_inverse, gamma_log, inverse_gaussian_log, negbin_log, ocat_identity,
-    poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity,
-    tweedie_log, tweedie_log_fixed_p, Bernoulli, BinomialVariance, ConstantVariance, ElfLoss,
-    ElfVariance, Family,
-    Gamma, GammaVariance, Gaussian, IdentityLink, InverseGaussian, InverseGaussianVariance,
+    poisson_log, quasibinomial_logit, quasipoisson_log, tdist_identity, tweedie_log,
+    tweedie_log_fixed_p, Bernoulli, BinomialVariance, ConstantVariance, ElfLoss, ElfVariance,
+    Family, Gamma, GammaVariance, Gaussian, IdentityLink, InverseGaussian, InverseGaussianVariance,
     InverseLink, LogLink, LogitLink, NegBin, NegBinVariance, OcatLoss, OcatVariance, Poisson,
     PoissonVariance, QuasiBinomial, QuasiPoisson, TDist, TVariance, Tweedie, TweedieVariance,
 };
@@ -35,10 +34,10 @@ use crate::score::{
 use crate::traits::{CoordsKind, InnerSolver, Loss, OuterSolver};
 
 use super::canonical::FamilyFitWithSolver;
-use super::driver::{LambdaInit, SmartInit};
 use super::driver::{fit_pirls_envelope, fit_shape_aware, make_pearson_scale_fn};
-use super::profile_shape::fit_shape_aware_profile;
+use super::driver::{LambdaInit, SmartInit};
 use super::gaussian::fit_gaussian_from_prep;
+use super::profile_shape::fit_shape_aware_profile;
 use super::quantile::fit_quantile_from_prep;
 use super::{
     check_lengths, check_y_in_unit, check_y_nonneg, check_y_positive, compute_edf, compute_vcov,
@@ -438,8 +437,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, TweedieVariance, S> for Tweed
             move |theta| {
                 let mut f = make_family();
                 let n_shape = f.n_shape_params();
-                let shape_slice: Vec<f64> =
-                    (0..n_shape).map(|i| theta[n_terms + i]).collect();
+                let shape_slice: Vec<f64> = (0..n_shape).map(|i| theta[n_terms + i]).collect();
                 f.set_shape_params(&shape_slice);
                 f
             },
@@ -530,8 +528,9 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         for (i, &t) in theta0_shape.iter().enumerate() {
             theta0[n_terms + i] = t;
         }
-        let outer_solver =
-            NewtonWithHalving::new(crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts());
+        let outer_solver = NewtonWithHalving::new(
+            crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts(),
+        );
         let outer = outer_solver.minimize(&score, theta0)?;
 
         let rho_hat: Array1<f64> = outer.theta.slice(ndarray::s![..n_terms]).to_owned();

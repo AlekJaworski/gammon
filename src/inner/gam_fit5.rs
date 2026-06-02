@@ -137,11 +137,7 @@ impl<S: LinearSolver> OcatInner<S> {
                 let xtwz = xtw.dot(&working_response);
                 let n_pen = self.s_list.len() as f64;
                 let ridge_scale = 1.0e-5 * (1.0 + n_pen.sqrt());
-                let max_diag = xtwx
-                    .diag()
-                    .iter()
-                    .map(|x| x.abs())
-                    .fold(1.0_f64, f64::max);
+                let max_diag = xtwx.diag().iter().map(|x| x.abs()).fold(1.0_f64, f64::max);
                 let ridge = ridge_scale * max_diag;
                 let mut a = xtwx;
                 add_penalty(&mut a, &s_total, lambda);

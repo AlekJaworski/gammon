@@ -274,8 +274,7 @@ where
             let lambda_j = rho_slice[j].exp();
             bsb_total += lambda_j * bsb_j;
             let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
-            log_det_lambda_s +=
-                adj_rank_j * rho_slice[j] + self.log_pseudo_det_s_list[j];
+            log_det_lambda_s += adj_rank_j * rho_slice[j] + self.log_pseudo_det_s_list[j];
         }
         let dp = fit.deviance + bsb_total;
         // tr(H⁻¹X'WX) for the Profile signature — unused by both
@@ -308,7 +307,8 @@ where
                 .prior_weights
                 .clone()
                 .unwrap_or_else(|| ndarray::Array1::ones(fit.n));
-            let s_total = crate::design::combined_s(&self.s_list, &ndarray::Array1::from(rho_slice.to_vec()));
+            let s_total =
+                crate::design::combined_s(&self.s_list, &ndarray::Array1::from(rho_slice.to_vec()));
             crate::inner::pirls::lazy_newton_log_det_h(
                 family,
                 &self.y,
@@ -396,13 +396,14 @@ where
 
         let dp = deviance_new + bsb_total;
         let tr_hinv_xtwx = fit.p as f64;
-        let phi = match self
-            .profile
-            .dispersion(&family.loss, fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
-        {
-            Some(p) => p,
-            None => return 1e12,
-        };
+        let phi =
+            match self
+                .profile
+                .dispersion(&family.loss, fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
+            {
+                Some(p) => p,
+                None => return 1e12,
+            };
 
         // log|H| — recompute via Newton-W on FROZEN μ̂ with the NEW family
         // (V(μ; θ) shifts → W shifts). For canonical-link families this
@@ -413,10 +414,7 @@ where
                 .prior_weights
                 .clone()
                 .unwrap_or_else(|| Array1::ones(fit.n));
-            let s_total = crate::design::combined_s(
-                &self.s_list,
-                &Array1::from(rho_slice.clone()),
-            );
+            let s_total = crate::design::combined_s(&self.s_list, &Array1::from(rho_slice.clone()));
             crate::inner::pirls::lazy_newton_log_det_h(
                 &family,
                 &self.y,

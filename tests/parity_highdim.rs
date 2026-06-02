@@ -85,9 +85,21 @@ fn run_highdim_additive(name: &str, mu_bar: f64) {
     .expect("Additive Gaussian fit failed");
 
     assert!(fit.converged, "[{name}] outer Newton did not converge");
-    assert_eq!(fit.rho.len(), d, "[{name}] rho should have one entry per term");
-    assert_eq!(fit.lambda.len(), d, "[{name}] lambda should have one entry per term");
-    assert_eq!(fit.edf_per_term.len(), d, "[{name}] edf_per_term length mismatch");
+    assert_eq!(
+        fit.rho.len(),
+        d,
+        "[{name}] rho should have one entry per term"
+    );
+    assert_eq!(
+        fit.lambda.len(),
+        d,
+        "[{name}] lambda should have one entry per term"
+    );
+    assert_eq!(
+        fit.edf_per_term.len(),
+        d,
+        "[{name}] edf_per_term length mismatch"
+    );
 
     let pred = fit
         .predict(x.view())

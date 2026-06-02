@@ -46,8 +46,7 @@ fn bench_1d() {
     let mut iters_v = 0;
     for _ in 0..30 {
         let t = Instant::now();
-        let fit =
-            gamrs::fit(gamrs::family::negbin_log(5.0), x.view(), y.view(), None, k).unwrap();
+        let fit = gamrs::fit(gamrs::family::negbin_log(5.0), x.view(), y.view(), None, k).unwrap();
         times.push(t.elapsed().as_secs_f64() * 1000.0);
         iters_v = fit.n_iters;
     }
@@ -64,7 +63,12 @@ fn bench_2d() {
     let fx = load("2d_nb_log_n600_k8_cr");
     let n = fx.inputs.x_train.len();
     let d = fx.inputs.x_train[0].len();
-    let x_flat: Vec<f64> = fx.inputs.x_train.iter().flat_map(|r| r.iter().copied()).collect();
+    let x_flat: Vec<f64> = fx
+        .inputs
+        .x_train
+        .iter()
+        .flat_map(|r| r.iter().copied())
+        .collect();
     let x = Array2::from_shape_vec((n, d), x_flat).unwrap();
     let y = Array1::from_vec(fx.inputs.y_train.clone());
     let ks: Vec<usize> = fx.inputs.k.clone();
@@ -78,7 +82,9 @@ fn bench_2d() {
     for _ in 0..3 {
         let _ = fit_with_design(
             negbin_log(5.0),
-            Additive { terms: terms.clone() },
+            Additive {
+                terms: terms.clone(),
+            },
             x.view(),
             y.view(),
             None,
@@ -91,7 +97,9 @@ fn bench_2d() {
         let t = Instant::now();
         let fit = fit_with_design(
             negbin_log(5.0),
-            Additive { terms: terms.clone() },
+            Additive {
+                terms: terms.clone(),
+            },
             x.view(),
             y.view(),
             None,

@@ -63,7 +63,6 @@ pub use design::{
     DesignStrategy, Predictor, PreparedDesign, Re, RePredictor, TermSpec,
 };
 pub use error::{GamrsError, Result};
-pub use stats::{FitStats, FitStatsSnapshot};
 pub use family::{ocat_init_theta, OcatLoss, OcatVariance};
 pub use fit::{
     fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver,
@@ -71,4 +70,5 @@ pub use fit::{
 };
 pub use inner::{CholeskySolver, LinearSolver, LuSolver};
 pub use score::{FixedAtOneProfile, MgcvTwoSigmaProfile, OwnedByLossProfile, Profile};
+pub use stats::{FitStats, FitStatsSnapshot};
 pub use transform::{StableReparam, SumToZero};

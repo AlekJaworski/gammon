@@ -36,8 +36,7 @@ fn tps_2d_gaussian_smoke() {
         let x1 = ((i as f64) * 0.171).sin().abs(); // pseudo-random 0..1
         x[[i, 0]] = x0;
         x[[i, 1]] = x1;
-        let mu = (2.0 * std::f64::consts::PI * x0).sin()
-            + (2.0 * std::f64::consts::PI * x1).cos();
+        let mu = (2.0 * std::f64::consts::PI * x0).sin() + (2.0 * std::f64::consts::PI * x1).cos();
         // tiny deterministic noise
         let noise = ((i as f64 * 0.7).sin()) * 0.05;
         y[i] = mu + noise;
@@ -58,7 +57,11 @@ fn tps_2d_gaussian_smoke() {
     .expect("TPS Gaussian fit failed");
 
     // Single smoothing parameter for an isotropic smooth.
-    assert_eq!(fit.rho.len(), 1, "TPRS is isotropic — exactly 1 smoothing param");
+    assert_eq!(
+        fit.rho.len(),
+        1,
+        "TPRS is isotropic — exactly 1 smoothing param"
+    );
     assert_eq!(fit.lambda.len(), 1);
     assert_eq!(fit.edf_per_term.len(), 1);
 

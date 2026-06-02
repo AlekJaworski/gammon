@@ -412,11 +412,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
     /// (via `eta = X · beta_warm`), otherwise behaves like `fit`.
     /// Used by `EnvelopeScore::compute_value_no_refresh` to skip cold
     /// initial μ when a NoRefresh IFT propagation is available.
-    fn fit_warm(
-        &self,
-        rho: &Array1<f64>,
-        beta_warm: Option<&Array1<f64>>,
-    ) -> Result<Self::Fit> {
+    fn fit_warm(&self, rho: &Array1<f64>, beta_warm: Option<&Array1<f64>>) -> Result<Self::Fit> {
         debug_assert_eq!(rho.len(), self.s_list.len());
         let s_total = crate::design::combined_s(&self.s_list, rho);
         self.pirls_loop(s_total, rho, beta_warm)
@@ -448,11 +444,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
 
     /// Tk·KK' / IFT inputs at converged β. Lazy — see [`InnerSolver::
     /// lazy_tk_kkt_inputs`] docstring.
-    fn lazy_tk_kkt_inputs(
-        &self,
-        fit: &Self::Fit,
-        rho: &Array1<f64>,
-    ) -> Option<super::TkKKTInputs> {
+    fn lazy_tk_kkt_inputs(&self, fit: &Self::Fit, rho: &Array1<f64>) -> Option<super::TkKKTInputs> {
         if !self.family.loss.use_newton_irls() {
             return None;
         }
@@ -507,10 +499,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             self.x_design.dot(b0)
         } else {
             let mu_init: Array1<f64> = self.family.loss.initial_mu(self.y.view());
-            mu_init
-                .iter()
-                .map(|&m| self.family.link.link(m))
-                .collect()
+            mu_init.iter().map(|&m| self.family.link.link(m)).collect()
         };
         if let Some(e0) = &self.opts.eta_init {
             eta.assign(e0);

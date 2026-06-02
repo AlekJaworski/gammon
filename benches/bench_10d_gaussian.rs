@@ -50,13 +50,18 @@ fn main() {
     let y = Array1::from_vec(ys);
 
     let terms: Vec<TermSpec> = (0..d)
-        .map(|c| TermSpec::Cr { col: c, k: k_vec[c] })
+        .map(|c| TermSpec::Cr {
+            col: c,
+            k: k_vec[c],
+        })
         .collect();
 
     // Warm up.
     let _ = fit_with_design(
         gaussian_identity(),
-        Additive { terms: terms.clone() },
+        Additive {
+            terms: terms.clone(),
+        },
         x.view(),
         y.view(),
         None,
@@ -70,7 +75,9 @@ fn main() {
     for _ in 0..runs {
         let fit = fit_with_design(
             gaussian_identity(),
-            Additive { terms: terms.clone() },
+            Additive {
+                terms: terms.clone(),
+            },
             x.view(),
             y.view(),
             None,

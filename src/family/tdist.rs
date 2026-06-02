@@ -68,7 +68,8 @@ impl Loss for TDist {
         let pi = std::f64::consts::PI;
         let half_nu_p1 = (self.nu + 1.0) / 2.0;
         let half_nu = self.nu / 2.0;
-        crate::special::log_gamma(half_nu_p1) - crate::special::log_gamma(half_nu)
+        crate::special::log_gamma(half_nu_p1)
+            - crate::special::log_gamma(half_nu)
             - 0.5 * (pi * self.nu * self.sigma2).ln()
     }
 
@@ -194,14 +195,11 @@ impl Loss for TDist {
             let log_term = if q > 0.0 { (1.0 + r2 / q).ln() } else { 0.0 };
             dth[[i, 1]] = wt_i * nu_minus_2 * (log_term - nu_p1 * r2 / (nu * s));
             // ∂(∂D/∂μ)/∂θ_1 = −2r·[(ν−2)·s − (ν+1)·qs_theta1] / s².
-            dmuth[[i, 1]] =
-                wt_i * (-2.0 * r * (nu_minus_2 * s - nu_p1 * qs_theta1) / s2);
+            dmuth[[i, 1]] = wt_i * (-2.0 * r * (nu_minus_2 * s - nu_p1 * qs_theta1) / s2);
             // ∂(∂²D/∂μ²)/∂θ_1
             //   = 2·[(ν−2)·(q − r²)·s + (ν+1)·qs_theta1·(3r² − q)] / s³.
             dmu2th[[i, 1]] = wt_i
-                * (2.0
-                    * (nu_minus_2 * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q))
-                    / s3);
+                * (2.0 * (nu_minus_2 * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q)) / s3);
         }
 
         Some(crate::traits::Level1ShapeDerivs {

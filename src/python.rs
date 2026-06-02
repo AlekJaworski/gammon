@@ -160,7 +160,10 @@ impl PyFittedGam {
         d.set_item("no_refresh_attempts", s.no_refresh_attempts)?;
         d.set_item("no_refresh_hits", s.no_refresh_hits)?;
         d.set_item("inner_pirls_calls", s.inner_pirls_calls)?;
-        d.set_item("inner_pirls_iterations_total", s.inner_pirls_iterations_total)?;
+        d.set_item(
+            "inner_pirls_iterations_total",
+            s.inner_pirls_iterations_total,
+        )?;
         d.set_item("pirls_iters_per_call", s.pirls_iters_per_call())?;
         d.set_item("no_refresh_hit_rate", s.no_refresh_hit_rate())?;
         Ok(d)
@@ -231,11 +234,8 @@ impl PyFittedGam {
         let mut log_det_lambda_s = 0.0_f64;
         let rank_adj = {
             use crate::traits::Loss;
-            crate::family::OcatLoss::new(
-                Array1::zeros(n_cats.saturating_sub(2)),
-                n_cats,
-            )
-            .score_rank_adjustment()
+            crate::family::OcatLoss::new(Array1::zeros(n_cats.saturating_sub(2)), n_cats)
+                .score_rank_adjustment()
         };
         for j in 0..n_terms {
             let s_beta = prep.s_list[j].dot(&fit.beta);
@@ -244,15 +244,14 @@ impl PyFittedGam {
             let lambda_j = rho_slice[j].exp();
             bsb_total += lambda_j * bsb_j;
             let adj_rank_j = ((prep.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
-            log_det_lambda_s +=
-                adj_rank_j * rho_slice[j] + prep.log_pseudo_det_s_list[j];
+            log_det_lambda_s += adj_rank_j * rho_slice[j] + prep.log_pseudo_det_s_list[j];
         }
         let dp = fit.deviance + bsb_total;
         let log_det_h = fit.log_det_a();
         let mp = prep.mp;
         let two_pi_ln = (2.0_f64 * std::f64::consts::PI).ln();
-        let score = dp / 2.0 + 0.5 * log_det_h - 0.5 * log_det_lambda_s
-            - 0.5 * (mp as f64) * two_pi_ln;
+        let score =
+            dp / 2.0 + 0.5 * log_det_h - 0.5 * log_det_lambda_s - 0.5 * (mp as f64) * two_pi_ln;
 
         // Reuse the same envelope ρ-gradient helper the outer Newton uses,
         // so the diagnostic and the optimiser stay byte-equivalent (DRY).
@@ -374,8 +373,7 @@ impl PyFittedGam {
             )));
         }
         let rho_slice: Array1<f64> = theta_arr.slice(ndarray::s![..n_terms]).to_owned();
-        let shape_slice: Vec<f64> =
-            theta_arr.iter().skip(n_terms).copied().collect();
+        let shape_slice: Vec<f64> = theta_arr.iter().skip(n_terms).copied().collect();
 
         // Build the Tweedie family with the supplied shape params. Use any
         // valid init (p=1.5, φ=1.0); set_shape_params rewrites both.
@@ -436,9 +434,7 @@ impl PyFittedGam {
             .sum();
 
         let two_pi = 2.0 * std::f64::consts::PI;
-        let score = dp / (2.0 * phi)
-            - 0.5 * (mp as f64) * (two_pi * phi).ln()
-            + 0.5 * log_det_h
+        let score = dp / (2.0 * phi) - 0.5 * (mp as f64) * (two_pi * phi).ln() + 0.5 * log_det_h
             - 0.5 * log_det_lambda_s
             - ls_sum;
 
@@ -509,8 +505,7 @@ impl PyFittedGam {
             )));
         }
         let rho_slice: Array1<f64> = theta_arr.slice(ndarray::s![..n_terms]).to_owned();
-        let shape_slice: Vec<f64> =
-            theta_arr.iter().skip(n_terms).copied().collect();
+        let shape_slice: Vec<f64> = theta_arr.iter().skip(n_terms).copied().collect();
 
         // Build the TDist family with the supplied shape params. Use any
         // valid init (ν=5, σ²=1); set_shape_params rewrites both.
@@ -570,9 +565,7 @@ impl PyFittedGam {
             .sum();
 
         let two_pi = 2.0 * std::f64::consts::PI;
-        let score = dp / (2.0 * phi)
-            - 0.5 * (mp as f64) * (two_pi * phi).ln()
-            + 0.5 * log_det_h
+        let score = dp / (2.0 * phi) - 0.5 * (mp as f64) * (two_pi * phi).ln() + 0.5 * log_det_h
             - 0.5 * log_det_lambda_s
             - ls_sum;
 
@@ -642,8 +635,7 @@ impl PyFittedGam {
             )));
         }
         let rho_slice: Array1<f64> = theta_arr.slice(ndarray::s![..n_terms]).to_owned();
-        let shape_slice: Vec<f64> =
-            theta_arr.iter().skip(n_terms).copied().collect();
+        let shape_slice: Vec<f64> = theta_arr.iter().skip(n_terms).copied().collect();
 
         // Build the NegBin family with the supplied shape param. Use any
         // valid init (θ=2.0); set_shape_params rewrites it.
@@ -715,9 +707,7 @@ impl PyFittedGam {
             .sum();
 
         let two_pi = 2.0 * std::f64::consts::PI;
-        let score = dp / (2.0 * phi)
-            - 0.5 * (mp as f64) * (two_pi * phi).ln()
-            + 0.5 * log_det_h
+        let score = dp / (2.0 * phi) - 0.5 * (mp as f64) * (two_pi * phi).ln() + 0.5 * log_det_h
             - 0.5 * log_det_lambda_s
             - ls_sum;
 

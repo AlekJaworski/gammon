@@ -73,12 +73,24 @@ fn additive_2d_tweedie_profile_p_n600_k8_cr() {
     let fx = load_fixture("2d_tw_profile_log_n600_k8_cr");
     let (x, y) = build_xy(&fx);
     let terms = vec![
-        TermSpec::Cr { col: 0, k: fx.inputs.k[0] },
-        TermSpec::Cr { col: 1, k: fx.inputs.k[1] },
+        TermSpec::Cr {
+            col: 0,
+            k: fx.inputs.k[0],
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: fx.inputs.k[1],
+        },
     ];
     // profile-p: p estimated jointly.
-    let fit = fit_with_design(tweedie_log(1.5, 1.0), Additive { terms }, x.view(), y.view(), None)
-        .expect("Additive Tweedie (profile-p) fit failed");
+    let fit = fit_with_design(
+        tweedie_log(1.5, 1.0),
+        Additive { terms },
+        x.view(),
+        y.view(),
+        None,
+    )
+    .expect("Additive Tweedie (profile-p) fit failed");
     assert_eq!(fit.rho.len(), 2);
     let eta = fit.predict(x.view()).expect("predict failed");
     let mu: Vec<f64> = eta.iter().map(|&e| e.exp()).collect();
@@ -88,7 +100,10 @@ fn additive_2d_tweedie_profile_p_n600_k8_cr() {
         fit.rho[0], fit.rho[1], fit.edf_total,
     );
     // Bar 1.5e-2: observed ~1.2e-2.
-    assert!(rel < 1.5e-2, "additive Tweedie profile-p μ rel {rel:.3e} exceeds 1.5e-2");
+    assert!(
+        rel < 1.5e-2,
+        "additive Tweedie profile-p μ rel {rel:.3e} exceeds 1.5e-2"
+    );
 }
 
 #[test]
@@ -96,8 +111,14 @@ fn additive_2d_tweedie_fixed_p_n600_k8_cr() {
     let fx = load_fixture("2d_tw_fixed_p15_log_n600_k8_cr");
     let (x, y) = build_xy(&fx);
     let terms = vec![
-        TermSpec::Cr { col: 0, k: fx.inputs.k[0] },
-        TermSpec::Cr { col: 1, k: fx.inputs.k[1] },
+        TermSpec::Cr {
+            col: 0,
+            k: fx.inputs.k[0],
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: fx.inputs.k[1],
+        },
     ];
     // fixed-p: p held at 1.5, only φ + λ estimated.
     let fit = fit_with_design(
@@ -117,5 +138,8 @@ fn additive_2d_tweedie_fixed_p_n600_k8_cr() {
         fit.rho[0], fit.rho[1], fit.edf_total,
     );
     // Bar 1.5e-2: observed ~1.2e-2 (same looseness as profile-p).
-    assert!(rel < 1.5e-2, "additive Tweedie fixed-p μ rel {rel:.3e} exceeds 1.5e-2");
+    assert!(
+        rel < 1.5e-2,
+        "additive Tweedie fixed-p μ rel {rel:.3e} exceeds 1.5e-2"
+    );
 }

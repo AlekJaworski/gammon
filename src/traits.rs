@@ -489,11 +489,7 @@ pub trait InnerSolver {
     /// use the hint (PirlsInner via `eta_init = X·beta_warm`) override
     /// this — the NoRefresh line-search shortcut on EnvelopeScore needs
     /// the warm-start to avoid full PIRLS at trial λ.
-    fn fit_warm(
-        &self,
-        rho: &Array1<f64>,
-        _beta_warm: Option<&Array1<f64>>,
-    ) -> Result<Self::Fit> {
+    fn fit_warm(&self, rho: &Array1<f64>, _beta_warm: Option<&Array1<f64>>) -> Result<Self::Fit> {
         self.fit(rho)
     }
 
@@ -602,7 +598,6 @@ pub trait ScoreDerivatives {
     fn stats(&self) -> Option<&crate::stats::FitStats> {
         None
     }
-
 }
 
 /// Result of an outer-loop optimisation.

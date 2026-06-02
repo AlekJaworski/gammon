@@ -270,8 +270,7 @@ impl OuterSolver for NewtonWithHalving {
             // convergence the direction is less trusted so allow more
             // halvings. Stalled REML change → 1 halving (no point in deeper
             // search).
-            let stalled = iter >= 3
-                && ((v - prev_v).abs() / v.abs().max(1.0) < 1.0e-4);
+            let stalled = iter >= 3 && ((v - prev_v).abs() / v.abs().max(1.0) < 1.0e-4);
             let max_half = if stalled {
                 1
             } else if grad_norm < 0.1 {
@@ -368,8 +367,7 @@ impl OuterSolver for NewtonWithHalving {
                         let active_step = si.abs() > 1e-12 * (theta[i].abs().max(1.0));
                         if active_step {
                             any_movement = true;
-                            let pushes_out =
-                                (at_hi && si > 0.0) || (at_lo && si < 0.0);
+                            let pushes_out = (at_hi && si > 0.0) || (at_lo && si < 0.0);
                             if !pushes_out {
                                 all_blocked = false;
                             }
@@ -382,8 +380,7 @@ impl OuterSolver for NewtonWithHalving {
                     value: v,
                     grad_norm,
                     iterations: iter + 1,
-                    converged: kkt_at_boundary
-                        || grad_norm < 1e-3 * (v.abs() + 1.0),
+                    converged: kkt_at_boundary || grad_norm < 1e-3 * (v.abs() + 1.0),
                 });
             }
         }

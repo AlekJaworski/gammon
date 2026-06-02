@@ -41,7 +41,10 @@ fn main() {
         .collect();
     let y = Array1::from_vec(ys);
     let terms: Vec<TermSpec> = (0..d)
-        .map(|c| TermSpec::Cr { col: c, k: k_vec[c] })
+        .map(|c| TermSpec::Cr {
+            col: c,
+            k: k_vec[c],
+        })
         .collect();
 
     let prep = Additive { terms }.prepare(x.view()).unwrap();

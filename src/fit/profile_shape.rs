@@ -99,10 +99,15 @@ where
         };
 
     let n_terms = prep.s_list.len();
-    debug_assert_eq!(theta0.len(), n_terms + 1, "profile-θ driver expects exactly 1 shape axis");
+    debug_assert_eq!(
+        theta0.len(),
+        n_terms + 1,
+        "profile-θ driver expects exactly 1 shape axis"
+    );
 
-    let solver =
-        ProfileShapeNewton::new(crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts());
+    let solver = ProfileShapeNewton::new(
+        crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts(),
+    );
     let outer = solver.minimize(&score, theta0)?;
 
     // Final fit: rebuild family with shape from `outer.theta[n_terms..]`.
@@ -314,8 +319,7 @@ impl ProfileShapeNewton {
             // PIRLS where N is the number of halvings tried.
             // Adaptive halving cap (mgcv_rust smooth.rs:2741-2772). See
             // outer.rs for rationale.
-            let stalled = iter >= 3
-                && ((v - prev_v).abs() / v.abs().max(1.0) < 1.0e-4);
+            let stalled = iter >= 3 && ((v - prev_v).abs() / v.abs().max(1.0) < 1.0e-4);
             let max_half = if stalled {
                 1
             } else if grad_norm < 0.1 {
@@ -346,9 +350,7 @@ impl ProfileShapeNewton {
                 // Phase A: cheap NoRefresh probe.
                 let v_nr = score.compute_value_no_refresh(&trial);
                 let nr_suggests_descent = match v_nr {
-                    Some(v_trial) => {
-                        v_trial.is_finite() && v_trial < v - 1e-10 * v.abs()
-                    }
+                    Some(v_trial) => v_trial.is_finite() && v_trial < v - 1e-10 * v.abs(),
                     None => true, // unknown → fall through to full PIRLS verify
                 };
                 if !nr_suggests_descent {
@@ -464,7 +466,9 @@ impl ProfileShapeNewton {
                 //   δ = clamp(-g/denom, [-cap, +cap])
                 //   try full δ; on failure try δ/2; else stay.
                 let denom = d2lr_dlt2.abs().max(1e-4);
-                let delta = (-(dlr_dlt / denom)).max(-shape_step_cap).min(shape_step_cap);
+                let delta = (-(dlr_dlt / denom))
+                    .max(-shape_step_cap)
+                    .min(shape_step_cap);
                 let candidate = (log_theta + delta).clamp(shape_lo_hi.0, shape_lo_hi.1);
 
                 let mut new_log_theta = log_theta; // base = no-op

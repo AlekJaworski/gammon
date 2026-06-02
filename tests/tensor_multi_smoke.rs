@@ -22,7 +22,10 @@ use gamrs::fit_with_design;
 struct Lcg(u64);
 impl Lcg {
     fn next_f64(&mut self) -> f64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
     }
 }
@@ -83,7 +86,10 @@ fn te_multi_3margin_gaussian_smoke() {
     )
     .expect("3-margin TeMulti Gaussian fit failed");
 
-    assert!(fit.converged, "outer Newton did not converge for 3-margin te");
+    assert!(
+        fit.converged,
+        "outer Newton did not converge for 3-margin te"
+    );
     assert_eq!(fit.rho.len(), 3, "one smoothing param per margin (D=3)");
     assert_eq!(fit.lambda.len(), 3);
 
@@ -101,7 +107,9 @@ fn te_multi_3margin_gaussian_smoke() {
         x_new[[i, 1]] = 1.0 - t;
         x_new[[i, 2]] = 0.5;
     }
-    let pred_new = fit.predict(x_new.view()).expect("3-margin te new-x predict failed");
+    let pred_new = fit
+        .predict(x_new.view())
+        .expect("3-margin te new-x predict failed");
     for &p in pred_new.iter() {
         assert!(p.is_finite(), "non-finite new-x prediction: {p}");
     }

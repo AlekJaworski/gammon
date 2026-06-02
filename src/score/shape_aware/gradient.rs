@@ -476,10 +476,7 @@ where
         Some(reml)
     }
 
-    pub(super) fn compute_value_grad(
-        &self,
-        theta: &Array1<f64>,
-    ) -> Result<(f64, Array1<f64>)> {
+    pub(super) fn compute_value_grad(&self, theta: &Array1<f64>) -> Result<(f64, Array1<f64>)> {
         let (fit, family) = self.fit_inner_at(theta)?;
         let n_terms = self.s_list.len();
         let n_shape = family.n_shape_params();
@@ -536,10 +533,11 @@ where
                 for k in 0..n_shape {
                     g[n_terms + k] = analytic[k];
                 }
-            } else if let Some(level1) = family
-                .loss
-                .level1_shape_derivatives(self.y.view(), fit.eta.view(), self.prior_weights.as_ref().map(|w| w.view()))
-            {
+            } else if let Some(level1) = family.loss.level1_shape_derivatives(
+                self.y.view(),
+                fit.eta.view(),
+                self.prior_weights.as_ref().map(|w| w.view()),
+            ) {
                 // IFT-based analytic θ-gradient — ports v0.x's
                 // `reml_grad_ocat_theta_block_analytic` (ocat_joint.rs:123-236)
                 // generalised to any Loss that supplies Level-1 derivatives.
@@ -789,8 +787,8 @@ where
                     x_db_i += self.x_design[[i, j]] * dbeta_dtheta[[j, k]];
                 }
                 let ig1_i = ig1[i];
-                let deta2th_ki = level1.dmu2th[[i, k]] * ig1_i * ig1_i
-                    - level1.dmuth[[i, k]] * g2g[i] * ig1_i;
+                let deta2th_ki =
+                    level1.dmu2th[[i, k]] * ig1_i * ig1_i - level1.dmuth[[i, k]] * g2g[i] * ig1_i;
                 let s_ki = 0.5 * (deta2th_ki + deta3[i] * x_db_i);
                 trace_term += s_ki * h_diag[i];
             }

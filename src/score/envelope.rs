@@ -632,36 +632,39 @@ where
         // the consistent closed-form path") because its working-response
         // REML treats W as β-frozen, so the analytic Hessian must too.
         let skip_w_chain = self.loss.skip_w_chain_in_hessian();
-        let w_chain: Option<(Vec<Array1<f64>>, Vec<Array1<f64>>)> =
-            match (inner.dw_deta.as_ref(), inner.x_design.as_ref(), skip_w_chain) {
-                (Some(_dw), Some(x), false) => {
-                    let n = x.nrows();
-                    // xdbeta[i] = X·(−λ_i A⁻¹S_iβ) = −λ_i · X·ainv_s_beta[i]
-                    let mut xdbeta: Vec<Array1<f64>> = Vec::with_capacity(m);
-                    for i in 0..m {
-                        let mut v = x.dot(&ainv_s_beta[i]);
-                        v.mapv_inplace(|t| -lambda[i] * t);
-                        xdbeta.push(v);
-                    }
-                    // lev_mj[j][k] = Σ_b (X·ainv_s[j]·A⁻¹)[k,b]·X[k,b]
-                    //              = row_k(X·ainv_s[j]·A⁻¹) · row_k(X)
-                    let mut lev_mj: Vec<Array1<f64>> = Vec::with_capacity(m);
-                    for j in 0..m {
-                        let xmj = x.dot(&ainv_s[j]).dot(a_inv); // (n×p)
-                        let mut diag = Array1::<f64>::zeros(n);
-                        for k in 0..n {
-                            let mut s = 0.0;
-                            for b in 0..x.ncols() {
-                                s += xmj[[k, b]] * x[[k, b]];
-                            }
-                            diag[k] = s;
-                        }
-                        lev_mj.push(diag);
-                    }
-                    Some((xdbeta, lev_mj))
+        let w_chain: Option<(Vec<Array1<f64>>, Vec<Array1<f64>>)> = match (
+            inner.dw_deta.as_ref(),
+            inner.x_design.as_ref(),
+            skip_w_chain,
+        ) {
+            (Some(_dw), Some(x), false) => {
+                let n = x.nrows();
+                // xdbeta[i] = X·(−λ_i A⁻¹S_iβ) = −λ_i · X·ainv_s_beta[i]
+                let mut xdbeta: Vec<Array1<f64>> = Vec::with_capacity(m);
+                for i in 0..m {
+                    let mut v = x.dot(&ainv_s_beta[i]);
+                    v.mapv_inplace(|t| -lambda[i] * t);
+                    xdbeta.push(v);
                 }
-                _ => None,
-            };
+                // lev_mj[j][k] = Σ_b (X·ainv_s[j]·A⁻¹)[k,b]·X[k,b]
+                //              = row_k(X·ainv_s[j]·A⁻¹) · row_k(X)
+                let mut lev_mj: Vec<Array1<f64>> = Vec::with_capacity(m);
+                for j in 0..m {
+                    let xmj = x.dot(&ainv_s[j]).dot(a_inv); // (n×p)
+                    let mut diag = Array1::<f64>::zeros(n);
+                    for k in 0..n {
+                        let mut s = 0.0;
+                        for b in 0..x.ncols() {
+                            s += xmj[[k, b]] * x[[k, b]];
+                        }
+                        diag[k] = s;
+                    }
+                    lev_mj.push(diag);
+                }
+                Some((xdbeta, lev_mj))
+            }
+            _ => None,
+        };
 
         // The W-chain Hessian contribution below reads `inner.dw_deta`; if
         // we skipped the W-chain prep, hide `dw_deta` so the contribution
@@ -699,8 +702,7 @@ where
                 // symmetrise H[i,j] = ½(∂g_tr[j]/∂ρ_i + ∂g_tr[i]/∂ρ_j) to
                 // match the FD reference (which symmetrises too).
                 let mut term_w = 0.0_f64;
-                if let (Some((xdbeta, lev_mj)), Some(dw)) = (w_chain.as_ref(), dw_deta_for_hess)
-                {
+                if let (Some((xdbeta, lev_mj)), Some(dw)) = (w_chain.as_ref(), dw_deta_for_hess) {
                     let mut s_ij = 0.0; // Σ_k dW_i[k]·lev_mj[j][k]
                     let mut s_ji = 0.0; // Σ_k dW_j[k]·lev_mj[i][k]
                     let n = dw.len();
@@ -975,7 +977,8 @@ mod fd_match_tests {
             x[[i, 1]] = x1;
             x[[i, 2]] = x2;
             let noise = (next() - 0.5) * 0.2;
-            y[i] = (2.0 * std::f64::consts::PI * x0).sin() + (1.5 * x1 - 0.5).powi(2)
+            y[i] = (2.0 * std::f64::consts::PI * x0).sin()
+                + (1.5 * x1 - 0.5).powi(2)
                 + 0.8 * x0 * x2
                 + 0.5 * x1 * x2
                 + noise;
@@ -986,7 +989,12 @@ mod fd_match_tests {
             bs: vec![MarginKind::Cr, MarginKind::Cr, MarginKind::Cr],
         }];
         let prep = Additive { terms }.prepare(x.view()).unwrap();
-        eprintln!("ti d={} ranks={:?} mp={}", prep.s_list.len(), prep.rank_s_list, prep.mp);
+        eprintln!(
+            "ti d={} ranks={:?} mp={}",
+            prep.s_list.len(),
+            prep.rank_s_list,
+            prep.mp
+        );
         let score = GaussianClosedFormScore::new(
             prep.x_design.clone(),
             y.clone(),
@@ -996,7 +1004,12 @@ mod fd_match_tests {
             prep.mp,
             prep.log_pseudo_det_s_list.clone(),
         );
-        for probe in [[0.0, 0.0, 0.0], [2.0, -1.0, 3.0], [5.0, 5.0, 5.0], [-2.0, 4.0, 1.0]] {
+        for probe in [
+            [0.0, 0.0, 0.0],
+            [2.0, -1.0, 3.0],
+            [5.0, 5.0, 5.0],
+            [-2.0, 4.0, 1.0],
+        ] {
             let theta = Array1::from_vec(probe.to_vec());
             let inner = score.inner.fit(&theta).unwrap();
             let (_, _, hin) = score.compute_value_grad_from_fit(&theta, &inner).unwrap();

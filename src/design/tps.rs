@@ -264,7 +264,11 @@ fn tps_eta(r: f64, d: usize) -> f64 {
         _ => {
             let power = 2 * 2 - d as i32;
             if power > 0 {
-                if power % 2 == 0 { r.powi(power) * r.ln() } else { r.powi(power) }
+                if power % 2 == 0 {
+                    r.powi(power) * r.ln()
+                } else {
+                    r.powi(power)
+                }
             } else {
                 r.ln()
             }

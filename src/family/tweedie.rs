@@ -365,10 +365,7 @@ pub fn tweedie_log(p: f64, phi: f64) -> Family<Tweedie, LogLink, TweedieVariance
             profile_p: true,
         },
         LogLink,
-        TweedieVariance {
-            p,
-            profile_p: true,
-        },
+        TweedieVariance { p, profile_p: true },
     )
 }
 
