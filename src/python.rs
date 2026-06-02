@@ -1479,10 +1479,33 @@ fn fit_additive<'py>(
     Ok(PyFittedGam { inner: fitted })
 }
 
+/// Diagnostic: override outer-Newton tolerances for all subsequent fits
+/// on this thread. Pass `grad_tol=None, reml_tol=None` to clear. Intended
+/// for the tolerance-sweep script in `scripts/sweep_tolerances.py` —
+/// production callers should leave this alone.
+#[pyfunction]
+#[pyo3(signature = (grad_tol=None, reml_tol=None))]
+fn set_outer_tuning_override(grad_tol: Option<f64>, reml_tol: Option<f64>) {
+    match (grad_tol, reml_tol) {
+        (None, None) => crate::outer::clear_tuning_override(),
+        _ => {
+            let mut t = crate::outer::OuterTuning::mgcv_default();
+            if let Some(g) = grad_tol {
+                t.grad_tol = g;
+            }
+            if let Some(r) = reml_tol {
+                t.reml_tol = r;
+            }
+            crate::outer::set_tuning_override(t);
+        }
+    }
+}
+
 #[pymodule]
 fn _gamrs_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFittedGam>()?;
     m.add_function(wrap_pyfunction!(fit, m)?)?;
     m.add_function(wrap_pyfunction!(fit_additive, m)?)?;
+    m.add_function(wrap_pyfunction!(set_outer_tuning_override, m)?)?;
     Ok(())
 }

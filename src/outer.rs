@@ -94,6 +94,37 @@ impl Default for OuterTuning {
     }
 }
 
+thread_local! {
+    /// Thread-local override for the per-family [`OuterTuning`]. When
+    /// `Some`, fit drivers use this in place of the family's
+    /// `Loss::outer_tuning()`. Set via [`set_tuning_override`] and cleared
+    /// via [`clear_tuning_override`]. Intended for the tolerance-sweep
+    /// script — production callers leave it `None`.
+    static OUTER_TUNING_OVERRIDE: std::cell::Cell<Option<OuterTuning>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Set the thread-local outer-tuning override. All subsequent fits on
+/// this thread use the override instead of `Loss::outer_tuning()` until
+/// [`clear_tuning_override`] is called.
+pub fn set_tuning_override(tuning: OuterTuning) {
+    OUTER_TUNING_OVERRIDE.with(|c| c.set(Some(tuning)));
+}
+
+/// Clear the thread-local outer-tuning override; subsequent fits revert
+/// to `Loss::outer_tuning()`.
+pub fn clear_tuning_override() {
+    OUTER_TUNING_OVERRIDE.with(|c| c.set(None));
+}
+
+/// Resolve the active tuning: override if set, otherwise the family default.
+/// Used by every fit driver.
+pub fn resolve_tuning<L: crate::traits::Loss>(loss: &L) -> OuterTuning {
+    OUTER_TUNING_OVERRIDE
+        .with(|c| c.get())
+        .unwrap_or_else(|| loss.outer_tuning())
+}
+
 impl Default for NewtonOpts {
     fn default() -> Self {
         // Tolerances match mgcv's `gam.fit3.r:1644` defaults — `conv.tol=1e-7`

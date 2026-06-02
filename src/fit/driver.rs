@@ -194,7 +194,7 @@ where
         prep.log_pseudo_det_s_list.clone(),
     );
     let outer_solver =
-        NewtonWithHalving::new(score.loss.outer_tuning().to_newton_opts());
+        NewtonWithHalving::new(crate::outer::resolve_tuning(&score.loss).to_newton_opts());
     let outer = outer_solver.minimize(&score, Array1::zeros(n_terms))?;
 
     // Reuse the score's inner solver for the final fit (closes audit §B4).
@@ -330,7 +330,7 @@ where
     };
 
     let outer_solver =
-        NewtonWithHalving::new(score.family_base.loss.outer_tuning().to_newton_opts());
+        NewtonWithHalving::new(crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts());
     let outer = outer_solver.minimize(&score, theta0)?;
 
     // Final fit: reuse the score's inner_builder so the final PIRLS sees

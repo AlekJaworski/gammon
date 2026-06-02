@@ -116,6 +116,19 @@ impl Loss for NegBin {
         true
     }
 
+    /// NegBin's analytic-Hessian profile-θ Newton converges cleanly to
+    /// loose tolerances. Sweep (`scripts/sweep_tolerances.py`): 5e-6/1e-6
+    /// shows zero ρ̂ drift vs 1e-9 baseline + 24% wall-time win on 1D NB
+    /// (n=300), and no impact on 2D NB (n=600). The mgcv default
+    /// (5e-7/1e-7) over-converges here.
+    fn outer_tuning(&self) -> crate::outer::OuterTuning {
+        crate::outer::OuterTuning {
+            grad_tol: 5.0e-6,
+            reml_tol: 1.0e-6,
+            ..crate::outer::OuterTuning::mgcv_default()
+        }
+    }
+
     /// Match mgcv's per-family inner-PIRLS β-change tolerance for NegBin.
     /// mgcv calls `fit_pirls_cached(... tolerance = 1e-8 ...)` at
     /// `src/lib.rs:1277` for `Family::NegBin`. gamrs's general `PirlsOpts::default`

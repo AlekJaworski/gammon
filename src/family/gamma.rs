@@ -155,6 +155,19 @@ impl Loss for Gamma {
     fn skip_w_chain_in_hessian(&self) -> bool {
         true
     }
+
+    /// Gamma's analytic Hessian + closed-form σ² profile converges
+    /// cleanly to looser tolerances. Sweep (`scripts/sweep_tolerances.py`):
+    /// 5e-5/1e-5 trims outer iters 6→5 and PIRLS calls 11→9 on 1D Gamma
+    /// (n=300, k=10); rho_drift 2.9e-4 + mu_drift 4.6e-5 (well inside the
+    /// LinAlg noise floor). 11% wall-time win vs mgcv default.
+    fn outer_tuning(&self) -> crate::outer::OuterTuning {
+        crate::outer::OuterTuning {
+            grad_tol: 5.0e-5,
+            reml_tol: 1.0e-5,
+            ..crate::outer::OuterTuning::mgcv_default()
+        }
+    }
 }
 
 impl VarianceFn for GammaVariance {
