@@ -493,6 +493,28 @@ pub trait InnerSolver {
         self.fit(rho)
     }
 
+    /// **Single IRLS step** — port of mgcv R `bam(method="fREML")`'s
+    /// one-step inner. Build the working pair `(W, z)` at `η = X·β_warm`,
+    /// solve `(X'WX + λS)·β = X'Wz` once, return the new fit. No PIRLS
+    /// convergence loop / step-halving guards.
+    ///
+    /// Used by [`fellner_schall_minimize`]: each FS outer iter consumes
+    /// only one IRLS step instead of full PIRLS (~2-3 iters); on
+    /// large-n GLM fixtures this is ~3-4× cheaper without sacrificing
+    /// FS-update correctness (the warm-start β tracks λ̂(t) closely).
+    ///
+    /// Default implementation delegates to `fit_warm` — full convergence.
+    /// PirlsInner overrides to actually run one step.
+    ///
+    /// [`fellner_schall_minimize`]: crate::outer::fellner_schall_minimize
+    fn fit_single_irls(
+        &self,
+        rho: &Array1<f64>,
+        beta_warm: Option<&Array1<f64>>,
+    ) -> Result<Self::Fit> {
+        self.fit_warm(rho, beta_warm)
+    }
+
     /// **Lazy Newton-A log|H|** at the converged β. Returns `None` when the
     /// family is canonical-link / doesn't opt into Newton-IRLS (the
     /// canonical Fisher H's `log|A|` off the fit's `a_factor` is then the

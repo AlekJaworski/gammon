@@ -506,11 +506,13 @@ where
         if let Some(s) = stats {
             s.bump_outer();
         }
-        // Warm-start PIRLS from the previous FS iter's β (Wood 2011 Phase
-        // 5). FS iterations move λ in small log-steps, so β changes
-        // gradually — warm-start typically cuts PIRLS iters from 5+ cold
-        // to 1-2 warm. mgcv_rust does the same in its FS outer loop.
-        let fit = inner.fit_warm(&rho, warm_beta.as_ref())?;
+        // Single IRLS step at the warm-started β (mgcv R `bam(method=
+        // "fREML")` port — audit `nn_exploring/src/pirls/mod.rs:4078-4097`).
+        // FS λ-updates move slowly; one IRLS step from a warm β closes
+        // the per-outer-iter convergence error well enough for the FS
+        // update to find descent. Avoids the 2-3× redundant inner iters
+        // that full-PIRLS would do.
+        let fit = inner.fit_single_irls(&rho, warm_beta.as_ref())?;
         if let Some(s) = stats {
             s.record_pirls_call(fit.iterations);
         }

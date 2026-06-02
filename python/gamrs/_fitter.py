@@ -242,7 +242,12 @@ class Gam:
         per-iter, wins on GLM families at large n).
         """
         # Set/restore the outer-algorithm override for this fit only.
-        if self.method is not None:
+        # Only touches the thread-local when method != "REML" (gamrs's
+        # default) — `"REML"` is what an unspecified method becomes via
+        # the constructor default and shouldn't clobber any external
+        # override (e.g. set by the bench / sweep scripts).
+        wants_override = self.method is not None and self.method != "REML"
+        if wants_override:
             try:
                 _gamrs_native.set_outer_algorithm(self.method)
             except ValueError as e:
@@ -253,7 +258,7 @@ class Gam:
         try:
             return self._fit_impl(X, y, sample_weight)
         finally:
-            if self.method is not None:
+            if wants_override:
                 _gamrs_native.set_outer_algorithm(None)
 
     def _fit_impl(self, X: ArrayLike, y: ArrayLike, sample_weight: Any) -> "Gam":

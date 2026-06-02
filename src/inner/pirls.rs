@@ -418,6 +418,102 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
         self.pirls_loop(s_total, rho, beta_warm)
     }
 
+    /// **Single IRLS step** — mgcv R `bam(method="fREML")` single-step
+    /// inner port. Build (w, z) at `η = X·β_warm` (or per-family init if
+    /// `beta_warm = None`), solve `(X'WX + λS) β = X'Wz` once, populate
+    /// a minimal `GaussianInnerFit` and return. No PIRLS loop, no
+    /// step-halving, no convergence guard.
+    ///
+    /// The returned fit's `beta` / `a_factor` are used by Fellner-Schall
+    /// to compute `tr(A⁻¹ S_i)` and `β'S_iβ` for the multiplicative λ
+    /// update. Score-path-only fields (`mu`, `eta`, `working_weights`,
+    /// `dw_deta`, `tk_kkt_inputs`) are populated only as far as is
+    /// cheap, since FS doesn't consume them.
+    fn fit_single_irls(
+        &self,
+        rho: &Array1<f64>,
+        beta_warm: Option<&Array1<f64>>,
+    ) -> Result<Self::Fit> {
+        debug_assert_eq!(rho.len(), self.s_list.len());
+        let n = self.x_design.nrows();
+        let p = self.x_design.ncols();
+        let s_total = crate::design::combined_s(&self.s_list, rho);
+        let prior_w: Array1<f64> = match &self.prior_weights {
+            Some(w) => w.clone(),
+            None => Array1::ones(n),
+        };
+
+        // Initial η: warm-start if provided, else family-specific null-init.
+        let eta: Array1<f64> = if let Some(b0) = beta_warm {
+            debug_assert_eq!(b0.len(), p);
+            self.x_design.dot(b0)
+        } else {
+            let mu_init: Array1<f64> = self.family.loss.initial_mu(self.y.view());
+            mu_init.iter().map(|&m| self.family.link.link(m)).collect()
+        };
+        let mu: Array1<f64> = eta
+            .iter()
+            .map(|&e| self.family.link.inverse_link(e))
+            .collect();
+
+        // Fisher-only IRLS pair (canonical-link auto-promotion — mgcv's
+        // fREML uses Fisher uniformly, see audit `pirls/mod.rs:3876-3882`).
+        // For canonical-link Poisson + log this is identical to Newton anyway
+        // since α ≡ 1 (V' = V, g'' = 0).
+        let mut working_weights = Array1::<f64>::zeros(n);
+        let mut working_response = Array1::<f64>::zeros(n);
+        for i in 0..n {
+            let mu_i = mu[i];
+            let var_i = self.family.variance.variance(mu_i).max(1e-300);
+            let g_prime_mu = self.family.link.d_link_dmu(mu_i);
+            let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+            working_weights[i] = prior_w[i] * wf;
+            working_response[i] = eta[i] + (self.y[i] - mu_i) * g_prime_mu;
+        }
+
+        // One WLS solve.
+        let xtw = crate::inner::weighted_xt(&self.x_design, &working_weights);
+        let xtwx = xtw.dot(&self.x_design);
+        let xtwz = xtw.dot(&working_response);
+        let mut a = xtwx.clone();
+        add_penalty(&mut a, &s_total, 1.0);
+        let (factor, beta) =
+            factor_and_solve_with_ridge::<S>(&a, xtwz.view()).map_err(|e| match e {
+                GamrsError::SingularSystem(msg) => {
+                    GamrsError::SingularSystem(format!("PIRLS single-step factor: {msg}"))
+                }
+                other => other,
+            })?;
+
+        // Recompute (η, μ, deviance) at the new β so FS / downstream
+        // consumers see a consistent state. O(n·p + n) — cheap.
+        let eta_new: Array1<f64> = self.x_design.dot(&beta);
+        let mu_new: Array1<f64> = eta_new
+            .iter()
+            .map(|&e| self.family.link.inverse_link(e))
+            .collect();
+        let dev_new = self.compute_deviance(&mu_new, &prior_w);
+
+        Ok(GaussianInnerFit {
+            beta,
+            eta: eta_new,
+            mu: mu_new,
+            working_weights,
+            working_response,
+            deviance: dev_new,
+            rss: dev_new,
+            n,
+            p,
+            iterations: 1,
+            converged: true, // FS doesn't gate on inner-PIRLS convergence
+            a_factor: factor,
+            log_det_h_override: None,
+            tk_kkt_inputs: None,
+            dw_deta: None,
+            x_design: None,
+        })
+    }
+
     /// Newton-A log|H| at converged β. Computed lazily here so PIRLS
     /// itself doesn't pay the O(p³) cost per inner fit (mgcv_rust pattern
     /// — `fit_pirls_cached` returns no Newton pieces, the score evaluator
