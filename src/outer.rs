@@ -264,11 +264,28 @@ impl OuterSolver for NewtonWithHalving {
             // and `value_grad_hess()` runs PIRLS + analytic-grad + FD-on-grad
             // Hessian, this drops per-trial cost from ~(2d+1) PIRLS to 1
             // (d = θ-dim; mgcv_rust pattern, `gam_optimized.rs:1390-1547`).
+            // Adaptive halving cap — port of mgcv_rust `smooth.rs:2741-2772`.
+            // Near convergence the Newton direction is reliable and full
+            // halving budget is wasted exploring near-equal points; far from
+            // convergence the direction is less trusted so allow more
+            // halvings. Stalled REML change → 1 halving (no point in deeper
+            // search).
+            let stalled = iter >= 3
+                && ((v - prev_v).abs() / v.abs().max(1.0) < 1.0e-4);
+            let max_half = if stalled {
+                1
+            } else if grad_norm < 0.1 {
+                10
+            } else if grad_norm < 1.0 {
+                20
+            } else {
+                30
+            };
             let mut alpha = 1.0;
             let mut accepted = false;
             let mut accepted_trial: Option<Array1<f64>> = None;
             let mut accepted_v: f64 = v;
-            for _ in 0..20 {
+            for _ in 0..max_half {
                 let mut trial = &theta + &(&scaled_step * alpha);
                 if let Some(ref bnds) = axis_bounds {
                     for (i, &(lo, hi)) in bnds.iter().enumerate() {

@@ -312,11 +312,24 @@ impl ProfileShapeNewton {
             // 1 PIRLS for the accepted halving. Vs the prior path (1
             // PIRLS per halving including all 20 rejects), we save N−1
             // PIRLS where N is the number of halvings tried.
+            // Adaptive halving cap (mgcv_rust smooth.rs:2741-2772). See
+            // outer.rs for rationale.
+            let stalled = iter >= 3
+                && ((v - prev_v).abs() / v.abs().max(1.0) < 1.0e-4);
+            let max_half = if stalled {
+                1
+            } else if grad_norm < 0.1 {
+                10
+            } else if grad_norm < 1.0 {
+                20
+            } else {
+                30
+            };
             let mut alpha = 1.0_f64;
             let mut accepted = false;
             let log_theta_current = theta[n_terms];
             let mut accepted_trial: Option<Array1<f64>> = None;
-            for _ in 0..20 {
+            for _ in 0..max_half {
                 let mut trial = theta.clone();
                 for i in 0..n_terms {
                     trial[i] += scaled_step_rho[i] * alpha;

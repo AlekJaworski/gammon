@@ -66,11 +66,11 @@ pub struct EnvelopeScore<
     /// by `value_grad_hess`'s inner-fit call. Read after fit via
     /// `score.stats().unwrap().snapshot()`.
     pub stats: crate::stats::FitStats,
-    /// Last-accepted (β, b1, λ) for the NoRefresh IFT line-search shortcut
-    /// — mirrors `ShapeAwareEnvelopeScore::accepted_state`. Populated on
-    /// every successful `value_grad_hess` call; consumed by
-    /// `compute_value_no_refresh`. Only meaningful for families that opt
-    /// in via `Loss::allows_no_refresh`.
+    /// Last-accepted (β, b1, λ) for IFT warm-start in subsequent
+    /// `value()` / `value_grad_hess()` calls. Mirrors
+    /// `ShapeAwareEnvelopeScore::accepted_state`. Populated after every
+    /// successful `value_grad_hess`; consumed by `ift_propagated_beta`.
+    /// Only meaningful for families that opt in via `Loss::allows_no_refresh`.
     pub accepted_state: std::cell::RefCell<Option<EnvelopeAcceptedState>>,
 }
 
