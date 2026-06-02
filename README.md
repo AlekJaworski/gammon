@@ -5,7 +5,7 @@ six composable trait layers (`Basis`, `BasisTransform`, `Loss`/`Link`/`VarianceF
 `InnerSolver`, `ScoreDerivatives`, `OuterSolver`). Designed for parity with
 R's `mgcv`.
 
-**Status: beta (v0.6).** Faster than `mgcv_rust` 0.23 at every tested
+**Status: beta (v0.7).** Faster than `mgcv_rust` 0.23 at every tested
 fixture and scale (see [Performance](#performance)), and `mgcv` R-parity
 on µ across all ten families. Multi-smooth additive (`y ~ s(x0) + s(x1)`),
 n-margin tensor products (`te(x0, x1, …)` / `ti(…)`) and thin-plate splines
@@ -149,7 +149,7 @@ so adding a family is a `Loss` impl, not a fork of the optimiser.
 
 ## Versioning
 
-Beta (`0.6.x`). The API is stabilising; minor bumps may carry breaking
+Beta (`0.7.x`). The API is stabilising; minor bumps may carry breaking
 changes until the remaining shape-aware families (scat/Ocat/ELF) gain
 multi-smooth support and the 1.0 surface is locked.
 
