@@ -290,9 +290,16 @@ impl ProfileShapeNewton {
             // current value). mgcv_rust:3050-3120 uses the same pattern —
             // the line-search target is just the REML score, no Armijo
             // angle check on the joint gradient.
+            //
+            // Probes use `compute_value` only — grad/Hess are not needed
+            // for accept/reject. After acceptance we refresh `(v, g, h,
+            // fit_center)` with one `compute_value_grad_hess_rho_only_with_fit`
+            // call. Drops per-trial cost from ~3 PIRLS (FD-on-grad H) to
+            // 1 PIRLS. mgcv_rust pattern; see `outer.rs` comment.
             let mut alpha = 1.0_f64;
             let mut accepted = false;
             let log_theta_current = theta[n_terms];
+            let mut accepted_trial: Option<Array1<f64>> = None;
             for _ in 0..20 {
                 let mut trial = theta.clone();
                 for i in 0..n_terms {
@@ -306,15 +313,9 @@ impl ProfileShapeNewton {
                 // shape param unchanged in trial
                 trial[n_terms] = log_theta_current;
 
-                let probe = score.compute_value_grad_hess_rho_only_with_fit(&trial);
-                if let Ok((v_trial, g_trial, h_trial, fit_trial)) = probe {
+                if let Ok(v_trial) = score.compute_value(&trial) {
                     if v_trial.is_finite() && v_trial < v - 1e-10 * v.abs() {
-                        prev_v = v;
-                        theta = trial;
-                        v = v_trial;
-                        g_rho = g_trial;
-                        h_rho = h_trial;
-                        fit_center = fit_trial;
+                        accepted_trial = Some(trial);
                         accepted = true;
                         break;
                     }
@@ -322,6 +323,24 @@ impl ProfileShapeNewton {
                 alpha *= 0.5;
                 if alpha < opts.step_min {
                     break;
+                }
+            }
+            if let Some(trial) = accepted_trial {
+                // One full eval at the accepted point to refresh (g, h, fit).
+                match score.compute_value_grad_hess_rho_only_with_fit(&trial) {
+                    Ok((v_full, g_full, h_full, fit_full)) => {
+                        prev_v = v;
+                        theta = trial;
+                        v = v_full;
+                        g_rho = g_full;
+                        h_rho = h_full;
+                        fit_center = fit_full;
+                    }
+                    Err(_) => {
+                        // Extremely rare: value succeeded but full eval failed.
+                        // Roll back — let the next iter retry (stale g/h).
+                        accepted = false;
+                    }
                 }
             }
 

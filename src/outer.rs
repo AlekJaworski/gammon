@@ -164,8 +164,18 @@ impl OuterSolver for NewtonWithHalving {
             // Step-halving until value decreases. Per-axis bounds (if any)
             // are clamped at each trial point — mgcv-style box-constrained
             // Newton (smooth.r:~1976 lo/hi clamp).
+            //
+            // Line-search probes use `score.value()` only — the grad/Hess
+            // are not needed for accept/reject. After acceptance we refresh
+            // `(g, h)` at the accepted point with ONE `value_grad_hess` call.
+            // For families where `value()` runs a single inner PIRLS solve
+            // and `value_grad_hess()` runs PIRLS + analytic-grad + FD-on-grad
+            // Hessian, this drops per-trial cost from ~(2d+1) PIRLS to 1
+            // (d = θ-dim; mgcv_rust pattern, `gam_optimized.rs:1390-1547`).
             let mut alpha = 1.0;
             let mut accepted = false;
+            let mut accepted_trial: Option<Array1<f64>> = None;
+            let mut accepted_v: f64 = v;
             for _ in 0..20 {
                 let mut trial = &theta + &(&scaled_step * alpha);
                 if let Some(ref bnds) = axis_bounds {
@@ -175,14 +185,10 @@ impl OuterSolver for NewtonWithHalving {
                         }
                     }
                 }
-                let probe = score.value_grad_hess(&trial);
-                if let Ok((v_trial, g_trial, h_trial)) = probe {
+                if let Ok(v_trial) = score.value(&trial) {
                     if v_trial.is_finite() && v_trial < v - 1e-10 * v.abs() {
-                        prev_v = v;
-                        theta = trial;
-                        v = v_trial;
-                        g = g_trial;
-                        h = h_trial;
+                        accepted_v = v_trial;
+                        accepted_trial = Some(trial);
                         accepted = true;
                         break;
                     }
@@ -190,6 +196,25 @@ impl OuterSolver for NewtonWithHalving {
                 alpha *= 0.5;
                 if alpha < opts.step_min {
                     break;
+                }
+            }
+            if let Some(trial) = accepted_trial {
+                // One full eval at the accepted point to refresh (g, h).
+                // If this fails (extremely rare — the value probe just
+                // succeeded), keep the value-only success and let the next
+                // iter retry with stale (g, h) — the next halving will
+                // self-correct.
+                if let Ok((v_full, g_full, h_full)) = score.value_grad_hess(&trial) {
+                    prev_v = v;
+                    theta = trial;
+                    v = v_full;
+                    g = g_full;
+                    h = h_full;
+                } else {
+                    prev_v = v;
+                    theta = trial;
+                    v = accepted_v;
+                    // g, h stale — keep last good ones.
                 }
             }
 
