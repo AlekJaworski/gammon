@@ -207,3 +207,49 @@ def test_high_level_gam_smoke(toy_gaussian):
     assert pred.shape == y.shape
     assert np.all(np.isfinite(pred))
     assert g.edf_total_ > 1.0
+
+
+def test_term_string_cols_resolve_against_dataframe(rng):
+    """CrTerm/TeTerm/TpsTerm/ReTerm accept string column names and resolve
+    them against the DataFrame at fit time."""
+    pd = pytest.importorskip("pandas")
+    n = 200
+    df = pd.DataFrame({
+        "a": rng.uniform(0, 1, n),
+        "b": rng.uniform(0, 1, n),
+        "g": rng.integers(0, 5, n).astype(float),
+    })
+    df["y"] = np.sin(3 * df.a) + 0.5 * df.b**2 + rng.normal(0, 0.1, n)
+    X = df[["a", "b", "g"]]
+
+    # CrTerm with string column name
+    g_str = gamrs.Gam(terms=[gamrs.CrTerm("a", k=10), gamrs.CrTerm("b", k=10)]).fit(
+        X[["a", "b"]], df.y
+    )
+    # Equivalent fit with int indices
+    g_int = gamrs.Gam(terms=[gamrs.CrTerm(0, k=10), gamrs.CrTerm(1, k=10)]).fit(
+        X[["a", "b"]].values, df.y.values
+    )
+    np.testing.assert_allclose(
+        np.asarray(g_str.predict(X[["a", "b"]])),
+        np.asarray(g_int.predict(X[["a", "b"]].values)),
+        rtol=1e-10,
+        atol=1e-12,
+    )
+
+    # TeTerm + ReTerm with string names
+    g_mix = gamrs.Gam(terms=[
+        gamrs.TeTerm(cols=("a", "b"), k=(5, 5)),
+        gamrs.ReTerm("g"),
+    ]).fit(X, df.y)
+    assert g_mix.converged_ is None or g_mix.converged_  # may be None for FS path
+    assert g_mix.edf_total_ > 1.0
+
+
+def test_term_string_col_unknown_raises(rng):
+    """Unknown column names produce a clear error pointing at the term."""
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame({"a": rng.uniform(0, 1, 100)})
+    df["y"] = df.a + rng.normal(0, 0.1, 100)
+    with pytest.raises(ValueError, match="CrTerm.*'does_not_exist'"):
+        gamrs.Gam(terms=[gamrs.CrTerm("does_not_exist")]).fit(df[["a"]], df.y)

@@ -188,28 +188,38 @@ class GAM:
 # =============================================================================
 
 
+# `Col` — a column reference. Either an integer index into the design `x`
+# or a string column name. Strings are resolved against the DataFrame /
+# `predictors=` column-name list at :meth:`Gam.fit` time; ints pass through.
+Col = Union[int, str]
+
+
 @dataclass(frozen=True)
 class CrTerm:
     """Univariate CR-spline term `s(x_col, bs='cr', k=k)`.
 
-    `col` is the integer column index into the design `x`. `k` is the
-    spline basis dim (defaults to 10, matching mgcv).
+    ``col`` is either an integer column index into the design ``x`` or a
+    string column name (resolved against the DataFrame / ``predictors=``
+    list at fit time). ``k`` is the spline basis dim (defaults to 10,
+    matching mgcv).
     """
-    col: int
+    col: Col
     k: int = 10
 
 
 @dataclass(frozen=True)
 class CrStableTerm:
-    """CR + sum-to-zero + StableReparam rotation term."""
-    col: int
+    """CR + sum-to-zero + StableReparam rotation term. ``col`` accepts an
+    int index or a string column name."""
+    col: Col
     k: int = 10
 
 
 @dataclass(frozen=True)
 class ReTerm:
-    """Random-effect term `s(x_col, bs='re')` — one-hot encoded grouping."""
-    col: int
+    """Random-effect term `s(x_col, bs='re')` — one-hot encoded grouping.
+    ``col`` accepts an int index or a string column name."""
+    col: Col
 
 
 @dataclass(frozen=True)
@@ -217,11 +227,11 @@ class TeTerm:
     """Anisotropic 2-margin tensor product term `te(x_col_a, x_col_b)` —
     two smoothing parameters per term (one per margin). CR margins.
 
-    `cols` is the pair `(col_a, col_b)` of column indices into the
-    design `x`. `k` is the pair `(k_a, k_b)` of marginal basis dims
-    (defaults to ``(10, 10)``).
+    ``cols`` is the pair ``(col_a, col_b)``; each entry accepts an int
+    index or a string column name. ``k`` is the pair ``(k_a, k_b)`` of
+    marginal basis dims (defaults to ``(10, 10)``).
     """
-    cols: Tuple[int, int]
+    cols: Tuple[Col, Col]
     k: Tuple[int, int] = (10, 10)
 
 
@@ -231,10 +241,11 @@ class TeMultiTerm:
     — one smoothing parameter per margin (D >= 2). CR margins, uncentred
     marginals (main effects retained, matching mgcv ``te``).
 
-    `cols` is the tuple of column indices (length D >= 2). `k` is the
-    matching tuple of marginal basis dims (defaults to ``(5, ...)``).
+    ``cols`` is the tuple of column references (length D >= 2; ints or
+    strings, mixed allowed). ``k`` is the matching tuple of marginal basis
+    dims (defaults to ``(5, ...)``).
     """
-    cols: Tuple[int, ...]
+    cols: Tuple[Col, ...]
     k: Optional[Tuple[int, ...]] = None
 
 
@@ -245,10 +256,11 @@ class TiTerm:
     sum-to-zero, matching mgcv ``ti``). One smoothing parameter per
     margin (D >= 2). CR margins.
 
-    `cols` is the tuple of column indices (length D >= 2). `k` is the
-    matching tuple of marginal basis dims (defaults to ``(5, ...)``).
+    ``cols`` is the tuple of column references (length D >= 2; ints or
+    strings, mixed allowed). ``k`` is the matching tuple of marginal basis
+    dims (defaults to ``(5, ...)``).
     """
-    cols: Tuple[int, ...]
+    cols: Tuple[Col, ...]
     k: Optional[Tuple[int, ...]] = None
 
 
@@ -256,12 +268,13 @@ class TiTerm:
 class TpsTerm:
     """Isotropic thin-plate regression spline `s(x_cols, bs='tp')` —
     one smoothing parameter per term, arbitrary number of input
-    margins. Read from `cols` columns of `x`.
+    margins. Read from ``cols`` columns of ``x``.
 
-    `cols` is a tuple of column indices (length ≥ 2). `k` is the
-    truncated-eigenbasis dimension (defaults to ``10 * len(cols)``).
+    ``cols`` is a tuple of column references (length ≥ 2; ints or strings,
+    mixed allowed). ``k`` is the truncated-eigenbasis dimension (defaults
+    to ``10 * len(cols)``).
     """
-    cols: Tuple[int, ...]
+    cols: Tuple[Col, ...]
     k: Optional[int] = None
 
 

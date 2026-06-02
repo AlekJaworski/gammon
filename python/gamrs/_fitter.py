@@ -16,7 +16,17 @@ import numpy as np
 
 from . import _gamrs_native
 from ._coerce import FAMILY_TO_GAMRS, to_1d_array, to_2d_with_columns
-from ._low_level import CrTerm, CrStableTerm, ReTerm, TeTerm, Term, _term_to_tuple
+from ._low_level import (
+    CrTerm,
+    CrStableTerm,
+    ReTerm,
+    TeMultiTerm,
+    TeTerm,
+    Term,
+    TiTerm,
+    TpsTerm,
+    _term_to_tuple,
+)
 from ._stubs import GamSummary, TermContributions  # noqa: F401
 
 ArrayLike = Any  # avoid hard dep on pandas/polars typing
@@ -50,6 +60,64 @@ def _normal_quantile(p: float) -> float:
     r = q * q
     return (((((a[0]*r + a[1])*r + a[2])*r + a[3])*r + a[4])*r + a[5]) * q / \
            (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1.0)
+
+
+def _resolve_col(col: Any, col_names: Sequence[str], term_name: str) -> int:
+    """Resolve one column reference (int or string) to an int index.
+
+    Strings are looked up in ``col_names`` (the resolved DataFrame /
+    ``predictors=`` list). Raises ``ValueError`` with the offending term
+    name when a string doesn't match any column.
+    """
+    if isinstance(col, str):
+        try:
+            return col_names.index(col)
+        except ValueError:
+            raise ValueError(
+                f"{term_name}: column {col!r} not found in design; "
+                f"available columns: {list(col_names)}"
+            ) from None
+    return int(col)
+
+
+def _resolve_term_cols(term: Term, col_names: Sequence[str]) -> Term:
+    """Rebuild a term with string column references replaced by their int
+    indices in ``col_names``. Int-only terms pass through unchanged."""
+    if isinstance(term, CrTerm):
+        return CrTerm(col=_resolve_col(term.col, col_names, "CrTerm"), k=term.k)
+    if isinstance(term, CrStableTerm):
+        return CrStableTerm(
+            col=_resolve_col(term.col, col_names, "CrStableTerm"), k=term.k
+        )
+    if isinstance(term, ReTerm):
+        return ReTerm(col=_resolve_col(term.col, col_names, "ReTerm"))
+    if isinstance(term, TeTerm):
+        return TeTerm(
+            cols=(
+                _resolve_col(term.cols[0], col_names, "TeTerm"),
+                _resolve_col(term.cols[1], col_names, "TeTerm"),
+            ),
+            k=term.k,
+        )
+    if isinstance(term, TeMultiTerm):
+        return TeMultiTerm(
+            cols=tuple(_resolve_col(c, col_names, "TeMultiTerm") for c in term.cols),
+            k=term.k,
+        )
+    if isinstance(term, TiTerm):
+        return TiTerm(
+            cols=tuple(_resolve_col(c, col_names, "TiTerm") for c in term.cols),
+            k=term.k,
+        )
+    if isinstance(term, TpsTerm):
+        return TpsTerm(
+            cols=tuple(_resolve_col(c, col_names, "TpsTerm") for c in term.cols),
+            k=term.k,
+        )
+    raise TypeError(
+        f"unknown term type {type(term).__name__}; expected one of "
+        "CrTerm / CrStableTerm / ReTerm / TeTerm / TeMultiTerm / TiTerm / TpsTerm"
+    )
 
 
 # =============================================================================
@@ -294,7 +362,9 @@ class Gam:
         # Build the term list — either from self.terms (typed API) or
         # derived from columns + predictor_basis_map (v0.x API).
         if self.terms is not None:
-            term_objs = list(self.terms)
+            # Resolve any string col references against the now-known
+            # column names. Ints pass through unchanged.
+            term_objs = [_resolve_term_cols(t, list(cols)) for t in self.terms]
         else:
             term_objs = self._build_terms_from_columns(X_arr, cols)
 
