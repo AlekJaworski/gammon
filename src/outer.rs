@@ -38,15 +38,13 @@ impl Default for NewtonOpts {
     fn default() -> Self {
         // Tolerances match mgcv's `gam.fit3.r:1644` defaults — `conv.tol=1e-7`
         // × 5 absolute on the score-relative gradient, `conv.tol=1e-7` on the
-        // relative REML change. Tightening these to e.g. 1e-10 / 1e-12
-        // doesn't close the residual ~1e-4 ρ̂ gap on hard fixtures (e.g.
-        // low_signal_n1000): gamrs is already at a local minimum of its OWN
-        // score at that point — the gap to mgcv comes from tiny linear-
-        // algebra-assembly-order differences that shift the zero-gradient
-        // location by ~1e-12 in tr(A⁻¹S), which scales up to ~1e-4 in ρ̂
-        // and ~1e-6 in predictions on ill-conditioned (large λ̂) cases.
-        // Closing it further is its own workstream — port mgcv's exact
-        // assembly order or use a rotated-Cholesky path.
+        // relative REML change. Mirrors mgcv_rust's smooth.rs:2545-2569 too.
+        // Previously set to 1e-9 / 1e-10 (1000× tighter than mgcv) which
+        // forced over-convergence — e.g. 10-D Gaussian took 15 outer iters
+        // instead of 5-8 because the score plateaus past mgcv-relevant
+        // precision. Restoring mgcv parity here keeps `rho_hat` agreement
+        // to ~1e-5 (well inside the LinAlg-assembly noise floor) and
+        // closes the 10-D Gaussian perf gap from 2.84× to ~1×.
         Self {
             // 200 matches v0.x's `newton_max_iter = max_outer_iter.max(200)`
             // (gam_optimized.rs:1265). Shape-aware multi-smooth fits need
@@ -55,8 +53,8 @@ impl Default for NewtonOpts {
             // which produces ρ̂ differences of 1-2 units vs v0.x on the
             // saturated axis. See parity report 2026-05-27.
             max_iters: 200,
-            grad_tol: 1.0e-9,
-            reml_tol: 1.0e-10,
+            grad_tol: 5.0e-7,
+            reml_tol: 1.0e-7,
             step_min: 1e-3,
             hess_floor: 1e-8,
             max_step: 5.0,

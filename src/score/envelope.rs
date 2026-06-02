@@ -1018,7 +1018,14 @@ mod fd_match_tests {
             prep.mp,
             prep.log_pseudo_det_s_list.clone(),
         );
-        let outer = NewtonWithHalving::new(NewtonOpts::default());
+        // Tighter tolerances than default (5e-7 / 1e-7 = mgcv parity) so
+        // the analytic-vs-FD Hessian comparison sees a near-zero gradient
+        // at the optimum. Without this the residual ‖g‖ leaks O(g·h) into
+        // the FD Hessian and widens the analytic vs FD gap to ~3e-3.
+        let mut opts = NewtonOpts::default();
+        opts.grad_tol = 1e-9;
+        opts.reml_tol = 1e-10;
+        let outer = NewtonWithHalving::new(opts);
         let fit = outer.minimize(&score, Array1::zeros(1)).unwrap();
         // ELF Armijo inner: the `∂W/∂η` term is a central FD of the ELF
         // sigmoid weight, so the analytic Hessian carries a small FD noise
