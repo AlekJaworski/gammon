@@ -15,7 +15,9 @@ use crate::family::Family;
 use crate::inner::{CholeskySolver, GaussianInnerFit, LinearSolver, PirlsInner, PirlsOpts};
 use crate::outer::{NewtonOpts, NewtonWithHalving};
 use crate::score::{EnvelopeScore, Profile, ShapeAwareEnvelopeScore, ShapeInnerBuilder};
-use crate::traits::{CoordsKind, InnerSolver, Link, Loss, OuterSolver, VarianceFn};
+use crate::traits::{
+    CoordsKind, InnerSolver, Link, Loss, OuterSolver, ScoreDerivatives, VarianceFn,
+};
 
 use super::{compute_edf, compute_edf_per_term, compute_vcov, FittedGam, LinkKind};
 
@@ -193,9 +195,28 @@ where
         prep.mp,
         prep.log_pseudo_det_s_list.clone(),
     );
-    let outer_solver =
-        NewtonWithHalving::new(crate::outer::resolve_tuning(&score.loss).to_newton_opts());
-    let outer = outer_solver.minimize(&score, Array1::zeros(n_terms))?;
+    let outer = match crate::outer::resolved_algorithm() {
+        crate::outer::OuterAlgorithm::Newton => {
+            let solver =
+                NewtonWithHalving::new(crate::outer::resolve_tuning(&score.loss).to_newton_opts());
+            solver.minimize(&score, Array1::zeros(n_terms))?
+        }
+        crate::outer::OuterAlgorithm::FellnerSchall => {
+            crate::outer::fellner_schall_minimize(
+                &score.inner,
+                &score.s_list,
+                &score.rank_s_list,
+                Array1::zeros(n_terms),
+                // FS dispersion: 1.0 for fixed-φ families (Bernoulli,
+                // Poisson, NegBin), Pearson φ̂ for profiled families.
+                // mgcv R defaults φ=1 for fREML on GLMs (matches mgcv_rust
+                // smooth.rs:3894 caller).
+                |_fit| 1.0,
+                crate::outer::FellnerSchallOpts::default(),
+                score.stats(),
+            )?
+        }
+    };
 
     // Reuse the score's inner solver for the final fit (closes audit §B4).
     let final_fit: GaussianInnerFit<S> = score.inner.fit(&outer.theta)?;

@@ -234,7 +234,29 @@ class Gam:
         column by default; ``predictor_basis_map`` lets you switch a
         column to ``"re"``). For the typed-term API, pass ``terms=`` to
         the constructor — that path bypasses predictor-name resolution.
+
+        The ``method`` constructor argument selects the outer optimiser:
+        ``"REML"`` / ``None`` (default) → damped Newton on the REML
+        score; ``"fREML"`` → Wood & Fasiolo (2017) Fellner-Schall
+        multiplicative updates (mgcv R ``bam()`` equivalent; cheaper
+        per-iter, wins on GLM families at large n).
         """
+        # Set/restore the outer-algorithm override for this fit only.
+        if self.method is not None:
+            try:
+                _gamrs_native.set_outer_algorithm(self.method)
+            except ValueError as e:
+                raise ValueError(
+                    f"method={self.method!r} not recognised; "
+                    f"supported: 'REML' (default), 'fREML'"
+                ) from e
+        try:
+            return self._fit_impl(X, y, sample_weight)
+        finally:
+            if self.method is not None:
+                _gamrs_native.set_outer_algorithm(None)
+
+    def _fit_impl(self, X: ArrayLike, y: ArrayLike, sample_weight: Any) -> "Gam":
         X_arr, cols = to_2d_with_columns(X, self.predictors)
         y_arr = to_1d_array(y, name="y")
         if X_arr.shape[0] != y_arr.shape[0]:

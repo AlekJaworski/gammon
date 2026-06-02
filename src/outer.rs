@@ -125,6 +125,41 @@ pub fn resolve_tuning<L: crate::traits::Loss>(loss: &L) -> OuterTuning {
         .unwrap_or_else(|| loss.outer_tuning())
 }
 
+/// Which outer optimiser to use. Maps to mgcv R's `method` argument.
+///
+/// - `Newton`: damped Newton on the REML score (the gamrs default — mgcv
+///   `gam()` equivalent). Per-iter cost: inner PIRLS + analytic Hessian
+///   assembly. Best for small-to-mid n (≤ ~10K) where the per-iter cost
+///   pays off via fast convergence.
+/// - `FellnerSchall`: Wood & Fasiolo (2017) multiplicative λ update
+///   (mgcv `bam()`'s `fREML` equivalent). Per-iter cost: inner PIRLS + a
+///   few O(p²) traces. Cheaper per-iter, slightly more iters; wins at
+///   large n on GLM families.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OuterAlgorithm {
+    Newton,
+    FellnerSchall,
+}
+
+thread_local! {
+    static OUTER_ALGORITHM_OVERRIDE: std::cell::Cell<Option<OuterAlgorithm>> =
+        const { std::cell::Cell::new(None) };
+}
+
+pub fn set_algorithm_override(algo: OuterAlgorithm) {
+    OUTER_ALGORITHM_OVERRIDE.with(|c| c.set(Some(algo)));
+}
+
+pub fn clear_algorithm_override() {
+    OUTER_ALGORITHM_OVERRIDE.with(|c| c.set(None));
+}
+
+pub fn resolved_algorithm() -> OuterAlgorithm {
+    OUTER_ALGORITHM_OVERRIDE
+        .with(|c| c.get())
+        .unwrap_or(OuterAlgorithm::Newton)
+}
+
 impl Default for NewtonOpts {
     fn default() -> Self {
         // Tolerances match mgcv's `gam.fit3.r:1644` defaults — `conv.tol=1e-7`
@@ -394,6 +429,143 @@ impl OuterSolver for NewtonWithHalving {
 
 fn inf_norm(v: &Array1<f64>) -> f64 {
     v.iter().fold(0.0_f64, |a, &b| a.max(b.abs()))
+}
+
+/// Wood & Fasiolo (2017) Fellner-Schall update.
+///
+/// Per smoothing parameter `λ_i`, the multiplicative update is
+///
+/// ```text
+///   λ_new[i] = λ[i] · φ · max(rank[i]/λ[i] − tr(A⁻¹ S_i), ε) / (β' S_i β)
+/// ```
+///
+/// where `A = X' W X + Σ_j λ_j S_j` is the inner (penalised) Hessian
+/// and `φ` is the dispersion. Performed in log-space with a per-iter
+/// step clamp to keep the update stable.
+///
+/// Port of mgcv_rust `smooth.rs:fellner_schall_step` (which is mgcv R's
+/// `bam(method="fREML")` core update).
+#[derive(Debug, Clone, Copy)]
+pub struct FellnerSchallOpts {
+    /// Max outer iterations before bailing out.
+    pub max_iters: usize,
+    /// Relative `log λ` change for convergence; `max_i |Δlog λ_i| < tol`.
+    pub tol: f64,
+    /// Per-iter cap on `|Δlog λ_i|`. mgcv default `3.0`.
+    pub log_step_clamp: f64,
+    /// Lower / upper bounds on λ (clamped post-update). mgcv default
+    /// `(1e-9, 1e7)`.
+    pub lambda_bounds: (f64, f64),
+}
+
+impl Default for FellnerSchallOpts {
+    fn default() -> Self {
+        Self {
+            max_iters: 200,
+            tol: 1e-6,
+            log_step_clamp: 3.0,
+            lambda_bounds: (1e-9, 1e7),
+        }
+    }
+}
+
+/// Run the Fellner-Schall outer loop. Returns the converged
+/// `OuterFit { theta: log_lambda_hat, ... }` so the caller can plug
+/// it into the same downstream pipeline as Newton's output.
+///
+/// `phi_fn` reads the dispersion at the current fit — for Bernoulli /
+/// Poisson / NegBin it's `1.0`; for Gaussian / Gamma / IG it's the
+/// Pearson φ̂ at convergence.
+pub fn fellner_schall_minimize<I, S>(
+    inner: &I,
+    s_list: &[Array2<f64>],
+    rank_s_list: &[usize],
+    rho0: Array1<f64>,
+    phi_fn: impl Fn(&crate::inner::GaussianInnerFit<S>) -> f64,
+    opts: FellnerSchallOpts,
+    stats: Option<&crate::stats::FitStats>,
+) -> Result<OuterFit>
+where
+    I: crate::traits::InnerSolver<Fit = crate::inner::GaussianInnerFit<S>>,
+    S: crate::inner::LinearSolver,
+{
+    let m = s_list.len();
+    debug_assert_eq!(rho0.len(), m);
+    debug_assert_eq!(rank_s_list.len(), m);
+    let log_lo = opts.lambda_bounds.0.ln();
+    let log_hi = opts.lambda_bounds.1.ln();
+
+    let mut rho = rho0;
+    for k in 0..m {
+        rho[k] = rho[k].clamp(log_lo, log_hi);
+    }
+    let mut warm_beta: Option<Array1<f64>> = None;
+    let tiny = 1e-10_f64;
+
+    for iter in 0..opts.max_iters {
+        if let Some(s) = stats {
+            s.bump_outer();
+        }
+        // Warm-start PIRLS from the previous FS iter's β (Wood 2011 Phase
+        // 5). FS iterations move λ in small log-steps, so β changes
+        // gradually — warm-start typically cuts PIRLS iters from 5+ cold
+        // to 1-2 warm. mgcv_rust does the same in its FS outer loop.
+        let fit = inner.fit_warm(&rho, warm_beta.as_ref())?;
+        if let Some(s) = stats {
+            s.record_pirls_call(fit.iterations);
+        }
+        let phi = phi_fn(&fit);
+        let a_inv = fit.a_inv();
+
+        // Compute the FS step per smooth and the max |log change|.
+        let mut max_change = 0.0_f64;
+        let mut new_rho = rho.clone();
+        for i in 0..m {
+            let s_i = &s_list[i];
+            let lambda_i = rho[i].exp().max(1e-20);
+            let rank_i = rank_s_list[i] as f64;
+            // tr(A⁻¹ S_i)
+            let mut tr = 0.0_f64;
+            for r in 0..a_inv.nrows() {
+                for c in 0..a_inv.ncols() {
+                    tr += a_inv[[r, c]] * s_i[[c, r]];
+                }
+            }
+            // β' S_i β
+            let s_beta = s_i.dot(&fit.beta);
+            let bsb_raw: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            let bsb = bsb_raw.max(tiny);
+            let num_raw = rank_i / lambda_i - tr;
+            let num = num_raw.max(tiny);
+            let log_ratio_raw = (phi * num / bsb).ln();
+            let log_ratio = log_ratio_raw.clamp(-opts.log_step_clamp, opts.log_step_clamp);
+            let new_log_lambda = (rho[i] + log_ratio).clamp(log_lo, log_hi);
+            max_change = max_change.max((new_log_lambda - rho[i]).abs());
+            new_rho[i] = new_log_lambda;
+        }
+        rho = new_rho;
+        warm_beta = Some(fit.beta.clone());
+
+        if max_change < opts.tol {
+            return Ok(OuterFit {
+                theta: rho,
+                value: 0.0, // FS doesn't track the REML value directly
+                grad_norm: max_change,
+                iterations: iter + 1,
+                converged: true,
+            });
+        }
+    }
+
+    // Did not converge — return last state with `converged: false`.
+    let _ = warm_beta;
+    Ok(OuterFit {
+        theta: rho,
+        value: 0.0,
+        grad_norm: f64::NAN,
+        iterations: opts.max_iters,
+        converged: false,
+    })
 }
 
 fn make_psd(h: &Array2<f64>, floor: f64) -> Array2<f64> {

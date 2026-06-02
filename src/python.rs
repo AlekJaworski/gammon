@@ -1491,11 +1491,39 @@ fn set_outer_tuning_override(grad_tol: Option<f64>, reml_tol: Option<f64>) {
     }
 }
 
+/// Override the outer-Newton algorithm. Pass `"REML"` for the default
+/// damped Newton (mgcv R `gam()` equivalent) or `"fREML"` for Wood &
+/// Fasiolo (2017) Fellner-Schall multiplicative updates (mgcv R `bam()`
+/// equivalent — cheaper per-iter, wins on GLM families at large n).
+/// Pass `None` to clear the override and revert to Newton.
+#[pyfunction]
+#[pyo3(signature = (algorithm=None))]
+fn set_outer_algorithm(algorithm: Option<&str>) -> PyResult<()> {
+    match algorithm {
+        None => {
+            crate::outer::clear_algorithm_override();
+            Ok(())
+        }
+        Some("REML") | Some("Newton") => {
+            crate::outer::set_algorithm_override(crate::outer::OuterAlgorithm::Newton);
+            Ok(())
+        }
+        Some("fREML") | Some("FellnerSchall") | Some("fellner-schall") => {
+            crate::outer::set_algorithm_override(crate::outer::OuterAlgorithm::FellnerSchall);
+            Ok(())
+        }
+        Some(other) => Err(PyValueError::new_err(format!(
+            "algorithm must be 'REML' or 'fREML' (got {other:?})"
+        ))),
+    }
+}
+
 #[pymodule]
 fn _gamrs_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFittedGam>()?;
     m.add_function(wrap_pyfunction!(fit, m)?)?;
     m.add_function(wrap_pyfunction!(fit_additive, m)?)?;
     m.add_function(wrap_pyfunction!(set_outer_tuning_override, m)?)?;
+    m.add_function(wrap_pyfunction!(set_outer_algorithm, m)?)?;
     Ok(())
 }
