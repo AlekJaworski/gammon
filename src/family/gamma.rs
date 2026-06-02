@@ -110,10 +110,50 @@ impl Loss for Gamma {
     }
 
     /// Gamma profiles σ̂² via Newton-on-φ (above), NOT the closed-form
-    /// `Dp/(n−Mp)`. The analytic outer-Newton Hessian therefore has no
-    /// simple `∂σ²/∂ρ` chain term for Gamma and falls back to FD.
+    /// `Dp/(n−Mp)`. The analytic outer-Newton Hessian uses
+    /// `profile_sigma2_drho_factor` for the IFT chain instead of the
+    /// closed-form branch.
     fn profile_sigma2_is_closed_form(&self) -> bool {
         false
+    }
+
+    /// IFT chain factor for Gamma's Newton-on-φ profile. Returns
+    /// `−1/F'(φ̂)` so the analytic outer-Newton Hessian can form
+    /// `∂σ²/∂ρ_i = factor · ∂dp/∂ρ_i = factor · λ_i·β'S_iβ`.
+    ///
+    /// `F'(φ̂) = (2n/φ̂)[1 - ψ'(1/φ̂)/φ̂] + Mp` — identical to the `fp`
+    /// term inside `profile_score_sigma2`'s Newton loop, evaluated at the
+    /// converged φ̂. mgcv_rust drops this chain entirely (default-OFF
+    /// `MGCV_SIGMA_CHAIN`, `reml_hessian_mgcv_exact_ift` line 2773); gamrs
+    /// includes it because the analytic factor is cheap and tightens the
+    /// analytic-vs-FD Hessian floor from ~1.7e-2 to ~7.7e-4. Paired with
+    /// `skip_w_chain_in_hessian = true` matches mgcv_rust's
+    /// `reml_hessian_mgcv_exact_closed_form` shape (no W-chain) but with a
+    /// strictly tighter Hessian (the σ² chain is real off-optimum).
+    /// Closes the `1 + 2d` FD inner-fits per outer Newton step that the
+    /// previous FD-Hessian fallback cost.
+    fn profile_sigma2_drho_factor(&self, sigma2: f64, n_obs: usize, mp: usize) -> Option<f64> {
+        let phi = sigma2.max(1e-8);
+        let inv_phi = 1.0 / phi;
+        let n = n_obs as f64;
+        let mp_f = mp as f64;
+        let fp = (2.0 * n / phi) * (1.0 - crate::special::trigamma(inv_phi) * inv_phi) + mp_f;
+        if fp.abs() < 1e-15 {
+            return None;
+        }
+        Some(-1.0 / fp)
+    }
+
+    /// Skip the `∂W/∂η` chain term in the analytic Hessian — mgcv_rust's
+    /// `reml_hessian_mgcv_exact_closed_form` path (`nn_exploring/src/
+    /// smooth.rs:48-53`) treats Gamma as if W were β-independent because
+    /// the line-search REML score evaluates on working-response form
+    /// (where W IS β-frozen at PIRLS convergence). Without this opt-out,
+    /// gamrs's `EnvelopeScore::hess_analytic` would add a `dW/dη` chain
+    /// term that doesn't match the score, so the analytic vs FD Hessian
+    /// disagree by ~7.7e-4 and Newton loses one iter to step-halving.
+    fn skip_w_chain_in_hessian(&self) -> bool {
+        true
     }
 }
 

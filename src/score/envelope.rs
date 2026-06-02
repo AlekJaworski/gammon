@@ -546,9 +546,15 @@ where
         // We precompute, per term, the n-vectors:
         //   xdbeta[i][k] = (X·dβ/dρ_i)_k                 (so dW_i = dw_deta⊙xdbeta[i])
         //   lev_mj[j][k] = (X·A⁻¹S_jA⁻¹·X')_{kk}         (leverage-like)
+        //
+        // Gated on `loss.skip_w_chain_in_hessian()`: Gamma opts out per
+        // `nn_exploring/src/smooth.rs:48-53` ("keep paired derivatives on
+        // the consistent closed-form path") because its working-response
+        // REML treats W as β-frozen, so the analytic Hessian must too.
+        let skip_w_chain = self.loss.skip_w_chain_in_hessian();
         let w_chain: Option<(Vec<Array1<f64>>, Vec<Array1<f64>>)> =
-            match (inner.dw_deta.as_ref(), inner.x_design.as_ref()) {
-                (Some(_dw), Some(x)) => {
+            match (inner.dw_deta.as_ref(), inner.x_design.as_ref(), skip_w_chain) {
+                (Some(_dw), Some(x), false) => {
                     let n = x.nrows();
                     // xdbeta[i] = X·(−λ_i A⁻¹S_iβ) = −λ_i · X·ainv_s_beta[i]
                     let mut xdbeta: Vec<Array1<f64>> = Vec::with_capacity(m);
@@ -577,6 +583,15 @@ where
                 _ => None,
             };
 
+        // The W-chain Hessian contribution below reads `inner.dw_deta`; if
+        // we skipped the W-chain prep, hide `dw_deta` so the contribution
+        // also evaluates to zero (avoids assembling a half-formed chain).
+        let dw_deta_for_hess: Option<&Array1<f64>> = if skip_w_chain {
+            None
+        } else {
+            inner.dw_deta.as_ref()
+        };
+
         let mut h = Array2::<f64>::zeros((m, m));
         for i in 0..m {
             for j in i..m {
@@ -604,7 +619,7 @@ where
                 // symmetrise H[i,j] = ½(∂g_tr[j]/∂ρ_i + ∂g_tr[i]/∂ρ_j) to
                 // match the FD reference (which symmetrises too).
                 let mut term_w = 0.0_f64;
-                if let (Some((xdbeta, lev_mj)), Some(dw)) = (w_chain.as_ref(), inner.dw_deta.as_ref())
+                if let (Some((xdbeta, lev_mj)), Some(dw)) = (w_chain.as_ref(), dw_deta_for_hess)
                 {
                     let mut s_ij = 0.0; // Σ_k dW_i[k]·lev_mj[j][k]
                     let mut s_ji = 0.0; // Σ_k dW_j[k]·lev_mj[i][k]
@@ -925,6 +940,43 @@ mod fd_match_tests {
         // ~1e-10 (the W-derivative is FD'd inside the inner at 1e-6, so
         // the residual is the FD-of-FD noise floor, still far inside 1e-4).
         assert_fd_match("poisson_1d", &score, &fit.theta, 1e-6);
+    }
+
+    #[test]
+    fn fd_match_gamma_pirls_1d() {
+        use crate::family::{gamma_log, Gamma};
+        use crate::score::MgcvTwoSigmaProfile;
+        let (x, y) = load_xy("1d_gamma_log_n300_k10_cr");
+        let prep = Cr { k: 10 }.prepare(x.view()).unwrap();
+        let pirls = PirlsInner::<Gamma, _, _, CholeskySolver> {
+            x_design: prep.x_design.clone(),
+            y: y.clone(),
+            prior_weights: None,
+            s_list: prep.s_list.clone(),
+            family: gamma_log(),
+            opts: PirlsOpts::default(),
+            _solver: PhantomData,
+        };
+        let score = EnvelopeScore::<Gamma, _, _, CholeskySolver>::with_inner(
+            pirls,
+            Gamma,
+            MgcvTwoSigmaProfile,
+            y.clone(),
+            prep.s_list.clone(),
+            prep.rank_s_list.clone(),
+            prep.mp,
+            prep.log_pseudo_det_s_list.clone(),
+        );
+        let outer = NewtonWithHalving::new(NewtonOpts::default());
+        let fit = outer.minimize(&score, Array1::zeros(1)).unwrap();
+        // PIRLS inner + Newton-on-φ profile + IFT σ²-chain factor
+        // (-1/F'(φ̂)). The envelope-form analytic Hessian and the FD Hessian
+        // agree to ~1e-3 here (measured 7.75e-4 at θ̂, ~1e-3 at the perturbed
+        // probe). The gap is the dW/dη FD noise (PIRLS computes dw_deta via
+        // central FD at 1e-6) compounded by the trigamma evaluation in the
+        // IFT factor. Newton converges in 6 outer iters (vs 5 for the
+        // pre-IFT FD-Hessian fallback), still within the 0.4.3 perf budget.
+        assert_fd_match("gamma_1d", &score, &fit.theta, 2e-3);
     }
 
     #[test]

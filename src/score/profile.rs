@@ -129,21 +129,41 @@ impl<L: Loss> Profile<L> for MgcvTwoSigmaProfile {
         lambda_j: &[f64],
         mp: usize,
     ) -> Option<Vec<f64>> {
-        // Closed-form profiles only: σ² = Dp/(n−Mp), and the envelope
-        // identity ∂Dp/∂ρ_i = λ_i·β'S_iβ gives ∂σ²/∂ρ_i = λ_i·bSb_i/(n−Mp).
-        // Gamma (Newton-on-φ) returns `false` here → FD fallback.
-        if !loss.profile_sigma2_is_closed_form() {
-            return None;
-        }
         let n_minus_mp = (inner.n as f64) - (mp as f64);
         if n_minus_mp <= 0.0 {
             return None;
         }
+        // Closed-form profiles (Gaussian / Quasi*): σ² = Dp/(n−Mp), and the
+        // envelope identity ∂Dp/∂ρ_i = λ_i·β'S_iβ gives
+        // ∂σ²/∂ρ_i = λ_i·bSb_i/(n−Mp).
+        if loss.profile_sigma2_is_closed_form() {
+            return Some(
+                lambda_j
+                    .iter()
+                    .zip(bsb_per_term.iter())
+                    .map(|(&lam, &bsb)| lam * bsb / n_minus_mp)
+                    .collect(),
+            );
+        }
+        // Newton-on-φ profiles (Gamma): use the family's analytic IFT
+        // factor `−1/F'(φ̂)` so the chain `∂σ²/∂ρ_i = factor · λ_i·bSb_i`
+        // is exact, not FD. mgcv_rust treats σ̂² as a constant in the
+        // analytic Hessian formula (`reml_hessian_mgcv_exact_ift` at
+        // `nn_exploring/src/reml/mod.rs:2511`, line 2773); we improve on
+        // that with the cheap analytic factor here, avoiding the `1 + 2d`
+        // FD inner-fits per outer Newton step that the previous FD-Hessian
+        // fallback cost. Falls back to "treat as constant" (zeros) if the
+        // family declines to provide a factor (e.g. degenerate `F'(φ̂)≈0`).
+        let factor = loss.profile_sigma2_drho_factor(_sigma2, inner.n, mp);
+        let factor = match factor {
+            Some(f) => f,
+            None => return Some(vec![0.0; bsb_per_term.len()]),
+        };
         Some(
             lambda_j
                 .iter()
                 .zip(bsb_per_term.iter())
-                .map(|(&lam, &bsb)| lam * bsb / n_minus_mp)
+                .map(|(&lam, &bsb)| factor * lam * bsb)
                 .collect(),
         )
     }

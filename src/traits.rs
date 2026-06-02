@@ -114,12 +114,51 @@ pub trait Loss {
     /// whose profile σ̂² is the root of a Newton-on-φ equation — overrides
     /// this to `false`.
     ///
-    /// The analytic outer-Newton Hessian uses this to decide whether it can
-    /// form `∂σ²/∂ρ_i = λ_i·β'S_iβ/(n−Mp)` in closed form; when `false` the
-    /// score keeps its finite-difference Hessian for that family rather than
-    /// shipping an approximate analytic one.
+    /// The analytic outer-Newton Hessian uses this to decide which closed-
+    /// form to use for `∂σ²/∂ρ_i`: closed-form profiles use the cheap
+    /// `λ_i·β'S_iβ/(n−Mp)`, Newton-on-φ profiles defer to
+    /// `profile_sigma2_drho_factor` for the implicit-function-theorem chain.
     fn profile_sigma2_is_closed_form(&self) -> bool {
         true
+    }
+
+    /// Implicit-function-theorem factor `−1 / F'(φ̂)` for the Newton-on-φ
+    /// profile families (Gamma). Returns `Some(f)` so the score body can
+    /// build `∂σ²/∂ρ_i = f · ∂dp/∂ρ_i = f · λ_i·β'S_iβ`; `None` means
+    /// "no analytic chain available, caller treats σ² as constant in the
+    /// Hessian (matches mgcv_rust default-OFF `MGCV_SIGMA_CHAIN`)".
+    ///
+    /// For Gamma: `F(φ) = dp + 2n[ψ(1/φ) + log φ] + Mp·φ = 0`, so
+    /// `F'(φ̂) = (2n/φ̂)[1 - ψ'(1/φ̂)/φ̂] + Mp` (the exact same `fp` the
+    /// `profile_score_sigma2` Newton iter uses for `delta = -f/fp`). This
+    /// is mathematically the right chain term; mgcv_rust drops it in the
+    /// Hessian (relies on it vanishing at σ²̂'s stationary point), gamrs
+    /// can do better with the cheap exact value.
+    ///
+    /// Default `None` — closed-form profiles handle the chain via the
+    /// closed-form path in `MgcvTwoSigmaProfile::dispersion_drho`.
+    fn profile_sigma2_drho_factor(&self, _sigma2: f64, _n_obs: usize, _mp: usize) -> Option<f64> {
+        None
+    }
+
+    /// Whether the analytic Hessian should skip the `∂W/∂η` chain term
+    /// for this family. Default `false` — `EnvelopeScore::hess_analytic`
+    /// includes the W-chain whenever `dw_deta` is available (Bernoulli,
+    /// Poisson, InverseGaussian, etc.).
+    ///
+    /// Gamma overrides to `true`: mgcv_rust uses `reml_hessian_mgcv_exact_
+    /// closed_form` for Gamma (`nn_exploring/src/smooth.rs:48-53` —
+    /// "IFT differentiates the true GLM deviance, while the line search
+    /// still evaluates working-response REML. Keep those paired
+    /// derivatives on the consistent closed-form path for the two parity-
+    /// sensitive edge cases"). That formula carries only the trace curvature
+    /// (`tr(A⁻¹ S_i A⁻¹ S_j)`) + `bSb·A⁻¹S` data-fit pieces with no W-chain.
+    /// Without this opt-out, gamrs's PIRLS-populated `dw_deta` engages the
+    /// W-chain (designed for InverseGaussian+log) which adds noise the
+    /// Newton-on-φ path doesn't pair with — analytic vs FD Hessian disagree
+    /// by ~7.7e-4 instead of the canonical ~1e-10.
+    fn skip_w_chain_in_hessian(&self) -> bool {
+        false
     }
 
     /// Number of family-shape parameters this loss owns. Zero for
