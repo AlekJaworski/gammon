@@ -112,6 +112,10 @@ where
     /// `compute_value_no_refresh`. `None` until the first full eval lands.
     #[doc(hidden)]
     pub accepted_state: RefCell<Option<AcceptedState>>,
+    /// Cell-based diagnostic counters. Bumped by outer.rs, profile_shape.rs,
+    /// fit_inner_at, and compute_value_no_refresh. Read after fit via
+    /// `score.stats().unwrap().snapshot()`.
+    pub stats: crate::stats::FitStats,
 }
 
 /// PIRLS-driven shape-aware score — what TDist/scat, NegBin use.
@@ -190,6 +194,10 @@ where
         bnds.extend(self.family_base.loss.shape_axis_bounds());
         Some(bnds)
     }
+
+    fn stats(&self) -> Option<&crate::stats::FitStats> {
+        Some(&self.stats)
+    }
 }
 
 impl<L, K, V, B, P, S> ShapeAwareEnvelopeScore<L, K, V, B, P, S>
@@ -232,6 +240,7 @@ where
             self.pirls_opts.clone(),
         );
         let fit = inner.fit(&rho_slice)?;
+        self.stats.record_pirls_call(fit.iterations);
         Ok((fit, family))
     }
 

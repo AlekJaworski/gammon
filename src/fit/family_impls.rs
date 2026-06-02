@@ -518,6 +518,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             profile: FixedAtOneProfile,
             _solver: PhantomData,
             accepted_state: std::cell::RefCell::new(None),
+            stats: crate::stats::FitStats::new(),
         };
 
         // θ₀ = [SmartInit ρ_1, …, SmartInit ρ_T, θ₁, …, θ_{R-2}]
@@ -568,6 +569,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             vcov,
             link_kind: LinkKind::Identity,
             shape_params: theta_hat,
+            stats: score.stats.snapshot(),
         })
     }
 }

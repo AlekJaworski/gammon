@@ -221,6 +221,7 @@ where
         vcov,
         link_kind,
         shape_params: Array1::zeros(0),
+        stats: score.stats.snapshot(),
     })
 }
 
@@ -324,6 +325,7 @@ where
         profile,
         _solver: PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            stats: crate::stats::FitStats::new(),
     };
 
     let outer_solver = NewtonWithHalving::new(NewtonOpts::default());
@@ -378,5 +380,6 @@ where
         vcov,
         link_kind,
         shape_params,
+        stats: score.stats.snapshot(),
     })
 }

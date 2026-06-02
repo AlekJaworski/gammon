@@ -102,6 +102,9 @@ impl OuterSolver for NewtonWithHalving {
         let mut prev_v = f64::INFINITY;
 
         for iter in 0..opts.max_iters {
+            if let Some(s) = score.stats() {
+                s.bump_outer();
+            }
             // Score-relative gradient tolerance, matching mgcv gam.fit3.r:1644.
             let score_scale = v.abs() + 1.0;
             let grad_tol_abs = opts.grad_tol * score_scale;
@@ -184,6 +187,9 @@ impl OuterSolver for NewtonWithHalving {
                             trial[i] = trial[i].clamp(lo, hi);
                         }
                     }
+                }
+                if let Some(s) = score.stats() {
+                    s.bump_line_search_trial();
                 }
                 if let Ok(v_trial) = score.value(&trial) {
                     if v_trial.is_finite() && v_trial < v - 1e-10 * v.abs() {

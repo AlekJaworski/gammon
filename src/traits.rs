@@ -571,6 +571,14 @@ pub trait ScoreDerivatives {
     fn axis_bounds(&self) -> Option<Vec<(f64, f64)>> {
         None
     }
+
+    /// Diagnostic counters. Concrete scores own a `FitStats` field and
+    /// return `Some(&self.stats)` so the outer solver, line-search probes,
+    /// and inner solves can bump counters. Test-only scores (`QuadScore`)
+    /// keep the default `None` — counters are advisory, not load-bearing.
+    fn stats(&self) -> Option<&crate::stats::FitStats> {
+        None
+    }
 }
 
 /// Result of an outer-loop optimisation.

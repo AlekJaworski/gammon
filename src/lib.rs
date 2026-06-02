@@ -51,6 +51,7 @@ pub mod inner;
 pub mod outer;
 pub mod score;
 pub mod special;
+pub mod stats;
 pub mod traits;
 pub mod transform;
 
@@ -62,6 +63,7 @@ pub use design::{
     DesignStrategy, Predictor, PreparedDesign, Re, RePredictor, TermSpec,
 };
 pub use error::{GamrsError, Result};
+pub use stats::{FitStats, FitStatsSnapshot};
 pub use family::{ocat_init_theta, OcatLoss, OcatVariance};
 pub use fit::{
     fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver,

@@ -143,6 +143,7 @@ fn tweedie_analytic_shape_grad_matches_fd() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            stats: gamrs::stats::FitStats::new(),
     };
 
     let probes: &[[f64; 3]] = &[[0.5, 0.0, 0.0], [2.0, 0.5, 0.3], [1.0, -0.5, -0.2]];
@@ -223,6 +224,7 @@ fn tweedie_analytic_hess_matches_fd_on_grad() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            stats: gamrs::stats::FitStats::new(),
     };
 
     // 3 probes near (but not at) the optimum; far from the optimum
@@ -331,6 +333,7 @@ fn debug_tweedie_real_data_grad_walk() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            stats: gamrs::stats::FitStats::new(),
     };
 
     let probes: &[[f64; 3]] = &[
@@ -472,6 +475,7 @@ fn negbin_multismooth_analytic_grad_matches_fd() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            stats: gamrs::stats::FitStats::new(),
     };
 
     // Probes: (ρ_0, ρ_1, log θ). Centred near the 2-D NB parity fit's
@@ -597,6 +601,7 @@ fn nb_hess_microbench() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            stats: gamrs::stats::FitStats::new(),
     };
     let theta = Array1::from_vec(vec![1.0, 1.0, 1.0]);
     // Warmup.
@@ -669,6 +674,7 @@ fn nb_hess_microbench() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            stats: gamrs::stats::FitStats::new(),
     };
     let theta1 = Array1::from_vec(vec![1.0, 1.0]);
     for _ in 0..5 {
@@ -744,6 +750,7 @@ fn negbin_multismooth_analytic_hess_matches_fd_on_grad() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            stats: gamrs::stats::FitStats::new(),
     };
 
     // 3 probes in the same area the gradient test uses.

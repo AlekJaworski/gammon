@@ -738,6 +738,17 @@ class Gam:
         return float(self._require_fitted().reml_value)
 
     @property
+    def fit_stats_(self) -> dict:
+        """Diagnostic counters captured during the fit.
+
+        Keys: ``outer_iterations``, ``line_search_trials``,
+        ``no_refresh_attempts``, ``no_refresh_hits``,
+        ``inner_pirls_calls``, ``inner_pirls_iterations_total``,
+        ``pirls_iters_per_call``, ``no_refresh_hit_rate``.
+        """
+        return dict(self._require_fitted().fit_stats)
+
+    @property
     def feature_names_in_(self) -> np.ndarray:
         return np.array(self._effective_predictors or [])
 

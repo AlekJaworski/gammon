@@ -207,6 +207,7 @@ where
         if !self.family_base.loss.allows_no_refresh() {
             return None;
         }
+        self.stats.bump_no_refresh_attempt();
         let n_terms = self.s_list.len();
         let n_shape = self.family_base.n_shape_params();
         let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
@@ -471,6 +472,7 @@ where
         if !reml.is_finite() {
             return None;
         }
+        self.stats.bump_no_refresh_hit();
         Some(reml)
     }
 

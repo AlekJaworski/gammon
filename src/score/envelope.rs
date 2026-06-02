@@ -62,6 +62,10 @@ pub struct EnvelopeScore<
     /// doesn't have to peek inside the InnerSolver.)
     pub y: Array1<f64>,
     pub _solver: PhantomData<S>,
+    /// Cell-based diagnostic counters. Bumped by outer.rs line-search and
+    /// by `value_grad_hess`'s inner-fit call. Read after fit via
+    /// `score.stats().unwrap().snapshot()`.
+    pub stats: crate::stats::FitStats,
 }
 
 /// Phase-0 / Phase-1 convenience type alias for the Gaussian one-Cholesky
@@ -107,6 +111,7 @@ where
             coords: CoordsKind::Identity,
             y,
             _solver: PhantomData,
+            stats: crate::stats::FitStats::new(),
         }
     }
 }
@@ -187,12 +192,17 @@ where
         // the analytic Hessian — the whole point of the analytic path is to
         // avoid the `1 + 2d` inner fits the FD Hessian needs.
         let inner: GaussianInnerFit<S> = self.inner.fit(theta)?;
+        self.stats.record_pirls_call(inner.iterations);
         let (v, g, hin) = self.compute_value_grad_from_fit(theta, &inner)?;
         let hess = match self.hess_analytic(&inner, &hin) {
             Some(h) => h,
             None => self.hess_via_fd(theta)?,
         };
         Ok((v, g, hess))
+    }
+
+    fn stats(&self) -> Option<&crate::stats::FitStats> {
+        Some(&self.stats)
     }
 }
 

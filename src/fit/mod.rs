@@ -172,6 +172,12 @@ pub struct FittedGam {
     /// empty array (via `#[serde(default)]`).
     #[cfg_attr(feature = "persistence", serde(default))]
     pub shape_params: Array1<f64>,
+    /// Diagnostic counters captured during the fit. See
+    /// [`crate::stats::FitStatsSnapshot`]. Always populated for new fits;
+    /// `default()` (all zeros) for models deserialised from pre-0.5
+    /// snapshots.
+    #[cfg_attr(feature = "persistence", serde(default))]
+    pub stats: crate::stats::FitStatsSnapshot,
 }
 
 impl FittedGam {

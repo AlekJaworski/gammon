@@ -95,6 +95,7 @@ where
             profile: FixedAtOneProfile,
             _solver: PhantomData,
             accepted_state: std::cell::RefCell::new(None),
+            stats: crate::stats::FitStats::new(),
         };
 
     let n_terms = prep.s_list.len();
@@ -144,6 +145,7 @@ where
         vcov,
         link_kind,
         shape_params,
+        stats: score.stats.snapshot(),
     })
 }
 
@@ -230,6 +232,7 @@ impl ProfileShapeNewton {
         let mut prev_v = f64::INFINITY;
 
         for iter in 0..opts.max_iters {
+            score.stats.bump_outer();
             // Score-relative gradient tolerance, matching mgcv gam.fit3.r:1644.
             // Convergence checks against the ρ-gradient only — log θ has its
             // own Newton inside the iter that drives `dlr/d(log θ)` to zero
@@ -325,6 +328,7 @@ impl ProfileShapeNewton {
                 // shape param unchanged in trial
                 trial[n_terms] = log_theta_current;
 
+                score.stats.bump_line_search_trial();
                 // Phase A: cheap NoRefresh probe.
                 let v_nr = score.compute_value_no_refresh(&trial);
                 let nr_suggests_descent = match v_nr {

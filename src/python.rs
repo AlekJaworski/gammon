@@ -146,6 +146,26 @@ impl PyFittedGam {
         self.inner.shape_params.clone().into_pyarray(py)
     }
 
+    /// Diagnostic counters captured during the fit. Always present;
+    /// dict has keys: outer_iterations, line_search_trials,
+    /// no_refresh_attempts, no_refresh_hits, inner_pirls_calls,
+    /// inner_pirls_iterations_total, plus derived:
+    /// pirls_iters_per_call, no_refresh_hit_rate.
+    #[getter]
+    fn fit_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+        let s = &self.inner.stats;
+        let d = pyo3::types::PyDict::new(py);
+        d.set_item("outer_iterations", s.outer_iterations)?;
+        d.set_item("line_search_trials", s.line_search_trials)?;
+        d.set_item("no_refresh_attempts", s.no_refresh_attempts)?;
+        d.set_item("no_refresh_hits", s.no_refresh_hits)?;
+        d.set_item("inner_pirls_calls", s.inner_pirls_calls)?;
+        d.set_item("inner_pirls_iterations_total", s.inner_pirls_iterations_total)?;
+        d.set_item("pirls_iters_per_call", s.pirls_iters_per_call())?;
+        d.set_item("no_refresh_hit_rate", s.no_refresh_hit_rate())?;
+        Ok(d)
+    }
+
     /// Diagnostic: evaluate the ocat REML score at an arbitrary
     /// `theta = [ρ_1, …, ρ_T, θ_ocat_1, …]` without re-fitting the
     /// outer Newton. Re-runs the inner PIRLS at the requested θ and
@@ -268,6 +288,7 @@ impl PyFittedGam {
             profile: FixedAtOneProfile,
             _solver: PhantomData,
             accepted_state: std::cell::RefCell::new(None),
+            stats: crate::stats::FitStats::new(),
         };
         let family_ocat = crate::family::ocat_identity(
             {
