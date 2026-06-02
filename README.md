@@ -61,8 +61,11 @@ All ten families land 1-D parity against `mgcv`:
 | Ocat            | logit    | gam.fit5     | joint β + threshold | smoke              |
 | Quantile (ELF)  | identity | Armijo BT    | 1-D Newton          | smoke              |
 
-Multi-smooth (`s(x0) + s(x1) + …`) ships for everything except scat/TDist,
-Ocat, and Quantile/ELF.
+Multi-smooth (`s(x0) + s(x1) + …`) ships with `mgcv` R parity tests for
+Gaussian / Bernoulli / Poisson / QuasiPoisson / QuasiBinomial / Gamma /
+InvGauss / NegBin / Tweedie. scat / TDist multi-smooth fits run and
+converge; reference parity tests are pending. Ocat and Quantile/ELF
+remain single-smooth-only.
 
 ## Smooths
 
