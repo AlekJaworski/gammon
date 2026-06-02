@@ -589,6 +589,18 @@ pub trait ScoreDerivatives {
     fn stats(&self) -> Option<&crate::stats::FitStats> {
         None
     }
+
+    /// **NoRefresh IFT line-search shortcut** — mgcv_rust port of
+    /// `gam_optimized.rs:1390-1547`. Returns the REML value at `theta`
+    /// computed via a single IRLS step on top of an IFT-propagated β
+    /// (no inner PIRLS convergence), or `None` if NoRefresh isn't
+    /// applicable (family on skip list, no accepted state yet, family
+    /// support guardrail tripped). Outer solvers prefer this in the
+    /// line-search Armijo phase and fall back to `value(theta)` when
+    /// it returns `None`.
+    fn try_value_no_refresh(&self, _theta: &Array1<f64>) -> Option<f64> {
+        None
+    }
 }
 
 /// Result of an outer-loop optimisation.

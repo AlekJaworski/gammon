@@ -66,6 +66,26 @@ pub struct EnvelopeScore<
     /// by `value_grad_hess`'s inner-fit call. Read after fit via
     /// `score.stats().unwrap().snapshot()`.
     pub stats: crate::stats::FitStats,
+    /// Last-accepted (β, b1, λ) for the NoRefresh IFT line-search shortcut
+    /// — mirrors `ShapeAwareEnvelopeScore::accepted_state`. Populated on
+    /// every successful `value_grad_hess` call; consumed by
+    /// `compute_value_no_refresh`. Only meaningful for families that opt
+    /// in via `Loss::allows_no_refresh`.
+    pub accepted_state: std::cell::RefCell<Option<EnvelopeAcceptedState>>,
+}
+
+/// IFT-propagation state cached by `EnvelopeScore` for the NoRefresh
+/// line-search shortcut. Same shape as
+/// `super::shape_aware::score::AcceptedState` minus the shape axis.
+#[derive(Clone)]
+pub struct EnvelopeAcceptedState {
+    /// Converged β at the last accepted point.
+    pub beta: Array1<f64>,
+    /// First-order IFT derivative `b1[:, k] = ∂β/∂ρ_k = -λ_k · A⁻¹ · S_k · β`
+    /// at the last accepted point. Shape (p, n_terms).
+    pub b1: Array2<f64>,
+    /// λ vector at the last accepted point. Length n_terms.
+    pub lambda: Vec<f64>,
 }
 
 /// Phase-0 / Phase-1 convenience type alias for the Gaussian one-Cholesky
@@ -112,6 +132,7 @@ where
             y,
             _solver: PhantomData,
             stats: crate::stats::FitStats::new(),
+            accepted_state: std::cell::RefCell::new(None),
         }
     }
 }
@@ -164,9 +185,20 @@ where
     }
 
     fn value(&self, theta: &Array1<f64>) -> Result<f64> {
-        let (v, _, _) = self.value_grad_hess(theta)?;
+        // Cheap value path: skip the analytic Hessian and per-term b1 work
+        // — value-only line-search probes don't need them.
+        let inner: GaussianInnerFit<S> = self.inner.fit(theta)?;
+        self.stats.record_pirls_call(inner.iterations);
+        let (v, _, _) = self.compute_value_grad_from_fit(theta, &inner)?;
         Ok(v)
     }
+
+    // `try_value_no_refresh` not implemented for `EnvelopeScore` — the
+    // NoRefresh IFT shortcut needs warm-start access to the inner solver
+    // (InnerSolver::fit_warm), which currently lives only on the shape-
+    // aware path. Tracked as 0.6.0 work. For Gamma the bigger win (per-
+    // family OuterTuning) already lands at 1.28×; NoRefresh would shave
+    // another ~15%.
 
     fn value_and_grad(&self, theta: &Array1<f64>) -> Result<(f64, Array1<f64>)> {
         let (v, g, _) = self.value_grad_hess(theta)?;

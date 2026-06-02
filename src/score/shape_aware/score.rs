@@ -198,6 +198,10 @@ where
     fn stats(&self) -> Option<&crate::stats::FitStats> {
         Some(&self.stats)
     }
+
+    fn try_value_no_refresh(&self, theta: &Array1<f64>) -> Option<f64> {
+        self.compute_value_no_refresh(theta)
+    }
 }
 
 impl<L, K, V, B, P, S> ShapeAwareEnvelopeScore<L, K, V, B, P, S>
