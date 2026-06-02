@@ -36,6 +36,7 @@
 //! `LinearSolver::trace_a_inv`, dispatched via the `S` backend type.
 
 pub mod envelope;
+pub(crate) mod hess_ift;
 pub mod profile;
 pub mod shape_aware;
 

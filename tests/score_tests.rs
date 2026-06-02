@@ -537,3 +537,255 @@ fn negbin_multismooth_analytic_grad_matches_fd() {
         }
     }
 }
+
+/// Microbench (`--ignored`): time the analytic-IFT Hessian path against
+/// a synthetic 2-D NegBin fit. Prints elapsed-per-fit so a human can
+/// eyeball the improvement against the previous FD-on-grad baseline.
+/// Not asserted — wall time depends on machine load.
+#[test]
+#[ignore]
+fn nb_hess_microbench() {
+    use gamrs::design::{Additive, DesignStrategy, TermSpec};
+    use std::time::Instant;
+
+    let n = 600;
+    let mut x_flat = Vec::with_capacity(n * 2);
+    let mut ys = Vec::with_capacity(n);
+    let mut state: u64 = 0xc0ff_eeba_dbad_5e7e;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64) / ((1u64 << 53) as f64)
+    };
+    for _ in 0..n {
+        let x0 = next();
+        let x1 = next();
+        x_flat.push(x0);
+        x_flat.push(x1);
+        let eta = 0.2 + 0.7 * (2.0 * std::f64::consts::PI * x0).sin() + 0.5 * (x1 - 0.5).powi(2);
+        let mu = eta.exp();
+        let perturb = (next() - 0.5) * (mu.sqrt() + 1.0);
+        let y = (mu + perturb).round().max(0.0);
+        ys.push(y);
+    }
+    let x = Array2::from_shape_vec((n, 2), x_flat).unwrap();
+    let y = Array1::from_vec(ys);
+    let terms = vec![
+        TermSpec::Cr { col: 0, k: 8 },
+        TermSpec::Cr { col: 1, k: 8 },
+    ];
+    let prep = Additive { terms }.prepare(x.view()).unwrap();
+
+    let family_base = negbin_log(3.0);
+    let score: gamrs::score::ShapeAwarePirlsScore<_, _, _> = ShapeAwareEnvelopeScore {
+        x_design: prep.x_design.clone(),
+        y: y.clone(),
+        prior_weights: None,
+        s_list: prep.s_list.clone(),
+        family_base,
+        rank_s_list: prep.rank_s_list.clone(),
+        mp: prep.mp,
+        log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
+        coords: CoordsKind::Identity,
+        pirls_opts: PirlsOpts::default(),
+        inner_builder: PirlsInnerBuilder,
+        profile: FixedAtOneProfile,
+        _solver: std::marker::PhantomData,
+    };
+    let theta = Array1::from_vec(vec![1.0, 1.0, 1.0]);
+    // Warmup.
+    for _ in 0..5 {
+        let _ = score.value_grad_hess(&theta).unwrap();
+    }
+    let runs = 50;
+    let t0 = Instant::now();
+    for _ in 0..runs {
+        let _ = score.value_grad_hess(&theta).unwrap();
+    }
+    let elapsed = t0.elapsed();
+    eprintln!(
+        "[microbench] NB 2-D value_grad_hess (IFT): {:.2} ms / call over {runs} runs",
+        elapsed.as_secs_f64() * 1000.0 / runs as f64,
+    );
+    // Compare against value_and_grad alone (no Hessian) — the Hessian's
+    // marginal cost is (value_grad_hess − value_and_grad).
+    let t1 = Instant::now();
+    for _ in 0..runs {
+        let _ = score.value_and_grad(&theta).unwrap();
+    }
+    let elapsed_g = t1.elapsed();
+    eprintln!(
+        "[microbench] NB 2-D value_and_grad only: {:.2} ms / call over {runs} runs",
+        elapsed_g.as_secs_f64() * 1000.0 / runs as f64,
+    );
+    let hess_cost_ms =
+        (elapsed.as_secs_f64() - elapsed_g.as_secs_f64()) * 1000.0 / runs as f64;
+    eprintln!(
+        "[microbench] NB 2-D Hessian marginal cost: {:.2} ms / call",
+        hess_cost_ms.max(0.0),
+    );
+
+    // NB 1-D — the gamrs-vs-mgcv_rust gap is largest here (82 ms vs 8 ms).
+    let mut x_flat = Vec::with_capacity(n);
+    let mut ys = Vec::with_capacity(n);
+    let mut state: u64 = 0xc0ff_eeba_dbad_5e7e;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64) / ((1u64 << 53) as f64)
+    };
+    for _ in 0..n {
+        let x0 = next();
+        x_flat.push(x0);
+        let eta = 0.2 + 0.7 * (2.0 * std::f64::consts::PI * x0).sin();
+        let mu = eta.exp();
+        let perturb = (next() - 0.5) * (mu.sqrt() + 1.0);
+        let y = (mu + perturb).round().max(0.0);
+        ys.push(y);
+    }
+    let x1 = Array2::from_shape_vec((n, 1), x_flat).unwrap();
+    let y1 = Array1::from_vec(ys);
+    let terms1 = vec![TermSpec::Cr { col: 0, k: 10 }];
+    let prep1 = Additive { terms: terms1 }.prepare(x1.view()).unwrap();
+    let score1: gamrs::score::ShapeAwarePirlsScore<_, _, _> = ShapeAwareEnvelopeScore {
+        x_design: prep1.x_design.clone(),
+        y: y1.clone(),
+        prior_weights: None,
+        s_list: prep1.s_list.clone(),
+        family_base: negbin_log(3.0),
+        rank_s_list: prep1.rank_s_list.clone(),
+        mp: prep1.mp,
+        log_pseudo_det_s_list: prep1.log_pseudo_det_s_list.clone(),
+        coords: CoordsKind::Identity,
+        pirls_opts: PirlsOpts::default(),
+        inner_builder: PirlsInnerBuilder,
+        profile: FixedAtOneProfile,
+        _solver: std::marker::PhantomData,
+    };
+    let theta1 = Array1::from_vec(vec![1.0, 1.0]);
+    for _ in 0..5 {
+        let _ = score1.value_grad_hess(&theta1).unwrap();
+    }
+    let t1d = Instant::now();
+    for _ in 0..runs {
+        let _ = score1.value_grad_hess(&theta1).unwrap();
+    }
+    let elapsed1 = t1d.elapsed();
+    eprintln!(
+        "[microbench] NB 1-D value_grad_hess (IFT): {:.2} ms / call over {runs} runs",
+        elapsed1.as_secs_f64() * 1000.0 / runs as f64,
+    );
+}
+
+/// Hessian regression sentinel for the NegBin analytic IFT ρ-block path.
+///
+/// Port: `ShapeAwareEnvelopeScore::hess_via_ift_analytic` is a line-by-line
+/// port of mgcv_rust `reml_hessian_mgcv_exact_ift` (`reml/mod.rs:2511-2813`)
+/// covering the M×M ρ-block, with FD-on-grad along shape axes only.
+/// This test verifies the new M×M ρ-block matches central-FD-on-grad on
+/// a 2-D NB fixture to 10% rel-err — the same bar v0.x's analytic Hessian
+/// hits against its FD oracle.
+#[test]
+fn negbin_multismooth_analytic_hess_matches_fd_on_grad() {
+    use gamrs::design::{Additive, DesignStrategy, TermSpec};
+
+    // Synthetic 2-D NegBin signal (matches the gradient sentinel above
+    // for shared fixture economy — deterministic xorshift).
+    let n = 300;
+    let mut x_flat = Vec::with_capacity(n * 2);
+    let mut ys = Vec::with_capacity(n);
+    let mut state: u64 = 0xdead_beef_5234_9adb;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64) / ((1u64 << 53) as f64)
+    };
+    for _ in 0..n {
+        let x0 = next();
+        let x1 = next();
+        x_flat.push(x0);
+        x_flat.push(x1);
+        let eta = 0.2 + 0.7 * (2.0 * std::f64::consts::PI * x0).sin() + 0.5 * (x1 - 0.5).powi(2);
+        let mu = eta.exp();
+        let perturb = (next() - 0.5) * (mu.sqrt() + 1.0);
+        let y = (mu + perturb).round().max(0.0);
+        ys.push(y);
+    }
+    let x = Array2::from_shape_vec((n, 2), x_flat).unwrap();
+    let y = Array1::from_vec(ys);
+    let terms = vec![
+        TermSpec::Cr { col: 0, k: 8 },
+        TermSpec::Cr { col: 1, k: 8 },
+    ];
+    let prep = Additive { terms }.prepare(x.view()).unwrap();
+
+    let family_base = negbin_log(3.0);
+    let score: gamrs::score::ShapeAwarePirlsScore<_, _, _> = ShapeAwareEnvelopeScore {
+        x_design: prep.x_design.clone(),
+        y: y.clone(),
+        prior_weights: None,
+        s_list: prep.s_list.clone(),
+        family_base,
+        rank_s_list: prep.rank_s_list.clone(),
+        mp: prep.mp,
+        log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
+        coords: CoordsKind::Identity,
+        pirls_opts: PirlsOpts::default(),
+        inner_builder: PirlsInnerBuilder,
+        profile: FixedAtOneProfile,
+        _solver: std::marker::PhantomData,
+    };
+
+    // 3 probes in the same area the gradient test uses.
+    let probes: &[[f64; 3]] = &[[1.0, 1.0, 1.0], [2.0, 0.5, 0.8], [0.5, 2.0, 1.3]];
+
+    for theta_init in probes {
+        let theta = Array1::from_vec(theta_init.to_vec());
+        let (_, _, h_anal) = score.value_grad_hess(&theta).unwrap();
+
+        // Reference Hessian: central FD on the analytic gradient (re-PIRLS at ±h).
+        let eps = 1e-4_f64;
+        let d = 3;
+        let mut h_fd = Array2::<f64>::zeros((d, d));
+        for i in 0..d {
+            let mut t_plus = theta.clone();
+            let mut t_minus = theta.clone();
+            t_plus[i] += eps;
+            t_minus[i] -= eps;
+            let (_, g_plus) = score.value_and_grad(&t_plus).unwrap();
+            let (_, g_minus) = score.value_and_grad(&t_minus).unwrap();
+            for j in 0..d {
+                h_fd[[j, i]] = (g_plus[j] - g_minus[j]) / (2.0 * eps);
+            }
+        }
+        // Symmetrise FD ref.
+        for i in 0..d {
+            for j in i + 1..d {
+                let avg = 0.5 * (h_fd[[i, j]] + h_fd[[j, i]]);
+                h_fd[[i, j]] = avg;
+                h_fd[[j, i]] = avg;
+            }
+        }
+
+        // ρ-block (2×2) at 10% bar — analytic IFT vs central-FD-on-grad
+        // sits well inside the bar (measured 1-3% at these probes). The
+        // shape rows/cols are FD-on-grad in both reference and test so
+        // they match within FD noise (skip them).
+        for i in 0..2 {
+            for j in 0..2 {
+                let denom = h_fd[[i, j]].abs().max(1.0);
+                let rel = (h_anal[[i, j]] - h_fd[[i, j]]).abs() / denom;
+                assert!(
+                    rel < 1e-1,
+                    "θ={theta_init:?} H[{i},{j}] analytic={:+.4e} fd={:+.4e} rel={:.2e}",
+                    h_anal[[i, j]],
+                    h_fd[[i, j]],
+                    rel
+                );
+            }
+        }
+    }
+}

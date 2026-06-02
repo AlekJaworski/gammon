@@ -11,6 +11,9 @@ use crate::error::Result;
 use crate::inner::{GaussianInnerFit, LinearSolver};
 use crate::traits::{Link, Loss, VarianceFn};
 
+use super::super::hess_ift::{
+    build_xtwx, compute_dev_grad_beta_working_rss, hess_ift_rho, HessIftCtx,
+};
 use super::super::profile::Profile;
 use super::builder::ShapeInnerBuilder;
 use super::score::{FrozenBetaCtx, ShapeAwareEnvelopeScore};
@@ -100,11 +103,14 @@ where
             // Tweedie path: 2·M PIRLS + 0 shape solves.
             self.hess_via_fd_frozen_beta(theta, &fit, &ctx)?
         } else if has_ift_shape_grad {
-            // NegBin / scat / Ocat path: FD on the analytic envelope+IFT
-            // gradient. 2·d PIRLS solves total (vs `on_value`'s 1 + 2·d²).
-            // Matches mgcv_rust's M-dim ρ-Newton + 1-D shape-Newton PIRLS
-            // economy — see `src/smooth.rs:1866-1869` and `:2383`.
-            self.hess_via_fd_on_grad(theta)?
+            // NegBin / scat / Ocat path: analytic IFT for the M×M ρ block
+            // (0 PIRLS solves — port of mgcv_rust
+            // `reml_hessian_mgcv_exact_ift` at `src/reml/mod.rs:2511-2813`)
+            // plus FD-on-grad along shape axes only (2·n_shape PIRLS solves).
+            // For NegBin (n_shape=1) the total drops from `2·d` PIRLS solves
+            // to `2`. Matches mgcv_rust's M-dim ρ-Newton + 1-D shape-Newton
+            // PIRLS economy (`src/smooth.rs:2383` + `3562-3637`).
+            self.hess_via_ift_analytic(theta, &fit, &family, n_shape)?
         } else {
             // Safety-net path: direct FD on REML value. No gamrs family
             // hits this today (NB/scat/Ocat all supply level-1 derivs).
@@ -268,6 +274,9 @@ where
     /// Newton iter (vs `hess_via_fd_on_value`'s `1 + 2·d²`). Tweedie
     /// uses the cheaper `hess_via_fd_frozen_beta` instead (closed-form
     /// shape-grad bypasses the shape-row PIRLS solves entirely).
+    ///
+    /// Kept as a fallback / reference for `hess_via_ift_analytic` parity.
+    #[allow(dead_code)]
     fn hess_via_fd_on_grad(&self, theta: &Array1<f64>) -> Result<Array2<f64>> {
         let d = theta.len();
         let mut h = Array2::<f64>::zeros((d, d));
@@ -290,6 +299,214 @@ where
                 h[[j, i]] = avg;
             }
         }
+        Ok(h)
+    }
+
+    /// Hybrid Hessian: analytic IFT for the M×M ρ block + FD-on-grad for
+    /// shape rows/cols.
+    ///
+    /// Mathematical decomposition of the joint (ρ, θ_shape) Hessian:
+    ///
+    /// ```text
+    ///   H = [ H_ρρ   H_ρθ ]    H_ρρ : M × M     ← analytic IFT
+    ///       [ H_θρ   H_θθ ]    H_θρ = H_ρθ'     ← FD-on-grad probes
+    ///                          H_θθ : n_shape × n_shape
+    /// ```
+    ///
+    /// - **H_ρρ** comes from [`super::super::hess_ift::hess_ift_rho`], a
+    ///   line-by-line port of mgcv_rust `reml_hessian_mgcv_exact_ift`
+    ///   (`src/reml/mod.rs:2511-2813`). Zero PIRLS solves.
+    /// - **H_θθ and H_ρθ** come from `2·n_shape` central-FD probes on the
+    ///   analytic gradient along the shape axes only. Each probe runs
+    ///   PIRLS to convergence at perturbed θ_shape, which captures the
+    ///   full β-chain through `dβ/dθ_shape` (envelope theorem keeps the
+    ///   shape ρ-gradient exact to O(h) when the shape gradient is
+    ///   analytic via `analytic_shape_grad_via_ift`).
+    /// - **H_θρ** is filled from the FD-on-grad probes' ρ entries of
+    ///   `g_plus / g_minus`, then symmetrised with H_ρθ for numerical
+    ///   stability (matches `hess_via_fd_on_grad`'s symmetrise pass).
+    ///
+    /// Total cost: `2 · n_shape` PIRLS solves per outer-Newton iter, vs
+    /// `hess_via_fd_on_grad`'s `2 · (M + n_shape)`. NegBin 1-D (M=1,
+    /// n_shape=1) drops from 4 to 2 PIRLS; NegBin 2-D from 6 to 2.
+    ///
+    /// **A consistency choice**: when the loss is on the Newton-IRLS path
+    /// (NegBin / TDist), the IFT helper uses the **Newton A** (NOT Fisher
+    /// A from `fit.a_factor`) so it differentiates the SAME `log|H|`
+    /// the score formula uses (`score.rs:265-282`). The Newton A is
+    /// materialised via `lazy_tk_kkt_inputs` (gradient.rs:314), matching
+    /// the analytic shape-gradient path's choice. For Ocat (Fisher==Newton)
+    /// `fit.a_factor` is used directly.
+    fn hess_via_ift_analytic(
+        &self,
+        theta: &Array1<f64>,
+        fit: &GaussianInnerFit<S>,
+        family: &crate::family::Family<L, K, V>,
+        n_shape: usize,
+    ) -> Result<Array2<f64>> {
+        let d = theta.len();
+        let n_terms = self.s_list.len();
+        debug_assert_eq!(d, n_terms + n_shape);
+        let mut h = Array2::<f64>::zeros((d, d));
+
+        // -----------------------------------------------------------------
+        // 1) Analytic M×M ρ block via the IFT Hessian helper.
+        // -----------------------------------------------------------------
+        // Build the score's `λ_j = exp(ρ_j)` and σ². Mirrors the gradient
+        // path's `bsb_total` aggregation (gradient.rs:200) and the score's
+        // dispersion read (`Profile::dispersion`).
+        let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
+        let lambda: Vec<f64> = rho_slice.iter().map(|&r| r.exp()).collect();
+        let mut bsb_total = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = self.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            bsb_total += lambda[j] * bsb_j;
+        }
+        let sigma2 = self
+            .profile
+            .dispersion(&family.loss, fit, 1.0, bsb_total, fit.p as f64, self.mp)
+            .unwrap_or(1.0);
+
+        // Newton-A path for `use_newton_irls()` families (NegBin, TDist).
+        // Falls back to Fisher A for Ocat. Mirrors `analytic_shape_grad_via_ift`
+        // (gradient.rs:298-329): the score's `log|H|` is the Newton one for
+        // these families, so the IFT Hessian MUST differentiate the SAME A.
+        let use_newton = family.loss.use_newton_irls();
+        let lazy_tk = if use_newton {
+            let prior_w = self
+                .prior_weights
+                .clone()
+                .unwrap_or_else(|| Array1::ones(fit.n));
+            let rho_arr = Array1::from(rho_slice.clone());
+            let s_total = crate::design::combined_s(&self.s_list, &rho_arr);
+            crate::inner::pirls::lazy_tk_kkt_inputs(
+                family,
+                &self.y,
+                &fit.mu,
+                &fit.beta,
+                &prior_w,
+                &self.x_design,
+                &self.s_list,
+                &s_total,
+                &rho_arr,
+            )
+        } else {
+            None
+        };
+
+        // Materialise `xtwx` and `a_inv` consistently. Newton path: pull
+        // `A⁻¹` from `lazy_tk` (which already built A_newton⁻¹), rebuild
+        // `w_newton` to derive `xtwx_newton = X' diag(w_newton) X`. Fisher
+        // path: build xtwx from `fit.working_weights` and use `fit.a_inv()`.
+        // `dev_grad_beta` then uses the SAME W/working_response pair so
+        // the term-2 `(dev_grad)·b2` piece stays consistent.
+        let (a_inv_owned, xtwx_owned, dev_grad_beta) = if let Some(ref tk) = lazy_tk {
+            let a_inv = tk.a_newton_inv.clone();
+            // Newton working weights — port of `lazy_tk_kkt_inputs`'s internal
+            // `w_newton` (pirls.rs:171-187). Not exposed on TkKKTInputs so we
+            // re-derive here using the same `wf · α` formula with the Fisher
+            // fallback when α ≤ 0 (matching pirls.rs:268-271 alpha clamp).
+            let n = fit.n;
+            let mut w_newton = Array1::<f64>::zeros(n);
+            for i in 0..n {
+                let mu_i = fit.mu[i];
+                let var_i = family.variance.variance(mu_i).max(1e-300);
+                let g_prime_mu = family.link.d_link_dmu(mu_i);
+                let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+                let v_prime = family.variance.d_variance(mu_i);
+                let v1n = v_prime / var_i;
+                let g_double_prime = family.link.d2_link_dmu(mu_i);
+                let g2n = g_double_prime / g_prime_mu;
+                let c_resid = self.y[i] - mu_i;
+                let alpha_raw = 1.0 + c_resid * (v1n + g2n);
+                let alpha = if alpha_raw > 0.0 && alpha_raw.is_finite() {
+                    alpha_raw
+                } else {
+                    1.0
+                };
+                w_newton[i] = wf * alpha;
+            }
+            let xtwx_n = build_xtwx(&self.x_design, &w_newton);
+            // Newton normal equation: `X'·W_n·(z_n − Xβ) = λSβ` at converged β.
+            // `fit.working_response` was stamped at the Newton fixed point
+            // (pirls.rs:567 / :707), so `compute_dev_grad_beta_working_rss`
+            // returns `-2·λSβ` here.
+            let dev_grad = compute_dev_grad_beta_working_rss(
+                &self.x_design,
+                &w_newton,
+                &fit.working_response,
+                &fit.beta,
+            );
+            (a_inv, xtwx_n, dev_grad)
+        } else {
+            // Fisher / Ocat path.
+            let a_inv = fit.a_inv();
+            let xtwx_f = build_xtwx(&self.x_design, &fit.working_weights);
+            let dev_grad = compute_dev_grad_beta_working_rss(
+                &self.x_design,
+                &fit.working_weights,
+                &fit.working_response,
+                &fit.beta,
+            );
+            (a_inv, xtwx_f, dev_grad)
+        };
+
+        let ctx = HessIftCtx {
+            s_list: &self.s_list,
+            lambda: &lambda,
+            beta: &fit.beta,
+            a_inv: &a_inv_owned,
+            xtwx: &xtwx_owned,
+            sigma2,
+            dev_grad_beta: &dev_grad_beta,
+        };
+        let h_rho = hess_ift_rho(&ctx);
+        for i in 0..n_terms {
+            for j in 0..n_terms {
+                h[[i, j]] = h_rho[[i, j]];
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // 2) FD-on-grad for shape rows/cols (n_shape probes, 2·n_shape PIRLS).
+        // -----------------------------------------------------------------
+        if n_shape > 0 {
+            let eps = 1.0e-4;
+            for k in 0..n_shape {
+                let mut t_plus = theta.clone();
+                let mut t_minus = theta.clone();
+                t_plus[n_terms + k] += eps;
+                t_minus[n_terms + k] -= eps;
+                let (_, g_plus) = self.compute_value_grad(&t_plus)?;
+                let (_, g_minus) = self.compute_value_grad(&t_minus)?;
+                let col = n_terms + k;
+                for j in 0..d {
+                    h[[j, col]] = (g_plus[j] - g_minus[j]) / (2.0 * eps);
+                }
+            }
+            // Symmetrise the cross block (n_terms × n_shape) — the FD column
+            // for shape axis k carries `H_ρ_k = ∂g_ρ/∂θ_k`; H[i, n_terms+k]
+            // was just filled, and H[n_terms+k, i] should equal it.
+            for i in 0..n_terms {
+                for k in 0..n_shape {
+                    let col = n_terms + k;
+                    h[[col, i]] = h[[i, col]];
+                }
+            }
+            // Symmetrise within the shape block too (in case the FD probe
+            // introduced asymmetry — matches `hess_via_fd_on_grad`'s pass).
+            for a in 0..n_shape {
+                for b in (a + 1)..n_shape {
+                    let r = n_terms + a;
+                    let c = n_terms + b;
+                    let avg = 0.5 * (h[[r, c]] + h[[c, r]]);
+                    h[[r, c]] = avg;
+                    h[[c, r]] = avg;
+                }
+            }
+        }
+
         Ok(h)
     }
 }
