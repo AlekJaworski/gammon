@@ -313,6 +313,38 @@ where
         };
         let h_rho = hess_ift_rho(&ctx);
 
+        // Capture NoRefresh accepted state — port of mgcv_rust's
+        // `warm_state` write (`gam_optimized.rs:1408-1414`). b1[:, k] =
+        // -λ_k · A⁻¹ · S_k · β is the same IFT first-derivative used
+        // inside `hess_ift_rho` above; we recompute here from the already-
+        // materialised `a_inv_owned` (cheap: m × O(p²) GEMVs).
+        //
+        // Stored as Newton-A b1 when `use_newton_irls()` (matches the A
+        // used in the Hessian and the score's log|H| override); Fisher-A
+        // b1 otherwise. NoRefresh consumers re-validate η/μ before
+        // accepting the propagated β, so a mild A mismatch from sigmoidal
+        // β regions degrades gracefully via the guardrail.
+        if family.loss.allows_no_refresh() {
+            let p = fit.beta.len();
+            let mut b1 = Array2::<f64>::zeros((p, n_terms));
+            for k in 0..n_terms {
+                let s_k_beta: Array1<f64> = self.s_list[k].dot(&fit.beta);
+                let ainv_sk_beta: Array1<f64> = a_inv_owned.dot(&s_k_beta);
+                let lam_k = lambda[k];
+                for r in 0..p {
+                    b1[[r, k]] = -lam_k * ainv_sk_beta[r];
+                }
+            }
+            let shape_slice: Vec<f64> =
+                theta.iter().skip(n_terms).copied().collect();
+            *self.accepted_state.borrow_mut() = Some(super::score::AcceptedState {
+                beta: fit.beta.clone(),
+                b1,
+                lambda: lambda.clone(),
+                shape_params: shape_slice,
+            });
+        }
+
         Ok((value, g_rho, h_rho, fit))
     }
 

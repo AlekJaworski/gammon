@@ -323,6 +323,7 @@ where
         inner_builder: inner_builder.clone(),
         profile,
         _solver: PhantomData,
+        accepted_state: std::cell::RefCell::new(None),
     };
 
     let outer_solver = NewtonWithHalving::new(NewtonOpts::default());

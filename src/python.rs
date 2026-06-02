@@ -267,6 +267,7 @@ impl PyFittedGam {
             inner_builder: OcatInnerBuilder,
             profile: FixedAtOneProfile,
             _solver: PhantomData,
+            accepted_state: std::cell::RefCell::new(None),
         };
         let family_ocat = crate::family::ocat_identity(
             {

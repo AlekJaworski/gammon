@@ -176,6 +176,304 @@ where
         Ok(self.score_value(&fit, &family, &rho_slice))
     }
 
+    /// **NoRefresh IFT line-search shortcut** — mgcv_rust port of
+    /// `gam_optimized.rs:1390-1547`. Computes the REML score at `theta`
+    /// WITHOUT running inner PIRLS, via one IRLS step:
+    /// ```text
+    ///   β_warm = β_acc + Σ_k b1[:, k] · (ρ_trial_k − ρ_acc_k)  (IFT)
+    ///   η_warm = X · β_warm
+    ///   (w, z) = working_pair(y, η_warm, family)            (1 IRLS step)
+    ///   β_ls   = (X'WX + Σλ_j·S_j)⁻¹ X'Wz                   (WLS solve)
+    ///   μ_ls   = g⁻¹(X · β_ls)
+    ///   score  = score_value(D(y, μ_ls), bsb(β_ls), log|H|, ...)
+    /// ```
+    /// One inner solve (single Cholesky) instead of converging PIRLS.
+    ///
+    /// Returns `None` (caller falls back to full `compute_value`) when:
+    ///   - The family is not NoRefresh-eligible (`Loss::allows_no_refresh`).
+    ///   - No accepted state cached yet (first outer iter).
+    ///   - The shape component of `theta` differs from the accepted
+    ///     state's shape (b1 doesn't include shape chain).
+    ///   - The accepted state's λ vector length doesn't match `theta`
+    ///     (caller dimension mismatch — defensive).
+    ///   - Family-support guardrail: η_trial or μ_trial out of support
+    ///     (`!eta.is_finite() || !deviance_per_obs(y, μ).is_finite()`).
+    ///
+    /// Score is **first-order accurate** in Δρ — adequate for Armijo
+    /// accept/reject during line search; the outer-iter-start Full eval
+    /// re-converges PIRLS at the accepted λ, so NoRefresh never corrupts
+    /// the final fit.
+    pub(crate) fn compute_value_no_refresh(&self, theta: &Array1<f64>) -> Option<f64> {
+        if !self.family_base.loss.allows_no_refresh() {
+            return None;
+        }
+        let n_terms = self.s_list.len();
+        let n_shape = self.family_base.n_shape_params();
+        let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
+        let shape_slice: Vec<f64> = theta.iter().skip(n_terms).copied().collect();
+
+        // Borrow accepted state.
+        let state_ref = self.accepted_state.borrow();
+        let state = state_ref.as_ref()?;
+        if state.lambda.len() != n_terms {
+            return None;
+        }
+        if state.shape_params.len() != n_shape {
+            return None;
+        }
+        // Shape must match exactly (b1 carries only the ρ-chain).
+        for k in 0..n_shape {
+            if shape_slice[k] != state.shape_params[k] {
+                return None;
+            }
+        }
+
+        // 1) IFT propagation: β_warm = β + Σ_k b1[:, k] · Δρ_k where
+        //    Δρ_k = log(λ_trial_k / λ_acc_k).
+        let p = state.beta.len();
+        let mut beta_warm = state.beta.clone();
+        for k in 0..n_terms {
+            let lam_trial = rho_slice[k].exp().max(1.0e-300);
+            let lam_saved = state.lambda[k].max(1.0e-300);
+            let drho = (lam_trial / lam_saved).ln();
+            if !drho.is_finite() {
+                return None;
+            }
+            for r in 0..p {
+                beta_warm[r] += state.b1[[r, k]] * drho;
+            }
+        }
+        if !beta_warm.iter().all(|x| x.is_finite()) {
+            return None;
+        }
+
+        // 2) Build the perturbed family (rebuild so the loss sees a
+        //    consistent shape state; for NegBin the shape didn't change
+        //    but it doesn't matter — same θ, same family).
+        let mut family = self.family_base.clone();
+        if n_shape > 0 {
+            family.set_shape_params(&shape_slice);
+        }
+
+        // 3) η_warm / μ_warm + family-support guardrail.
+        let eta_warm: Array1<f64> = self.x_design.dot(&beta_warm);
+        let n_obs = self.y.len();
+        let mut mu_warm = Array1::<f64>::zeros(n_obs);
+        for i in 0..n_obs {
+            if !eta_warm[i].is_finite() {
+                return None;
+            }
+            let mu_i = family.link.inverse_link(eta_warm[i]);
+            if !mu_i.is_finite() {
+                return None;
+            }
+            mu_warm[i] = mu_i;
+        }
+
+        // 4) ONE working-pair IRLS step at β_warm → (w, z). Newton or
+        //    Fisher depending on `use_newton_irls()`. Port of
+        //    `exp_family_irls_step` (mgcv_rust pirls/mod.rs:1492-1527)
+        //    with the same Newton-IRLS arithmetic gamrs's PIRLS inner
+        //    loop uses (`src/inner/pirls.rs:546-573`).
+        let prior_w = self
+            .prior_weights
+            .clone()
+            .unwrap_or_else(|| Array1::ones(n_obs));
+        let use_newton = family.loss.use_newton_irls();
+        let mut w = Array1::<f64>::zeros(n_obs);
+        let mut z = Array1::<f64>::zeros(n_obs);
+        for i in 0..n_obs {
+            let mu_i = mu_warm[i];
+            let var_i = family.variance.variance(mu_i).max(1e-300);
+            let g_prime_mu = family.link.d_link_dmu(mu_i);
+            let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+            if !use_newton {
+                w[i] = prior_w[i] * wf;
+                z[i] = eta_warm[i] + (self.y[i] - mu_i) * g_prime_mu;
+                continue;
+            }
+            let v_prime = family.variance.d_variance(mu_i);
+            let v1n = v_prime / var_i;
+            let g_double_prime = family.link.d2_link_dmu(mu_i);
+            let g2n = g_double_prime / g_prime_mu;
+            let c_resid = self.y[i] - mu_i;
+            let alpha = 1.0 + c_resid * (v1n + g2n);
+            if alpha > 0.0 && alpha.is_finite() {
+                w[i] = prior_w[i] * wf * alpha;
+                z[i] = eta_warm[i] + c_resid * g_prime_mu / alpha;
+            } else {
+                w[i] = prior_w[i] * wf;
+                z[i] = eta_warm[i] + c_resid * g_prime_mu;
+            }
+        }
+
+        // 5) WLS solve at (w, z, λ_trial): β_ls = (X'WX + Σλ_j S_j)⁻¹ X'Wz.
+        //    This is the linear inner solve PIRLS would do at iteration 1
+        //    starting from β_warm. mgcv_rust passes this onward to
+        //    `dispatch_reml_score` (smooth.rs:2987) which solves it
+        //    internally inside `reml_criterion_multi_cached_mgcv_exact`
+        //    via `assemble_reml_system` (`reml/system.rs:356-393`).
+        let xtwx = crate::score::hess_ift::build_xtwx(&self.x_design, &w);
+        let wz: Array1<f64> = w.iter().zip(z.iter()).map(|(&wi, &zi)| wi * zi).collect();
+        let xtwz: Array1<f64> = self.x_design.t().dot(&wz);
+        let lambda_arr = Array1::from(rho_slice.clone());
+        let s_total = crate::design::combined_s(&self.s_list, &lambda_arr);
+        let p_dim = xtwx.nrows();
+        let mut a_wls = xtwx;
+        for i in 0..p_dim {
+            for j in 0..p_dim {
+                a_wls[[i, j]] += s_total[[i, j]];
+            }
+        }
+        // Safety ridge matching PIRLS (`cholesky_with_safety_ridge`).
+        let max_diag = a_wls.diag().iter().map(|v| v.abs()).fold(1.0_f64, f64::max);
+        let ridge_scale = 1.0e-12 * max_diag;
+        for i in 0..p_dim {
+            a_wls[[i, i]] += ridge_scale;
+        }
+        let a_wls_factor = match S::factorize(a_wls) {
+            Ok(f) => f,
+            Err(_) => return None,
+        };
+        let beta_ls: Array1<f64> = S::solve(&a_wls_factor, xtwz.view());
+        if !beta_ls.iter().all(|x| x.is_finite()) {
+            return None;
+        }
+
+        // 6) μ_ls + GLM deviance at β_ls (the WLS solution). Validate
+        //    once more — IFT-warm β may have been off but β_ls re-projects
+        //    via the WLS so it's typically inside support.
+        let eta_ls: Array1<f64> = self.x_design.dot(&beta_ls);
+        let mut mu_ls = Array1::<f64>::zeros(n_obs);
+        let mut deviance_ls = 0.0_f64;
+        for i in 0..n_obs {
+            if !eta_ls[i].is_finite() {
+                return None;
+            }
+            let mu_i = family.link.inverse_link(eta_ls[i]);
+            if !mu_i.is_finite() {
+                return None;
+            }
+            mu_ls[i] = mu_i;
+            let dpo = family.loss.deviance_per_obs(self.y[i], mu_i);
+            if !dpo.is_finite() {
+                return None;
+            }
+            deviance_ls += prior_w[i] * dpo;
+        }
+        if !deviance_ls.is_finite() {
+            return None;
+        }
+
+        // 7) log|H| — Newton-W at the FITTED μ_ls, not the IRLS-step β_warm.
+        //    Port of mgcv_rust `reml/mod.rs:460-483`: for non-canonical
+        //    link families, rebuild A_score with `compute_newton_score_weights`
+        //    at the converged β_ls + `log_abs_det_symmetric`. For canonical
+        //    link, log|A| from the WLS A factorisation suffices.
+        let log_det_h = if family.loss.use_newton_irls() {
+            let mut w_score = Array1::<f64>::zeros(n_obs);
+            let mut any_bad = false;
+            for i in 0..n_obs {
+                let mu_i = mu_ls[i];
+                let var_i = family.variance.variance(mu_i).max(1e-300);
+                let g_prime_mu = family.link.d_link_dmu(mu_i);
+                let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+                let v_prime = family.variance.d_variance(mu_i);
+                let v1n = v_prime / var_i;
+                let g_double_prime = family.link.d2_link_dmu(mu_i);
+                let g2n = g_double_prime / g_prime_mu;
+                let c_resid = self.y[i] - mu_i;
+                let alpha = 1.0 + c_resid * (v1n + g2n);
+                w_score[i] = prior_w[i] * wf * alpha;
+                if !w_score[i].is_finite() {
+                    any_bad = true;
+                    break;
+                }
+            }
+            if any_bad {
+                // Fall back to the WLS A's log-det (Fisher fallback,
+                // mgcv_rust:472-473).
+                S::logdet(&a_wls_factor)
+            } else {
+                let xtwx_score = crate::score::hess_ift::build_xtwx(&self.x_design, &w_score);
+                let mut a_score = xtwx_score;
+                for i in 0..p_dim {
+                    for j in 0..p_dim {
+                        a_score[[i, j]] += s_total[[i, j]];
+                    }
+                }
+                // For NegBin α > 0 holds almost everywhere → Cholesky path.
+                // Fall back to A_wls's logdet on rare indefinite spectra.
+                match S::factorize(a_score) {
+                    Ok(fact) => {
+                        let v = S::logdet(&fact);
+                        if v.is_finite() {
+                            v
+                        } else {
+                            S::logdet(&a_wls_factor)
+                        }
+                    }
+                    Err(_) => S::logdet(&a_wls_factor),
+                }
+            }
+        } else {
+            S::logdet(&a_wls_factor)
+        };
+        if !log_det_h.is_finite() {
+            return None;
+        }
+
+        // 7) Score assembly — same formula as `score_value`
+        //    (`score.rs:216-293`), evaluated at β_ls + deviance_ls +
+        //    log_det_h from the WLS solve.
+        let rank_adj = family.loss.score_rank_adjustment();
+        let mut bsb_total = 0.0_f64;
+        let mut log_det_lambda_s = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = self.s_list[j].dot(&beta_ls);
+            let bsb_j: f64 = beta_ls.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            let lambda_j = rho_slice[j].exp();
+            bsb_total += lambda_j * bsb_j;
+            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
+            log_det_lambda_s += adj_rank_j * rho_slice[j] + self.log_pseudo_det_s_list[j];
+        }
+
+        // φ — for FixedAtOneProfile (NegBin / scat / ocat) this is 1.0;
+        // for OwnedByLossProfile (Tweedie, but Tweedie is on the skip list)
+        // reads `family.loss.fixed_dispersion()`. The closed-form ML
+        // fallback `dp / (n - mp)` matches `MgcvTwoSigmaProfile`'s body
+        // for Gaussian-equivalent families.
+        let phi = if let Some(fixed) = family.loss.fixed_dispersion() {
+            fixed
+        } else {
+            let n_minus_mp = (n_obs as f64) - (self.mp as f64);
+            if n_minus_mp <= 0.0 {
+                return None;
+            }
+            let dp = deviance_ls + bsb_total;
+            if dp <= 0.0 {
+                return None;
+            }
+            (dp / n_minus_mp).max(1e-8)
+        };
+
+        let ls_sum: f64 = self
+            .y
+            .iter()
+            .map(|&yi| family.loss.saturated_log_lik(yi, phi))
+            .sum();
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let mp = self.mp as f64;
+        let dp = deviance_ls + bsb_total;
+        let reml = dp / (2.0 * phi) - 0.5 * mp * (two_pi * phi).ln() + 0.5 * log_det_h
+            - 0.5 * log_det_lambda_s
+            - ls_sum;
+        if !reml.is_finite() {
+            return None;
+        }
+        Some(reml)
+    }
+
     pub(super) fn compute_value_grad(
         &self,
         theta: &Array1<f64>,

@@ -108,6 +108,14 @@ impl Loss for NegBin {
         true
     }
 
+    /// NegBin's W = 1/(V·g'²) = 1/(μ + μ²/θ) for log link — stable under
+    /// small β perturbations, so eligible for the mgcv_rust NoRefresh IFT
+    /// line-search shortcut. (Skip list excludes TDist, Quantile,
+    /// InverseGaussian, Tweedie; NegBin is the headline beneficiary.)
+    fn allows_no_refresh(&self) -> bool {
+        true
+    }
+
     /// Match mgcv's per-family inner-PIRLS β-change tolerance for NegBin.
     /// mgcv calls `fit_pirls_cached(... tolerance = 1e-8 ...)` at
     /// `src/lib.rs:1277` for `Family::NegBin`. gamrs's general `PirlsOpts::default`

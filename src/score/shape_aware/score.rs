@@ -2,6 +2,7 @@
 //! trait impl, plus the orchestrating `fit_inner_at` / `score_value`
 //! helpers used by both the gradient and Hessian paths.
 
+use std::cell::RefCell;
 use std::marker::PhantomData;
 
 use ndarray::{Array1, Array2};
@@ -13,6 +14,30 @@ use crate::traits::{CoordsKind, InnerSolver, Link, Loss, ScoreDerivatives, Varia
 
 use super::super::profile::{FixedAtOneProfile, OwnedByLossProfile, Profile};
 use super::builder::{OcatInnerBuilder, PirlsInnerBuilder, ShapeInnerBuilder};
+
+/// Cached state from the last accepted full eval (`value_grad_hess` or
+/// `compute_value_grad_hess_rho_only_with_fit`). Feeds the NoRefresh IFT
+/// line-search shortcut: at trial ρ, the score propagates
+/// `β_trial = β + Σ_k b1[:,k]·Δρ_k` and runs ONE working-pair IRLS step
+/// to get (w, z, X'WX) without converging PIRLS.
+///
+/// Port of mgcv_rust's `warm_state` RefCell at
+/// `gam_optimized.rs:1408-1414` (β + b1 + λ tuple).
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct AcceptedState {
+    /// Converged β at the last accepted point.
+    pub beta: Array1<f64>,
+    /// First-order IFT derivative `b1[:, k] = ∂β/∂ρ_k = -λ_k · A⁻¹ · S_k · β`
+    /// at the last accepted point. Shape (p, n_terms).
+    pub b1: Array2<f64>,
+    /// λ vector at the last accepted point. Length n_terms.
+    pub lambda: Vec<f64>,
+    /// Shape parameters at the last accepted point. Length
+    /// `family.n_shape_params()`. NoRefresh only fires when the trial
+    /// shape exactly matches this — IFT b1 doesn't include shape chain.
+    pub shape_params: Vec<f64>,
+}
 
 /// Frozen-β̂ context shared between `eval_grad_with_fit` and
 /// `eval_grad_frozen_beta`. Holds the converged-inner quantities that
@@ -80,6 +105,13 @@ where
     pub inner_builder: B,
     pub profile: P,
     pub _solver: PhantomData<S>,
+    /// Last-accepted (β, b1, λ, shape) for the NoRefresh IFT line-search
+    /// shortcut. `RefCell` because `ScoreDerivatives` uses `&self` —
+    /// updates happen inside `value_grad_hess` / `compute_value_grad_hess_*`
+    /// at converged β̂, line-search probes read it via
+    /// `compute_value_no_refresh`. `None` until the first full eval lands.
+    #[doc(hidden)]
+    pub accepted_state: RefCell<Option<AcceptedState>>,
 }
 
 /// PIRLS-driven shape-aware score — what TDist/scat, NegBin use.

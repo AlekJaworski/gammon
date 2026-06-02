@@ -517,6 +517,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             inner_builder: OcatInnerBuilder,
             profile: FixedAtOneProfile,
             _solver: PhantomData,
+            accepted_state: std::cell::RefCell::new(None),
         };
 
         // θ₀ = [SmartInit ρ_1, …, SmartInit ρ_T, θ₁, …, θ_{R-2}]

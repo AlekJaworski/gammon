@@ -94,6 +94,7 @@ where
             inner_builder: PirlsInnerBuilder,
             profile: FixedAtOneProfile,
             _solver: PhantomData,
+            accepted_state: std::cell::RefCell::new(None),
         };
 
     let n_terms = prep.s_list.len();
@@ -291,11 +292,22 @@ impl ProfileShapeNewton {
             // the line-search target is just the REML score, no Armijo
             // angle check on the joint gradient.
             //
-            // Probes use `compute_value` only — grad/Hess are not needed
-            // for accept/reject. After acceptance we refresh `(v, g, h,
-            // fit_center)` with one `compute_value_grad_hess_rho_only_with_fit`
-            // call. Drops per-trial cost from ~3 PIRLS (FD-on-grad H) to
-            // 1 PIRLS. mgcv_rust pattern; see `outer.rs` comment.
+            // Two-phase strategy port of mgcv_rust:
+            //   Phase A: cheap NoRefresh probes filter out clearly-bad
+            //     halvings (returns None on family-support failure; returns
+            //     a value otherwise). Cheap = one O(p³) Cholesky + dense
+            //     mat-vec, no inner PIRLS iteration.
+            //   Phase B: when NoRefresh suggests improvement, VERIFY with
+            //     full `compute_value` (one PIRLS). NoRefresh approximation
+            //     error in DIFFERENCES (~7 decimal absolute, can be 100%
+            //     relative when |Δv| < 1e-7·|v|) means a NoRefresh-only
+            //     accept can lock onto phantom improvements at the
+            //     optimum. The verify step catches that.
+            //
+            // Net cost: cheap PIRLS-free probes for rejected halvings;
+            // 1 PIRLS for the accepted halving. Vs the prior path (1
+            // PIRLS per halving including all 20 rejects), we save N−1
+            // PIRLS where N is the number of halvings tried.
             let mut alpha = 1.0_f64;
             let mut accepted = false;
             let log_theta_current = theta[n_terms];
@@ -313,8 +325,25 @@ impl ProfileShapeNewton {
                 // shape param unchanged in trial
                 trial[n_terms] = log_theta_current;
 
-                if let Ok(v_trial) = score.compute_value(&trial) {
-                    if v_trial.is_finite() && v_trial < v - 1e-10 * v.abs() {
+                // Phase A: cheap NoRefresh probe.
+                let v_nr = score.compute_value_no_refresh(&trial);
+                let nr_suggests_descent = match v_nr {
+                    Some(v_trial) => {
+                        v_trial.is_finite() && v_trial < v - 1e-10 * v.abs()
+                    }
+                    None => true, // unknown → fall through to full PIRLS verify
+                };
+                if !nr_suggests_descent {
+                    alpha *= 0.5;
+                    if alpha < opts.step_min {
+                        break;
+                    }
+                    continue;
+                }
+
+                // Phase B: full PIRLS verify on apparent descent.
+                if let Ok(v_full) = score.compute_value(&trial) {
+                    if v_full.is_finite() && v_full < v - 1e-10 * v.abs() {
                         accepted_trial = Some(trial);
                         accepted = true;
                         break;

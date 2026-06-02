@@ -353,6 +353,33 @@ pub trait Loss {
         false
     }
 
+    /// Whether this loss is eligible for mgcv_rust's NoRefresh IFT
+    /// line-search shortcut (Wood 2011 §4.2; mgcv `gam.fit5.r:367-393`).
+    ///
+    /// When `true`, the outer-Newton line-search probes may use a
+    /// first-order IFT extrapolation `β_trial = β + Σ_k b1[:,k]·Δρ_k`
+    /// plus a single working-pair IRLS step at β_trial — skipping inner
+    /// PIRLS convergence on every trial λ. The next outer iter's full
+    /// eval re-converges β at the accepted λ, so NoRefresh never
+    /// corrupts the final fit.
+    ///
+    /// **Skip list** (matches mgcv_rust `gam_optimized.rs:1512-1518`):
+    ///   - **TDist / scat**: W depends on a working `(df, σ²)` state the
+    ///     specialised inner fitter (`fit_pirls_tdist`) maintains; one
+    ///     IRLS step from IFT-warm β misleads the line-search Armijo.
+    ///   - **Quantile**: same as TDist — specialised inner fitter.
+    ///   - **InverseGaussian** (any link): variance grows as μ³; W = 1/μ
+    ///     for log link swings orders-of-magnitude on small β
+    ///     perturbations.
+    ///   - **Tweedie**: variance grows as μ^p with p ∈ (1,2); same
+    ///     concern as IG at the upper end of p.
+    ///
+    /// **Eligible**: NegBin, Gaussian, Poisson, Bernoulli/Binomial,
+    /// Gamma — all have stable W under small β perturbations.
+    fn allows_no_refresh(&self) -> bool {
+        false
+    }
+
     /// Per-element initial μ for PIRLS. Default is mgcv's Bernoulli-style
     /// shrinkage `μ_i = (y_i + ȳ) / 2`. Family overrides:
     /// - **Poisson** (log link) → `max(y_i, 0.1)` to keep μ > 0 before
