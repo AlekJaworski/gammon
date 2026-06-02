@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "gamrs"
-version = "0.5.0"
+version = "0.5.1"
 description = "GAM core (Rust) with sklearn-style Python bindings — beta"
 readme = "README.md"
 requires-python = ">=3.8"
