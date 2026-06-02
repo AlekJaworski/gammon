@@ -16,7 +16,7 @@ use crate::family::Gaussian;
 use crate::inner::{GaussianClosedFormInner, LinearSolver};
 use crate::outer::{NewtonOpts, NewtonWithHalving};
 use crate::score::{EnvelopeScore, MgcvTwoSigmaProfile};
-use crate::traits::{InnerSolver, OuterSolver};
+use crate::traits::{InnerSolver, Loss, OuterSolver};
 
 use super::{compute_edf, compute_edf_per_term, compute_vcov, FittedGam, LinkKind};
 
@@ -49,7 +49,7 @@ pub(crate) fn fit_gaussian_from_prep<S: LinearSolver>(
             prep.mp,
             prep.log_pseudo_det_s_list.clone(),
         );
-    let outer_solver = NewtonWithHalving::new(NewtonOpts::default());
+    let outer_solver = NewtonWithHalving::new(score.loss.outer_tuning().to_newton_opts());
     let outer = outer_solver.minimize(&score, Array1::zeros(n_terms))?;
 
     let rho_hat = outer.theta.clone();

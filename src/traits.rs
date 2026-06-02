@@ -380,6 +380,16 @@ pub trait Loss {
         false
     }
 
+    /// Per-family outer-Newton tuning (convergence tolerances, iteration
+    /// cap, step cap). Default = mgcv-parity (`5e-7 / 1e-7`). Families
+    /// with materially different convergence behaviour override.
+    ///
+    /// See [`crate::outer::OuterTuning`] for fields and rationale. The
+    /// fit drivers call this once and convert to [`crate::outer::NewtonOpts`].
+    fn outer_tuning(&self) -> crate::outer::OuterTuning {
+        crate::outer::OuterTuning::mgcv_default()
+    }
+
     /// Per-element initial μ for PIRLS. Default is mgcv's Bernoulli-style
     /// shrinkage `μ_i = (y_i + ȳ) / 2`. Family overrides:
     /// - **Poisson** (log link) → `max(y_i, 0.1)` to keep μ > 0 before

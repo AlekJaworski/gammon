@@ -530,7 +530,8 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         for (i, &t) in theta0_shape.iter().enumerate() {
             theta0[n_terms + i] = t;
         }
-        let outer_solver = NewtonWithHalving::new(NewtonOpts::default());
+        let outer_solver =
+            NewtonWithHalving::new(score.family_base.loss.outer_tuning().to_newton_opts());
         let outer = outer_solver.minimize(&score, theta0)?;
 
         let rho_hat: Array1<f64> = outer.theta.slice(ndarray::s![..n_terms]).to_owned();

@@ -34,6 +34,66 @@ pub struct NewtonOpts {
     pub max_step: f64,
 }
 
+/// Family-facing outer-Newton tuning. The fit drivers consume this via
+/// `Loss::outer_tuning()` and convert to [`NewtonOpts`]. Centralises the
+/// per-family overrides mgcv ships per family (gam.fit3.r `conv.tol`,
+/// `max.half`, step bounds) — defaults are mgcv-parity.
+///
+/// To override per family, implement `Loss::outer_tuning()` and return
+/// a different struct. The base `OuterTuning::mgcv_default()` matches
+/// mgcv's `conv.tol=1e-7 × 5` (gradient) and `conv.tol=1e-7` (REML
+/// change) — verified against mgcv_rust smooth.rs:2545-2569.
+#[derive(Debug, Clone, Copy)]
+pub struct OuterTuning {
+    /// Score-relative gradient tolerance: converge when
+    /// `|grad|_∞ < grad_tol · (|REML| + 1)`. mgcv default 5e-7.
+    pub grad_tol: f64,
+    /// Score-relative REML-change tolerance: converge when
+    /// `|ΔREML| / max(|REML|, 1) < reml_tol`. Active after iter ≥ 3.
+    /// mgcv default 1e-7.
+    pub reml_tol: f64,
+    /// Cap on outer iterations before the optimiser bails out with
+    /// `NotConverged`. mgcv default 200.
+    pub max_iters: usize,
+    /// L∞ cap on a single Newton step in θ-space. Per-axis caps from
+    /// `axis_step_caps` override this when present. mgcv default 5.0.
+    pub max_step: f64,
+}
+
+impl OuterTuning {
+    /// mgcv R / mgcv_rust default tolerances. Match
+    /// `gam.fit3.r:1644 conv.tol=1e-7` and mgcv_rust's
+    /// `smooth.rs:2545-2569 reml.tol`.
+    pub fn mgcv_default() -> Self {
+        Self {
+            grad_tol: 5.0e-7,
+            reml_tol: 1.0e-7,
+            max_iters: 200,
+            max_step: 5.0,
+        }
+    }
+
+    /// Convert to the lower-level [`NewtonOpts`] the outer Newton actually
+    /// consumes. Fills in the less-commonly-tuned fields (`step_min`,
+    /// `hess_floor`) with executor-side defaults.
+    pub fn to_newton_opts(self) -> NewtonOpts {
+        NewtonOpts {
+            max_iters: self.max_iters,
+            grad_tol: self.grad_tol,
+            reml_tol: self.reml_tol,
+            step_min: 1e-3,
+            hess_floor: 1e-8,
+            max_step: self.max_step,
+        }
+    }
+}
+
+impl Default for OuterTuning {
+    fn default() -> Self {
+        Self::mgcv_default()
+    }
+}
+
 impl Default for NewtonOpts {
     fn default() -> Self {
         // Tolerances match mgcv's `gam.fit3.r:1644` defaults — `conv.tol=1e-7`

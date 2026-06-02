@@ -101,7 +101,8 @@ where
     let n_terms = prep.s_list.len();
     debug_assert_eq!(theta0.len(), n_terms + 1, "profile-θ driver expects exactly 1 shape axis");
 
-    let solver = ProfileShapeNewton::new(NewtonOpts::default());
+    let solver =
+        ProfileShapeNewton::new(score.family_base.loss.outer_tuning().to_newton_opts());
     let outer = solver.minimize(&score, theta0)?;
 
     // Final fit: rebuild family with shape from `outer.theta[n_terms..]`.
