@@ -126,8 +126,32 @@ def _resolve_term_cols(term: Term, col_names: Sequence[str]) -> Term:
 
 
 class Gam:
-    """Sklearn-style gamrs GAM wrapper — drop-in replacement for
-    :class:`mgcv_rust.Gam` (single-smooth scope today)."""
+    """Sklearn-style GAM with smoothing-parameter selection by REML or fREML.
+
+    Fits one of ten families (see ``family=``). Supports single 1-D smooths,
+    additive multi-smooth (``y ~ s(x0) + s(x1) + …``), n-margin tensor
+    products (``te()`` / ``ti()``), thin-plate splines, and random effects
+    via the typed-term API.
+
+    Two common ways to specify the smooth structure:
+
+    .. code-block:: python
+
+        # Implicit: one CR smooth per column of X
+        g = Gam(family="gaussian").fit(X, y)
+
+        # Explicit: typed terms with string or int column references
+        from gamrs import CrTerm, TeTerm
+        g = Gam(terms=[CrTerm("x0", k=10), CrTerm("x1", k=15)]).fit(X, y)
+        g = Gam(terms=[TeTerm(cols=("x0", "x1"), k=(8, 8))]).fit(X, y)
+
+    For GLM families at large n, pass ``method="fREML"`` for the
+    mgcv R ``bam()`` optimiser (Fellner-Schall multiplicative λ updates
+    with single-step IRLS). See ``docs/perf.md`` for the trade-off.
+
+    Compatible with the v0.x ``mgcv_rust.Gam`` API surface; a textual
+    substitution of ``from mgcv_rust import Gam`` → ``from gamrs import Gam``
+    is the intended migration path."""
 
     # ---- Class constants matching v0.x ------------------------------- #
     INTERCEPT = "__constant__"
@@ -670,10 +694,11 @@ class Gam:
             raise ValueError(
                 f"scale must be 'response', 'link', or 'deviation', got {scale!r}"
             )
-        if scale == "deviation":
+        if scale == "deviation" and self._subset_mask is None:
             raise ValueError(
-                "scale='deviation' is only meaningful on subset views; "
-                "gamrs doesn't yet support subset views — use scale='link'."
+                "scale='deviation' is only meaningful on subset views — "
+                "create one with gam[[\"predictor\"]] first, then call "
+                "predict_ci(..., scale='deviation') on the view."
             )
 
         deprecated = alpha is not None
@@ -690,8 +715,37 @@ class Gam:
                 raise ValueError(f"level must be in (0, 1), got {level}")
             effective_level = float(level)
 
+        # Subset views are η-component summaries; response-scale CIs don't
+        # have a coherent definition on them. Reject early with guidance.
+        if self._subset_mask is not None and scale == "response":
+            raise ValueError(
+                "predict_ci(scale='response') is only defined for full-model "
+                "views. On a subset view (gam[[...]]), the prediction is an "
+                "η-component of a single smooth's contribution — use "
+                "scale='link' (with intercept) or scale='deviation' (without)."
+            )
+
         x = self._coerce_predict_X(X)
-        # gamrs's native predict_ci returns (mean, lo, hi) on link OR response.
+
+        # Subset view: native predict_ci can't apply the term mask, so
+        # compute Wald CI from the masked lpmatrix here (same math as
+        # partial_effect's CI branch).
+        if self._subset_mask is not None:
+            lp = np.asarray(f.evaluate_lpmatrix(x))
+            ranges = f.term_col_ranges()
+            masked = self._apply_subset_mask(lp, ranges, scale=scale)
+            vcov = np.asarray(f.vcov())
+            var_eta = np.einsum("ij,jk,ik->i", masked, vcov, masked)
+            beta = np.asarray(f.beta)
+            mean = masked @ beta
+            z = _normal_quantile(0.5 + 0.5 * effective_level)
+            sd = np.sqrt(np.maximum(var_eta, 0.0))
+            lo, hi = mean - z * sd, mean + z * sd
+            if deprecated:
+                return np.asarray(lo), np.asarray(hi)
+            return np.asarray(mean), np.asarray(lo), np.asarray(hi)
+
+        # Full-model path — let the native CI do the work.
         scale_arg = "link" if scale == "link" else "response"
         mean, lo, hi = f.predict_ci(x, effective_level, scale_arg)
         if deprecated:

@@ -144,8 +144,8 @@ you'd rather profile φ than commit to NegBin.
 Wald, no sampling needed).
 
 ```python
-mu, lo, hi = g.predict_ci(df, level=0.95, scale="response")
-mu, lo, hi = g.predict_ci(df, level=0.95, scale="link")
+mu, lo, hi = g.predict_ci(X, level=0.95, scale="response")
+mu, lo, hi = g.predict_ci(X, level=0.95, scale="link")
 ```
 
 `predict_diff` returns the η-scale difference between two design rows (or
@@ -153,16 +153,48 @@ broadcast a single baseline against many candidates), with CIs:
 
 ```python
 # Δη between two rows
-diff = g.predict_diff(df.iloc[[0]], df.iloc[[1]])
+diff = g.predict_diff(X.iloc[[0]], X.iloc[[1]])
 
-# With 95% CI
-diff, lo, hi = g.predict_diff(df.iloc[[0]], df, level=0.95, broadcast="from")
+# With 95% CI (broadcast a single baseline against many rows)
+diff, lo, hi = g.predict_diff(X.iloc[[0]], X, level=0.95, broadcast="from")
 ```
 
 `predict_diff` is identity-link only — for non-identity links, sample
 posteriors and difference per draw.
 
-## 8. Large-n fits — switch to `method="fREML"`
+## 8. Subset views — isolate one smooth's contribution
+
+`gam[["x0"]]` returns a *subset view* that masks all other terms to zero
+when predicting. Use it to plot a single smooth's marginal effect or to
+get a CI on just its contribution.
+
+```python
+g = Gam(terms=[CrTerm("x0", k=10), CrTerm("x1", k=15)]).fit(X, df.y)
+
+g_x0 = g[["x0"]]                              # subset view
+eta_x0 = g_x0.predict(X, scale="deviation")    # x0's η-contribution, no intercept
+mu_x0, lo, hi = g_x0.predict_ci(X, level=0.95, scale="deviation")
+
+# Include the intercept (η-scale fit with only x0's smooth and the constant)
+g_x0_with_int = g[["x0", Gam.INTERCEPT]]
+mu = g_x0_with_int.predict(X, scale="link")
+```
+
+A subset view supports `scale="link"` and `scale="deviation"`.
+`scale="response"` only makes sense on the full model (inv-linking a
+single smooth's η-component is not a meaningful prediction).
+
+`partial_effect("x0", grid_n=100, level=0.95)` is a convenience wrapper:
+it builds a grid over the training range of `x0`, holds every other
+predictor at its training median, and returns a DataFrame
+`{x, mean, lo, hi}` ready to plot.
+
+```python
+peff = g.partial_effect("x0", grid_n=100, level=0.95)
+peff.plot(x="x", y="mean")  # or hand to matplotlib / seaborn / altair
+```
+
+## 9. Large-n fits — switch to `method="fREML"`
 
 `gamrs`'s default is REML via damped Newton; for GLM families at large n,
 `method="fREML"` switches to mgcv R's `bam()` optimiser (Fellner-Schall
@@ -183,7 +215,7 @@ Pick `method="fREML"` when:
 Default (REML) is fine for `n < 50_000` and for shape-aware families
 (NegBin, Tweedie, TDist), which already use bespoke optimisers.
 
-## 9. Quantile regression (ELF)
+## 10. Quantile regression (ELF)
 
 The ELF likelihood approximates an asymmetric Laplace at width σ. `gamrs`
 ships qgam-style σ-calibration via K-fold pinball CV.
@@ -206,7 +238,7 @@ err-param heuristic (one fit instead of CV) — needs the `quantile` extra:
 g = fit_quantile(X, y, tau=0.99, preset="fast_oos")
 ```
 
-## 10. Diagnostics
+## 11. Diagnostics
 
 ```python
 g.coef_              # basis coefficients
@@ -223,7 +255,7 @@ g.fit_stats_         # detailed counters: PIRLS calls, line-search trials, …
 `fit_stats_` is useful when investigating slow fits — it exposes the inner
 PIRLS / line-search counters that the Rust solver maintains.
 
-## 11. Serialize & deploy
+## 12. Serialize & deploy
 
 ```python
 blob = g.serialize()                    # bytes

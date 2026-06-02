@@ -253,3 +253,41 @@ def test_term_string_col_unknown_raises(rng):
     df["y"] = df.a + rng.normal(0, 0.1, 100)
     with pytest.raises(ValueError, match="CrTerm.*'does_not_exist'"):
         gamrs.Gam(terms=[gamrs.CrTerm("does_not_exist")]).fit(df[["a"]], df.y)
+
+
+def test_subset_view_predict_ci(rng):
+    """``gam[["x0"]].predict_ci(..., scale="deviation")`` returns the
+    Wald CI on the masked η contribution. Same numbers as partial_effect."""
+    pd = pytest.importorskip("pandas")
+    n = 300
+    df = pd.DataFrame({
+        "x0": rng.uniform(0, 10, n),
+        "x1": rng.uniform(-5, 5, n),
+    })
+    df["y"] = np.sin(df.x0) + 0.3 * df.x1**2 + rng.normal(0, 0.3, n)
+    X = df[["x0", "x1"]]
+    g = gamrs.Gam(
+        terms=[gamrs.CrTerm("x0", k=10), gamrs.CrTerm("x1", k=15)]
+    ).fit(X, df.y)
+
+    # scale='deviation' is supported on subset views
+    mean, lo, hi = g[["x0"]].predict_ci(X, level=0.95, scale="deviation")
+    assert mean.shape == lo.shape == hi.shape == (n,)
+    assert np.all(lo <= mean) and np.all(mean <= hi)
+
+    # scale='link' includes the intercept when requested explicitly
+    mean_int, _, _ = g[["x0", gamrs.Gam.INTERCEPT]].predict_ci(
+        X, level=0.95, scale="link"
+    )
+    # difference between link-with-intercept and deviation should be a
+    # constant (the intercept)
+    diffs = mean_int - mean
+    assert np.std(diffs) < 1e-8
+
+    # scale='response' on a subset view is rejected with a clear message
+    with pytest.raises(ValueError, match="only defined for full-model"):
+        g[["x0"]].predict_ci(X, level=0.95, scale="response")
+
+    # scale='deviation' without a subset view is also rejected
+    with pytest.raises(ValueError, match="only meaningful on subset views"):
+        g.predict_ci(X, level=0.95, scale="deviation")
