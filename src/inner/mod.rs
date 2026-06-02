@@ -215,6 +215,12 @@ pub struct TkKKTInputs {
 
 /// `X' diag(w)` as a `(p, n)` matrix, written without forming `diag(w)`.
 pub(crate) fn weighted_xt(x_design: &Array2<f64>, w: &Array1<f64>) -> Array2<f64> {
+    weighted_xt_view(x_design.view(), w.view())
+}
+
+/// View-accepting variant — used at hot `xtwx_xtwy` callers to avoid
+/// `to_owned()` clones (160 MB per PIRLS iter at n=1M, p=20).
+pub(crate) fn weighted_xt_view(x_design: ArrayView2<f64>, w: ArrayView1<f64>) -> Array2<f64> {
     let n = x_design.nrows();
     let p = x_design.ncols();
     let mut xtw = Array2::<f64>::zeros((p, n));
@@ -352,7 +358,9 @@ pub(crate) fn xtwx_xtwy(
 ) -> (Array2<f64>, Array1<f64>) {
     match w {
         Some(w) => {
-            let wxt = weighted_xt(&x.to_owned(), &w.to_owned());
+            // Avoid to_owned() clones of x/w (combined ~168 MB at n=1M)
+            // by routing the view-accepting weighted_xt directly.
+            let wxt = weighted_xt_view(x, w);
             (wxt.dot(&x), wxt.dot(&y))
         }
         None => (x.t().dot(&x), x.t().dot(&y)),
