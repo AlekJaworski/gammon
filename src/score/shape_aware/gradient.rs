@@ -169,7 +169,7 @@ where
         g
     }
 
-    pub(super) fn compute_value(&self, theta: &Array1<f64>) -> Result<f64> {
+    pub(crate) fn compute_value(&self, theta: &Array1<f64>) -> Result<f64> {
         let n_terms = self.s_list.len();
         let (fit, family) = self.fit_inner_at(theta)?;
         let rho_slice = theta.slice(ndarray::s![..n_terms]).to_vec();

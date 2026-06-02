@@ -37,6 +37,7 @@ use crate::traits::{CoordsKind, InnerSolver, Loss, OuterSolver};
 use super::canonical::FamilyFitWithSolver;
 use super::driver::{LambdaInit, SmartInit};
 use super::driver::{fit_pirls_envelope, fit_shape_aware, make_pearson_scale_fn};
+use super::profile_shape::fit_shape_aware_profile;
 use super::gaussian::fit_gaussian_from_prep;
 use super::quantile::fit_quantile_from_prep;
 use super::{
@@ -305,15 +306,19 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, NegBinVariance, S> for NegBin
         theta0_vec.push(init_theta.ln());
         let theta0 = Array1::from_vec(theta0_vec);
 
-        fit_shape_aware::<_, _, _, _, _, S, _, _>(
+        // NegBin uses the profile-θ driver — port of mgcv_rust's NegBin
+        // outer-Newton pattern at `src/smooth.rs:1866-1869` + `3562-3637`:
+        // M-dim ρ-Newton + sequential 1-D log(θ) profile Newton each
+        // outer iter. PIRLS economy matches mgcv_rust's (~4 PIRLS/iter vs
+        // the joint Newton's ~9), closing the 11× perf gap vs mgcv_rust
+        // on `1d_nb_log_n300`.
+        fit_shape_aware_profile::<_, _, _, S, _, _>(
             prep,
             x,
             y,
             prior_weights,
             negbin_log(init_theta),
             theta0,
-            PirlsInnerBuilder,
-            FixedAtOneProfile,
             move |theta| {
                 let mut f = negbin_log(init_theta);
                 f.set_shape_params(&[theta[n_terms]]);

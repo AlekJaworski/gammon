@@ -4,6 +4,13 @@
 //! at θ produces (value, gradient, FrozenBetaCtx); the Hessian then
 //! comes from a central FD variant chosen by whether the family
 //! supplies `analytic_shape_score_gradient`.
+//!
+//! `compute_value_grad_hess_rho_only` is the **profile-θ** variant: it
+//! returns just the M×M ρ block of the joint Hessian, the ρ-only gradient,
+//! and the value — no shape FD probes. Used by the `ProfileShapeNewton`
+//! outer solver (port of mgcv_rust `src/smooth.rs:1866-1869`'s "legacy
+//! M-dim Newton path" comment, plus the NegBin 1-D profile-θ Newton at
+//! lines 3562-3637).
 
 use ndarray::{Array1, Array2};
 
@@ -139,6 +146,159 @@ where
         }
 
         Ok((value, g_center, hess))
+    }
+
+    /// ρ-only `(value, g_ρ, H_ρρ)` at θ for the profile-shape Newton path.
+    ///
+    /// Port of mgcv_rust's NegBin profile-θ pattern: outer Newton steps
+    /// **only ρ**, then a separate 1-D log(θ) Newton runs sequentially.
+    /// Citations:
+    /// - `src/smooth.rs:2383` — `reml_hessian_mgcv_exact_ift` returns an
+    ///   M×M ρ-Hessian for NegBin (no log θ axis).
+    /// - `src/smooth.rs:1866-1869` — comment block confirms NegBin /
+    ///   Tweedie profile blocks run their 1-D log-θ Newton AFTER the ρ
+    ///   step ("`joint_active = false` falls through to the legacy M-dim
+    ///   Newton path").
+    /// - `src/smooth.rs:3562-3637` — the actual NegBin profile-θ Newton
+    ///   block (3 PIRLS for central FD on `dlr/d(log θ)`).
+    ///
+    /// PIRLS economy: **1 PIRLS solve total**. The full `value_grad_hess`
+    /// path costs 1 + 2 + 2·n_shape = 5 PIRLS for NegBin 1-D (n_shape=1,
+    /// n_terms=1) and 1 + 2 + 2·n_shape = 5 for NegBin 2-D (n_shape=1,
+    /// n_terms=2) — the two extras come from `eval_grad_with_fit`'s
+    /// shape-FD fallback (gradient.rs:564-574) and `hess_via_ift_analytic`'s
+    /// shape-FD column (hessian.rs:474-487). Both vanish in the ρ-only
+    /// path because the shape gradient/Hessian are no longer needed; the
+    /// 1-D profile-θ Newton evaluates the REML *value* at log θ ± h
+    /// (3 PIRLS) outside this function, matching mgcv_rust:3592-3594's
+    /// `nb_eval!(log_theta), nb_eval!(log_theta + h), nb_eval!(log_theta - h)`.
+    pub fn compute_value_grad_hess_rho_only(
+        &self,
+        theta: &Array1<f64>,
+    ) -> Result<(f64, Array1<f64>, Array2<f64>)> {
+        use super::super::hess_ift::{
+            build_xtwx, compute_dev_grad_beta_working_rss, hess_ift_rho, HessIftCtx,
+        };
+
+        let (fit, family) = self.fit_inner_at(theta)?;
+        let n_terms = self.s_list.len();
+        let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
+        let value = self.score_value(&fit, &family, &rho_slice);
+
+        // ρ-gradient via the shared envelope helper. Per-term `bsb_j`
+        // and `tr(H⁻¹·S_j)` are computed here; φ comes from the active
+        // Profile (FixedAtOneProfile for NegBin → φ=1).
+        let mut bsb_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut tr_hinv_s_per_term: Vec<f64> = Vec::with_capacity(n_terms);
+        let mut bsb_total = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = self.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            let tr_hinv_s_j = fit.trace_a_inv(self.s_list[j].view());
+            bsb_per_term.push(bsb_j);
+            tr_hinv_s_per_term.push(tr_hinv_s_j);
+            bsb_total += rho_slice[j].exp() * bsb_j;
+        }
+        let tr_hinv_xtwx = fit.p as f64;
+        let phi = self
+            .profile
+            .dispersion(&family.loss, &fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
+            .unwrap_or(1.0);
+        let rho_grad = self.compute_rho_envelope_gradient(
+            &fit,
+            &family,
+            &rho_slice,
+            &bsb_per_term,
+            &tr_hinv_s_per_term,
+            phi,
+        );
+        let mut g_rho = Array1::<f64>::zeros(n_terms);
+        for j in 0..n_terms {
+            g_rho[j] = rho_grad[j];
+        }
+
+        // Analytic M×M ρ-Hessian via the IFT helper — identical to the
+        // ρ block built by `hess_via_ift_analytic` (just no shape FD
+        // column). Newton-A path for `use_newton_irls()` families (NegBin
+        // here): the IFT Hessian differentiates the same `log|H|` the
+        // score formula uses (Newton-W, not Fisher-W).
+        let lambda: Vec<f64> = rho_slice.iter().map(|&r| r.exp()).collect();
+        let sigma2 = phi; // ScaleParameterMethod::Profile uses φ from above.
+        let use_newton = family.loss.use_newton_irls();
+        let lazy_tk = if use_newton {
+            let prior_w = self
+                .prior_weights
+                .clone()
+                .unwrap_or_else(|| Array1::ones(fit.n));
+            let rho_arr = Array1::from(rho_slice.clone());
+            let s_total = crate::design::combined_s(&self.s_list, &rho_arr);
+            crate::inner::pirls::lazy_tk_kkt_inputs(
+                &family,
+                &self.y,
+                &fit.mu,
+                &fit.beta,
+                &prior_w,
+                &self.x_design,
+                &self.s_list,
+                &s_total,
+                &rho_arr,
+            )
+        } else {
+            None
+        };
+        let (a_inv_owned, xtwx_owned, dev_grad_beta) = if let Some(ref tk) = lazy_tk {
+            let a_inv = tk.a_newton_inv.clone();
+            let n = fit.n;
+            let mut w_newton = Array1::<f64>::zeros(n);
+            for i in 0..n {
+                let mu_i = fit.mu[i];
+                let var_i = family.variance.variance(mu_i).max(1e-300);
+                let g_prime_mu = family.link.d_link_dmu(mu_i);
+                let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+                let v_prime = family.variance.d_variance(mu_i);
+                let v1n = v_prime / var_i;
+                let g_double_prime = family.link.d2_link_dmu(mu_i);
+                let g2n = g_double_prime / g_prime_mu;
+                let c_resid = self.y[i] - mu_i;
+                let alpha_raw = 1.0 + c_resid * (v1n + g2n);
+                let alpha = if alpha_raw > 0.0 && alpha_raw.is_finite() {
+                    alpha_raw
+                } else {
+                    1.0
+                };
+                w_newton[i] = wf * alpha;
+            }
+            let xtwx_n = build_xtwx(&self.x_design, &w_newton);
+            let dev_grad = compute_dev_grad_beta_working_rss(
+                &self.x_design,
+                &w_newton,
+                &fit.working_response,
+                &fit.beta,
+            );
+            (a_inv, xtwx_n, dev_grad)
+        } else {
+            let a_inv = fit.a_inv();
+            let xtwx_f = build_xtwx(&self.x_design, &fit.working_weights);
+            let dev_grad = compute_dev_grad_beta_working_rss(
+                &self.x_design,
+                &fit.working_weights,
+                &fit.working_response,
+                &fit.beta,
+            );
+            (a_inv, xtwx_f, dev_grad)
+        };
+        let ctx = HessIftCtx {
+            s_list: &self.s_list,
+            lambda: &lambda,
+            beta: &fit.beta,
+            a_inv: &a_inv_owned,
+            xtwx: &xtwx_owned,
+            sigma2,
+            dev_grad_beta: &dev_grad_beta,
+        };
+        let h_rho = hess_ift_rho(&ctx);
+
+        Ok((value, g_rho, h_rho))
     }
 
     /// **Partial-freeze** central FD on the analytic gradient.

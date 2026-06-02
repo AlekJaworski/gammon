@@ -46,6 +46,7 @@ mod family_impls;
 pub mod gaussian;
 #[cfg(feature = "persistence")]
 mod persistence;
+pub(crate) mod profile_shape;
 pub mod quantile;
 
 pub use canonical::{
