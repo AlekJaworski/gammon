@@ -484,6 +484,19 @@ pub trait InnerSolver {
     /// `rho.len() == 1` in Phase 0 (single smoothing parameter).
     fn fit(&self, rho: &Array1<f64>) -> Result<Self::Fit>;
 
+    /// Solve with an optional warm-start β. The default implementation
+    /// ignores the hint and delegates to `fit`. Inner solvers that can
+    /// use the hint (PirlsInner via `eta_init = X·beta_warm`) override
+    /// this — the NoRefresh line-search shortcut on EnvelopeScore needs
+    /// the warm-start to avoid full PIRLS at trial λ.
+    fn fit_warm(
+        &self,
+        rho: &Array1<f64>,
+        _beta_warm: Option<&Array1<f64>>,
+    ) -> Result<Self::Fit> {
+        self.fit(rho)
+    }
+
     /// **Lazy Newton-A log|H|** at the converged β. Returns `None` when the
     /// family is canonical-link / doesn't opt into Newton-IRLS (the
     /// canonical Fisher H's `log|A|` off the fit's `a_factor` is then the

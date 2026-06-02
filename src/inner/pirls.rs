@@ -405,7 +405,21 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
             self.s_list.len()
         );
         let s_total = crate::design::combined_s(&self.s_list, rho);
-        self.pirls_loop(s_total, rho)
+        self.pirls_loop(s_total, rho, None)
+    }
+
+    /// Warm-start variant: uses `beta_warm` as the initial β if provided
+    /// (via `eta = X · beta_warm`), otherwise behaves like `fit`.
+    /// Used by `EnvelopeScore::compute_value_no_refresh` to skip cold
+    /// initial μ when a NoRefresh IFT propagation is available.
+    fn fit_warm(
+        &self,
+        rho: &Array1<f64>,
+        beta_warm: Option<&Array1<f64>>,
+    ) -> Result<Self::Fit> {
+        debug_assert_eq!(rho.len(), self.s_list.len());
+        let s_total = crate::design::combined_s(&self.s_list, rho);
+        self.pirls_loop(s_total, rho, beta_warm)
     }
 
     /// Newton-A log|H| at converged β. Computed lazily here so PIRLS
@@ -465,7 +479,12 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
 impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
     PirlsInner<L, K, V, S>
 {
-    fn pirls_loop(&self, s_total: Array2<f64>, rho: &Array1<f64>) -> Result<GaussianInnerFit<S>> {
+    fn pirls_loop(
+        &self,
+        s_total: Array2<f64>,
+        rho: &Array1<f64>,
+        beta_warm: Option<&Array1<f64>>,
+    ) -> Result<GaussianInnerFit<S>> {
         // `lambda_eff = 1` since `s_total` already absorbs the per-term λ_j;
         // every `λ · S` site below now reads as `1 · s_total`. Kept named
         // for readability of the mgcv-equivalent algebra.
@@ -478,13 +497,21 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             None => Array1::ones(n),
         };
 
-        // Initial μ — delegated to the Loss via `Loss::initial_mu`. Default
-        // is the Bernoulli-style `(y + ȳ) / 2`; Poisson / Bernoulli / Gamma
-        // etc. override for link-domain safety. `opts.eta_init` still
-        // overrides everything for caller-controlled starts (e.g.
-        // warm-restart from a previous fit).
-        let mu_init: Array1<f64> = self.family.loss.initial_mu(self.y.view());
-        let mut eta: Array1<f64> = mu_init.iter().map(|&m| self.family.link.link(m)).collect();
+        // Initial η: warm-start with `eta = X · beta_warm` if supplied
+        // (Wood 2011 Phase 5 / mgcv_rust `fit_pirls_cached:1077-1094`),
+        // otherwise the per-family null-init via `Loss::initial_mu`.
+        // `opts.eta_init` still overrides everything for caller-controlled
+        // starts (e.g. quantile warm-restart).
+        let mut eta: Array1<f64> = if let Some(b0) = beta_warm {
+            debug_assert_eq!(b0.len(), p);
+            self.x_design.dot(b0)
+        } else {
+            let mu_init: Array1<f64> = self.family.loss.initial_mu(self.y.view());
+            mu_init
+                .iter()
+                .map(|&m| self.family.link.link(m))
+                .collect()
+        };
         if let Some(e0) = &self.opts.eta_init {
             eta.assign(e0);
         }

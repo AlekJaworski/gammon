@@ -68,6 +68,13 @@ impl Loss for Poisson {
     fn fixed_dispersion(&self) -> Option<f64> {
         Some(1.0)
     }
+
+    /// Poisson + log link: W = μ, stable under small β perturbations.
+    /// Eligible for IFT warm-start in line-search trials (matches
+    /// mgcv_rust's skip-list at `gam_optimized.rs:1512-1518`).
+    fn allows_no_refresh(&self) -> bool {
+        true
+    }
 }
 
 impl VarianceFn for PoissonVariance {

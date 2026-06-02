@@ -72,6 +72,12 @@ impl Loss for Bernoulli {
     fn fixed_dispersion(&self) -> Option<f64> {
         Some(1.0)
     }
+
+    /// Bernoulli + logit link: W = μ(1-μ), stable under small β
+    /// perturbations. Eligible for IFT warm-start.
+    fn allows_no_refresh(&self) -> bool {
+        true
+    }
 }
 
 impl VarianceFn for BinomialVariance {

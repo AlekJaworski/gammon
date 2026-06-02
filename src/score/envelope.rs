@@ -185,20 +185,25 @@ where
     }
 
     fn value(&self, theta: &Array1<f64>) -> Result<f64> {
-        // Cheap value path: skip the analytic Hessian and per-term b1 work
-        // — value-only line-search probes don't need them.
-        let inner: GaussianInnerFit<S> = self.inner.fit(theta)?;
+        // Cheap value path: skip the analytic Hessian work, and use IFT
+        // warm-start if accepted state cached + family eligible (Wood
+        // 2011 Phase 5 / mgcv_rust `fit_pirls_cached:1077-1094`). For
+        // Gamma/Poisson/Bernoulli/Binomial this typically shaves 2-5
+        // PIRLS iters per trial λ.
+        let beta_warm = self.ift_propagated_beta(theta);
+        let inner: GaussianInnerFit<S> = match &beta_warm {
+            Some(b) => {
+                self.stats.bump_no_refresh_attempt();
+                let fit = self.inner.fit_warm(theta, Some(b))?;
+                self.stats.bump_no_refresh_hit();
+                fit
+            }
+            None => self.inner.fit(theta)?,
+        };
         self.stats.record_pirls_call(inner.iterations);
         let (v, _, _) = self.compute_value_grad_from_fit(theta, &inner)?;
         Ok(v)
     }
-
-    // `try_value_no_refresh` not implemented for `EnvelopeScore` — the
-    // NoRefresh IFT shortcut needs warm-start access to the inner solver
-    // (InnerSolver::fit_warm), which currently lives only on the shape-
-    // aware path. Tracked as 0.6.0 work. For Gamma the bigger win (per-
-    // family OuterTuning) already lands at 1.28×; NoRefresh would shave
-    // another ~15%.
 
     fn value_and_grad(&self, theta: &Array1<f64>) -> Result<(f64, Array1<f64>)> {
         let (v, g, _) = self.value_grad_hess(theta)?;
@@ -222,14 +227,44 @@ where
     fn value_grad_hess(&self, theta: &Array1<f64>) -> Result<(f64, Array1<f64>, Array2<f64>)> {
         // Run the (expensive) inner fit ONCE and reuse it for value/grad and
         // the analytic Hessian — the whole point of the analytic path is to
-        // avoid the `1 + 2d` inner fits the FD Hessian needs.
-        let inner: GaussianInnerFit<S> = self.inner.fit(theta)?;
+        // avoid the `1 + 2d` inner fits the FD Hessian needs. IFT warm-start
+        // when accepted state is cached + family eligible.
+        let beta_warm = self.ift_propagated_beta(theta);
+        let inner: GaussianInnerFit<S> = match &beta_warm {
+            Some(b) => self.inner.fit_warm(theta, Some(b))?,
+            None => self.inner.fit(theta)?,
+        };
         self.stats.record_pirls_call(inner.iterations);
         let (v, g, hin) = self.compute_value_grad_from_fit(theta, &inner)?;
         let hess = match self.hess_analytic(&inner, &hin) {
             Some(h) => h,
             None => self.hess_via_fd(theta)?,
         };
+
+        // Stash NoRefresh accepted state for the next line-search trial.
+        // b1[:,k] = -λ_k · A⁻¹ · S_k · β reuses `hin.a_inv` (already
+        // materialised) — m × O(p²) GEMVs, negligible vs the inner fit.
+        // Mirrors `ShapeAwareEnvelopeScore::compute_value_grad_hess_rho_only_with_fit`
+        // and mgcv_rust `gam_optimized.rs:1574-1593` (warm_state write).
+        if self.loss.allows_no_refresh() && hin.a_inv.nrows() == inner.p {
+            let n_terms = self.s_list.len();
+            let p_dim = inner.p;
+            let mut b1 = Array2::<f64>::zeros((p_dim, n_terms));
+            for k in 0..n_terms {
+                let s_k_beta: Array1<f64> = self.s_list[k].dot(&inner.beta);
+                let ainv_sk_beta: Array1<f64> = hin.a_inv.dot(&s_k_beta);
+                let lam_k = hin.lambda_j[k];
+                for r in 0..p_dim {
+                    b1[[r, k]] = -lam_k * ainv_sk_beta[r];
+                }
+            }
+            *self.accepted_state.borrow_mut() = Some(EnvelopeAcceptedState {
+                beta: inner.beta.clone(),
+                b1,
+                lambda: hin.lambda_j.clone(),
+            });
+        }
+
         Ok((v, g, hess))
     }
 
@@ -699,6 +734,45 @@ where
         }
 
         Some(h)
+    }
+
+    /// IFT-propagate β from `accepted_state` to a trial θ via
+    /// `β_trial = β_acc + Σ_k b1[:, k] · Δρ_k`. Returns `None` if the
+    /// family is on the NoRefresh skip-list, no accepted state cached,
+    /// or the propagated β goes non-finite. The result is consumed by
+    /// `InnerSolver::fit_warm` so PIRLS starts from a near-converged β
+    /// instead of `Loss::initial_mu` — typically saves 2-5 IRLS iters
+    /// per trial λ. Port of mgcv_rust `gam_optimized.rs:1434-1472`.
+    fn ift_propagated_beta(&self, theta: &Array1<f64>) -> Option<Array1<f64>> {
+        if !self.loss.allows_no_refresh() {
+            return None;
+        }
+        let n_terms = self.s_list.len();
+        if theta.len() != n_terms {
+            return None;
+        }
+        let state_ref = self.accepted_state.borrow();
+        let state = state_ref.as_ref()?;
+        if state.lambda.len() != n_terms {
+            return None;
+        }
+        let p_dim = state.beta.len();
+        let mut beta_warm = state.beta.clone();
+        for k in 0..n_terms {
+            let lam_trial = theta[k].exp().max(1e-300);
+            let lam_saved = state.lambda[k].max(1e-300);
+            let drho = (lam_trial / lam_saved).ln();
+            if !drho.is_finite() {
+                return None;
+            }
+            for r in 0..p_dim {
+                beta_warm[r] += state.b1[[r, k]] * drho;
+            }
+        }
+        if !beta_warm.iter().all(|x| x.is_finite()) {
+            return None;
+        }
+        Some(beta_warm)
     }
 
     fn hess_via_fd(&self, theta: &Array1<f64>) -> Result<Array2<f64>> {

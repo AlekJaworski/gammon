@@ -156,6 +156,15 @@ impl Loss for Gamma {
         true
     }
 
+    /// Gamma's W = (dμ/dη)²/V = μ²/μ² = 1 (log link) or = 1/μ² (inverse
+    /// link) — stable under small β perturbations. Eligible for the
+    /// NoRefresh IFT line-search shortcut. Matches mgcv_rust's skip-list
+    /// at `gam_optimized.rs:1512-1518` (excludes TDist, Quantile, IG,
+    /// Tweedie; Gamma is eligible).
+    fn allows_no_refresh(&self) -> bool {
+        true
+    }
+
     /// Gamma's analytic Hessian + closed-form σ² profile converges
     /// cleanly to looser tolerances. Sweep (`scripts/sweep_tolerances.py`):
     /// 5e-5/1e-5 trims outer iters 6→5 and PIRLS calls 11→9 on 1D Gamma
