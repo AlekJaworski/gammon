@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "gamrs"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "approx",
  "bincode",
