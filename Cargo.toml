@@ -71,6 +71,16 @@ name = "bench_multi_smooth"
 path = "benches/bench_multi_smooth.rs"
 harness = false
 
+[[bench]]
+name = "bench_10d_gaussian"
+path = "benches/bench_10d_gaussian.rs"
+harness = false
+
+[[bench]]
+name = "bench_10d_gaussian_profile"
+path = "benches/bench_10d_gaussian_profile.rs"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"

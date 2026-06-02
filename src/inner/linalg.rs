@@ -136,15 +136,62 @@ impl LinearSolver for CholeskySolver {
     }
 
     fn invert(fact: &Self::Factorization) -> Array2<f64> {
+        // A⁻¹ = (L Lᵀ)⁻¹ = L⁻ᵀ · L⁻¹. Materialise into one allocation by
+        // forming Y = L⁻¹ via column-wise forward substitution against I,
+        // then a_inv[i,j] = Σ_k Y[k,i]·Y[k,j] (i.e. a_inv = Yᵀ·Y).
+        //
+        // Rewrites the previous per-column `chol_forward_solve +
+        // chol_back_solve` to (a) avoid the back-solve entirely — fold L⁻ᵀ
+        // into the final symmetric product — and (b) hot-loop on raw
+        // slices via `Array2::as_slice` so the inner loops are plain
+        // contiguous memory accesses instead of stride-checked indexing.
+        // The 10-D Gaussian outer-Newton calls this once per probe; cutting
+        // its constant by ~3× was the second half of the bench gap.
         let p = fact.nrows();
-        let mut a_inv = Array2::<f64>::zeros((p, p));
+        let l_slice = fact
+            .as_slice()
+            .expect("Cholesky factor must be C-contiguous");
+        // y_col_major[i + j*p] = (L⁻¹)[i, j] = j-th column of L⁻¹. Only
+        // i ≥ j entries are nonzero (L is lower-triangular ⇒ L⁻¹ is too).
+        let mut y_cm = vec![0.0_f64; p * p];
         for j in 0..p {
-            let mut e_j = Array1::<f64>::zeros(p);
-            e_j[j] = 1.0;
-            let z = chol_forward_solve(fact, e_j.view());
-            let col = chol_back_solve(fact, z.view());
+            // Forward-substitute e_j: solve L·z = e_j.
+            // z[i] = (e_j[i] - Σ_{k<i} L[i,k]·z[k]) / L[i,i]
+            // z[j] = 1/L[j,j]; z[i<j] = 0; z[i>j] uses prior z's.
+            let col_off = j * p;
+            // z[j..]
+            y_cm[col_off + j] = 1.0 / l_slice[j * p + j];
+            for i in (j + 1)..p {
+                let l_row_i = &l_slice[i * p..i * p + p];
+                let mut s = 0.0_f64;
+                // s = Σ_{k=j}^{i-1} L[i,k] · z[k]
+                let z_col = &y_cm[col_off..col_off + p];
+                for k in j..i {
+                    s += l_row_i[k] * z_col[k];
+                }
+                y_cm[col_off + i] = -s / l_row_i[i];
+            }
+        }
+        // a_inv[i,j] = Σ_k Y[k,i]·Y[k,j] (= (Yᵀ Y)[i,j]). Symmetric.
+        let mut a_inv = Array2::<f64>::zeros((p, p));
+        {
+            let dst = a_inv
+                .as_slice_mut()
+                .expect("fresh Array2 must be contiguous");
             for i in 0..p {
-                a_inv[[i, j]] = col[i];
+                let yi = &y_cm[i * p..i * p + p];
+                for j in i..p {
+                    let yj = &y_cm[j * p..j * p + p];
+                    // Both columns are nonzero only on k ≥ max(i, j) = j.
+                    let mut s = 0.0_f64;
+                    for k in j..p {
+                        s += yi[k] * yj[k];
+                    }
+                    dst[i * p + j] = s;
+                    if i != j {
+                        dst[j * p + i] = s;
+                    }
+                }
             }
         }
         a_inv

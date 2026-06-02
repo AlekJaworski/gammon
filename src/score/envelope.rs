@@ -214,6 +214,11 @@ pub(crate) struct HessInputs {
     /// Whether the gradient carried a Tk·KK' (non-canonical-link) term — the
     /// analytic Hessian does not differentiate that yet, so we fall back.
     has_tk_kkt: bool,
+    /// Dense `A⁻¹` (p × p), materialised once in
+    /// [`EnvelopeScore::compute_value_grad_from_fit`] and forwarded to
+    /// [`EnvelopeScore::hess_analytic`] so neither layer re-inverts. Empty
+    /// `(0,0)` when the score path didn't need it (Tk·KK' fallback to FD).
+    a_inv: Array2<f64>,
 }
 
 impl<L, I, P, S> EnvelopeScore<L, I, P, S>
@@ -255,6 +260,15 @@ where
         // `Σ_j λ_j (S_j β)`; the score uses these per-term to compute the
         // multi-d gradient `∂REML/∂ρ_j = λ_j β'S_j β/(2σ²) + λ_j tr(H⁻¹ S_j)/2
         // - rank_j/2`. v0.x's `reml_gradient_multi_*` follows the same shape.
+        //
+        // Perf: materialise `A⁻¹` ONCE here and reuse for every per-term
+        // trace, instead of letting each `inner.trace_a_inv(s_j)` re-invert
+        // (the trait's default path: `let a_inv = Self::invert(fact); ...`).
+        // With m=10 smooths this saved 9 redundant O(p³) inversions per
+        // outer probe — the 10-D Gaussian fit gap. mgcv_rust does the same
+        // (`reml_gradient_mgcv_exact_closed_form_inner` caches `system.a_inv`).
+        let a_inv = inner.a_inv();
+        let p_dim = inner.p;
         let mut bsb_per_term: Vec<f64> = Vec::with_capacity(n_terms);
         let mut tr_hinv_s_per_term: Vec<f64> = Vec::with_capacity(n_terms);
         let mut bsb_total = 0.0_f64; // Σ_j λ_j β'S_jβ — used in dp / σ²-eq
@@ -268,7 +282,15 @@ where
                 .zip(s_beta.iter())
                 .map(|(a, b)| a * b)
                 .sum();
-            let tr_hinv_s_j = inner.trace_a_inv(s_j.view());
+            // tr(A⁻¹·S_j) = Σ_{i,k} A⁻¹[i,k] · S_j[k,i]  — v0.x's iteration
+            // order from `src/reml/mod.rs:914-918`, identical FP to
+            // `LinearSolver::trace_a_inv` but without the per-call invert.
+            let mut tr_hinv_s_j = 0.0_f64;
+            for ii in 0..p_dim {
+                for kk in 0..p_dim {
+                    tr_hinv_s_j += a_inv[[ii, kk]] * s_j[[kk, ii]];
+                }
+            }
             bsb_per_term.push(bsb_j);
             tr_hinv_s_per_term.push(tr_hinv_s_j);
             bsb_total += lambda_j[j] * bsb_j;
@@ -329,6 +351,7 @@ where
                         sigma2: 1.0,
                         dsigma2_drho: None,
                         has_tk_kkt: false,
+                        a_inv: Array2::<f64>::zeros((0, 0)),
                     };
                     return Ok((1e12, Array1::zeros(n_terms), hin));
                 }
@@ -432,6 +455,7 @@ where
             sigma2: score_sigma2,
             dsigma2_drho,
             has_tk_kkt,
+            a_inv,
         };
 
         Ok((reml, g, hess_inputs))
@@ -488,9 +512,15 @@ where
         let tr_per = &hin.tr_hinv_s_per_term;
 
         // A⁻¹ once (dense) — reused for every `A⁻¹ S_j β` and the
-        // `tr(A⁻¹ S_i A⁻¹ S_j)` products. This is the single linear-algebra
-        // cost of the analytic path; no PIRLS re-fit.
-        let a_inv = inner.a_inv();
+        // `tr(A⁻¹ S_i A⁻¹ S_j)` products. Re-uses the inversion already
+        // materialised by `compute_value_grad_from_fit` (stored in
+        // `hin.a_inv`) so the analytic Hessian's linear-algebra cost is one
+        // O(p³) inversion total, not two.
+        let a_inv = if hin.a_inv.nrows() == inner.p {
+            hin.a_inv.clone()
+        } else {
+            inner.a_inv()
+        };
 
         // Per-term: A⁻¹ S_j β  (the dβ/dρ_j direction without the −λ_j) and
         // S_j β.
