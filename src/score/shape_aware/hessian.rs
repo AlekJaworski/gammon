@@ -176,6 +176,21 @@ where
         &self,
         theta: &Array1<f64>,
     ) -> Result<(f64, Array1<f64>, Array2<f64>)> {
+        self.compute_value_grad_hess_rho_only_with_fit(theta)
+            .map(|(v, g, h, _)| (v, g, h))
+    }
+
+    /// Same as `compute_value_grad_hess_rho_only` but also returns the
+    /// converged inner fit. The fit feeds `score_value_frozen_beta` so the
+    /// θ-FD probes (and line-search trials) on the shape axis reuse this
+    /// β̂ instead of re-running PIRLS — port of mgcv_rust's
+    /// `OuterLinearCache::score_at_theta` PIRLS-economy pattern
+    /// (`src/reml/mod.rs:693-729`, called from `src/smooth.rs:3592-3594`
+    /// where the NegBin θ-FD probes reuse `(y_local, w_local, xtwx_local)`).
+    pub fn compute_value_grad_hess_rho_only_with_fit(
+        &self,
+        theta: &Array1<f64>,
+    ) -> Result<(f64, Array1<f64>, Array2<f64>, GaussianInnerFit<S>)> {
         use super::super::hess_ift::{
             build_xtwx, compute_dev_grad_beta_working_rss, hess_ift_rho, HessIftCtx,
         };
@@ -298,7 +313,7 @@ where
         };
         let h_rho = hess_ift_rho(&ctx);
 
-        Ok((value, g_rho, h_rho))
+        Ok((value, g_rho, h_rho, fit))
     }
 
     /// **Partial-freeze** central FD on the analytic gradient.

@@ -219,8 +219,13 @@ impl ProfileShapeNewton {
             }
         }
 
-        // Initial ρ-only (v, g_ρ, H_ρρ).
-        let (mut v, mut g_rho, mut h_rho) = score.compute_value_grad_hess_rho_only(&theta)?;
+        // Initial ρ-only (v, g_ρ, H_ρρ). Also retain the converged inner
+        // fit so the shape-axis θ-FD probes and line-search candidate
+        // evaluations can reuse β̂ via `score_value_frozen_beta` (mgcv_rust
+        // `OuterLinearCache::score_at_theta` PIRLS-economy pattern, port of
+        // `src/reml/mod.rs:693-729` + `src/smooth.rs:3592-3594`).
+        let (mut v, mut g_rho, mut h_rho, mut fit_center) =
+            score.compute_value_grad_hess_rho_only_with_fit(&theta)?;
         let mut prev_v = f64::INFINITY;
 
         for iter in 0..opts.max_iters {
@@ -301,14 +306,15 @@ impl ProfileShapeNewton {
                 // shape param unchanged in trial
                 trial[n_terms] = log_theta_current;
 
-                let probe = score.compute_value_grad_hess_rho_only(&trial);
-                if let Ok((v_trial, g_trial, h_trial)) = probe {
+                let probe = score.compute_value_grad_hess_rho_only_with_fit(&trial);
+                if let Ok((v_trial, g_trial, h_trial, fit_trial)) = probe {
                     if v_trial.is_finite() && v_trial < v - 1e-10 * v.abs() {
                         prev_v = v;
                         theta = trial;
                         v = v_trial;
                         g_rho = g_trial;
                         h_rho = h_trial;
+                        fit_center = fit_trial;
                         accepted = true;
                         break;
                     }
@@ -363,6 +369,16 @@ impl ProfileShapeNewton {
             //     at log θ ± h gives (g_lθ, H_lθ); Newton step δ =
             //     -g_lθ / max(|H_lθ|, 1e-4), clamped to [-step_cap,
             //     +step_cap]; 2-step halving on the trial.
+            //
+            //     PIRLS economy (mgcv_rust pattern): the 3 FD probes
+            //     (center, +h, -h) and the 1-2 candidate evaluations all
+            //     run on the FROZEN β̂ from the accepted ρ probe — exactly
+            //     `OuterLinearCache::score_at_theta` (mgcv_rust
+            //     `src/reml/mod.rs:693-729`, called from
+            //     `src/smooth.rs:3592-3594` via `dispatch_reml_score_with_family`
+            //     which uses cached `(y_local, w_local, xtwx_local)`).
+            //     β̂ is refreshed at the top of the next outer iter via
+            //     `compute_value_grad_hess_rho_only_with_fit`.
             // -----------------------------------------------------------
             let log_theta = theta[n_terms];
             let h_th: f64 = 1e-3; // mgcv_rust:3569
@@ -371,9 +387,9 @@ impl ProfileShapeNewton {
             let mut t_minus = theta.clone();
             t_plus[n_terms] = (log_theta + h_th).clamp(shape_lo_hi.0, shape_lo_hi.1);
             t_minus[n_terms] = (log_theta - h_th).clamp(shape_lo_hi.0, shape_lo_hi.1);
-            let rp = score.compute_value(&t_plus);
-            let rm = score.compute_value(&t_minus);
-            if let (Ok(rp_v), Ok(rm_v)) = (rp, rm) {
+            let rp_v = score.score_value_frozen_beta(&fit_center, &t_plus);
+            let rm_v = score.score_value_frozen_beta(&fit_center, &t_minus);
+            if rp_v.is_finite() && rm_v.is_finite() {
                 let dlr_dlt = (rp_v - rm_v) / (2.0 * h_th);
                 let d2lr_dlt2 = (rp_v - 2.0 * rc + rm_v) / (h_th * h_th);
 
@@ -389,38 +405,38 @@ impl ProfileShapeNewton {
                 let mut accepted_theta = false;
                 let mut theta_try = theta.clone();
                 theta_try[n_terms] = candidate;
-                if let Ok(r_new) = score.compute_value(&theta_try) {
-                    if r_new.is_finite() && r_new < rc {
-                        new_log_theta = candidate;
-                        accepted_theta = true;
-                        v = r_new;
-                    }
+                let r_new = score.score_value_frozen_beta(&fit_center, &theta_try);
+                if r_new.is_finite() && r_new < rc {
+                    new_log_theta = candidate;
+                    accepted_theta = true;
+                    v = r_new;
                 }
                 if !accepted_theta {
                     let half = (log_theta + 0.5 * delta).clamp(shape_lo_hi.0, shape_lo_hi.1);
                     theta_try[n_terms] = half;
-                    if let Ok(r_half) = score.compute_value(&theta_try) {
-                        if r_half.is_finite() && r_half < rc {
-                            new_log_theta = half;
-                            v = r_half;
-                        }
+                    let r_half = score.score_value_frozen_beta(&fit_center, &theta_try);
+                    if r_half.is_finite() && r_half < rc {
+                        new_log_theta = half;
+                        v = r_half;
                     }
                 }
                 theta[n_terms] = new_log_theta;
 
                 // If log θ changed, the ρ-side Hessian / gradient are now
                 // stale (the family's θ changed, so PIRLS-converged β̂(ρ, θ)
-                // shifted). Refresh `(v, g_ρ, H_ρρ)` at the new θ so the
-                // next outer iter's gradient-tolerance check and Newton
-                // direction are accurate. mgcv_rust:3611 commits the new
-                // log θ via `commit_outer_search_vector`; the next iter
-                // top runs PIRLS refresh (smooth.rs:2001-2010), then the
-                // gradient/Hessian eval at the refreshed (β, w, z, X'WX).
+                // shifted). Refresh `(v, g_ρ, H_ρρ, fit_center)` at the
+                // new θ so the next outer iter's gradient-tolerance check
+                // and Newton direction are accurate. mgcv_rust:3611 commits
+                // the new log θ via `commit_outer_search_vector`; the next
+                // iter top runs PIRLS refresh (smooth.rs:2001-2010), then
+                // the gradient/Hessian eval at the refreshed (β, w, z, X'WX).
                 if new_log_theta != log_theta {
-                    let (v_new, g_new, h_new) = score.compute_value_grad_hess_rho_only(&theta)?;
+                    let (v_new, g_new, h_new, fit_new) =
+                        score.compute_value_grad_hess_rho_only_with_fit(&theta)?;
                     v = v_new;
                     g_rho = g_new;
                     h_rho = h_new;
+                    fit_center = fit_new;
                 }
             }
         }

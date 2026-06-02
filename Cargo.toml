@@ -81,6 +81,11 @@ name = "bench_10d_gaussian_profile"
 path = "benches/bench_10d_gaussian_profile.rs"
 harness = false
 
+[[bench]]
+name = "bench_nb"
+path = "benches/bench_nb.rs"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"

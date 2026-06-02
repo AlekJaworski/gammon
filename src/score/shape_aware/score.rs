@@ -291,4 +291,112 @@ where
             - 0.5 * log_det_lambda_s
             - ls_sum
     }
+
+    /// Evaluate the REML score at `theta` using a **FROZEN inner fit**
+    /// from a previous ρ probe (typically the center of the current
+    /// outer iter). Deviance and `saturated_log_lik` are recomputed at the
+    /// perturbed shape (since they depend on θ via `V(μ; θ)` and the NB
+    /// likelihood); `log_det_h` is recomputed on frozen μ via the Newton-W
+    /// path (which sees the new family's `V(μ; θ)`); β̂, μ̂, η̂, `bsb`,
+    /// `tr(H⁻¹ S_j)` are reused as-is.
+    ///
+    /// Port of mgcv_rust `src/reml/mod.rs:693-729` `OuterLinearCache::
+    /// score_at_theta_with_phi_hint`. Pre-condition: `fit` is the
+    /// converged inner fit at `θ_center = [ρ_slice; shape_center]` where
+    /// `ρ_slice = θ[..n_terms]` (the ρ-block matches; only the shape
+    /// trailing slice may differ). Caller is responsible for keeping that
+    /// invariant — typically by computing `fit` via `fit_inner_at(&theta)`
+    /// once per outer iter (center probe), then reusing it for the ±h
+    /// FD probes and the line-search candidate evaluations on the shape
+    /// axis only.
+    ///
+    /// PIRLS economy: ZERO PIRLS solves. Just a `lazy_newton_log_det_h`
+    /// O(p³) factorisation + an O(n) deviance / ls recomputation. Matches
+    /// mgcv_rust's per-FD-probe cost (which is the dominant remaining
+    /// per-iter cost vs the full-PIRLS path for NegBin).
+    pub(crate) fn score_value_frozen_beta(
+        &self,
+        fit: &GaussianInnerFit<S>,
+        theta: &Array1<f64>,
+    ) -> f64 {
+        let n_terms = self.s_list.len();
+        let n_shape = self.family_base.n_shape_params();
+        debug_assert_eq!(theta.len(), n_terms + n_shape);
+        let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
+        let shape_slice: Vec<f64> = theta.iter().skip(n_terms).copied().collect();
+
+        let mut family = self.family_base.clone();
+        if n_shape > 0 {
+            family.set_shape_params(&shape_slice);
+        }
+
+        let rank_adj = family.loss.score_rank_adjustment();
+
+        // bsb_total (β'S_jβ from frozen β̂) and log|λS|+ pieces.
+        let mut bsb_total = 0.0_f64;
+        let mut log_det_lambda_s = 0.0_f64;
+        for j in 0..n_terms {
+            let s_beta = self.s_list[j].dot(&fit.beta);
+            let bsb_j: f64 = fit.beta.iter().zip(s_beta.iter()).map(|(a, b)| a * b).sum();
+            let lambda_j = rho_slice[j].exp();
+            bsb_total += lambda_j * bsb_j;
+            let adj_rank_j = ((self.rank_s_list[j] as i32 + rank_adj).max(1)) as f64;
+            log_det_lambda_s += adj_rank_j * rho_slice[j] + self.log_pseudo_det_s_list[j];
+        }
+
+        // Re-compute deviance from frozen μ̂ + new family θ.
+        // (mgcv_rust:703 `let dev_numerator = glm_deviance(self.y_for_ls, &mu, family)`.)
+        let deviance_new: f64 = self
+            .y
+            .iter()
+            .zip(fit.mu.iter())
+            .map(|(&yi, &mui)| family.loss.deviance_per_obs(yi, mui))
+            .sum();
+
+        let dp = deviance_new + bsb_total;
+        let tr_hinv_xtwx = fit.p as f64;
+        let phi = match self
+            .profile
+            .dispersion(&family.loss, fit, 1.0, bsb_total, tr_hinv_xtwx, self.mp)
+        {
+            Some(p) => p,
+            None => return 1e12,
+        };
+
+        // log|H| — recompute via Newton-W on FROZEN μ̂ with the NEW family
+        // (V(μ; θ) shifts → W shifts). For canonical-link families this
+        // returns the same value as the Fisher-W path; for NegBin (Newton
+        // IRLS = true) the recompute is essential.
+        let log_det_h = if family.loss.use_newton_irls() {
+            let prior_w = self
+                .prior_weights
+                .clone()
+                .unwrap_or_else(|| Array1::ones(fit.n));
+            let s_total = crate::design::combined_s(
+                &self.s_list,
+                &Array1::from(rho_slice.clone()),
+            );
+            crate::inner::pirls::lazy_newton_log_det_h(
+                &family,
+                &self.y,
+                &fit.mu,
+                &prior_w,
+                &self.x_design,
+                &s_total,
+            )
+            .unwrap_or_else(|| fit.log_det_a())
+        } else {
+            fit.log_det_a()
+        };
+        let ls_sum: f64 = self
+            .y
+            .iter()
+            .map(|&yi| family.loss.saturated_log_lik(yi, phi))
+            .sum();
+        let two_pi = 2.0 * std::f64::consts::PI;
+        let mp = self.mp as f64;
+        dp / (2.0 * phi) - 0.5 * mp * (two_pi * phi).ln() + 0.5 * log_det_h
+            - 0.5 * log_det_lambda_s
+            - ls_sum
+    }
 }
