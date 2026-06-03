@@ -5,7 +5,7 @@ six composable trait layers (`Basis`, `BasisTransform`, `Loss`/`Link`/`VarianceF
 `InnerSolver`, `ScoreDerivatives`, `OuterSolver`). Designed for parity with
 R's `mgcv`.
 
-**Status: beta (v0.7).** Faster than `mgcv_rust` 0.23 at every tested
+**Status: beta (v0.8).** Faster than `mgcv_rust` 0.23 at every tested
 fixture and scale (see [Performance](#performance)), and `mgcv` R-parity
 on µ across all ten families. Multi-smooth additive (`y ~ s(x0) + s(x1)`),
 n-margin tensor products (`te(x0, x1, …)` / `ti(…)`) and thin-plate splines
@@ -64,8 +64,14 @@ All ten families land 1-D parity against `mgcv`:
 Multi-smooth (`s(x0) + s(x1) + …`) ships with `mgcv` R parity tests for
 Gaussian / Bernoulli / Poisson / QuasiPoisson / QuasiBinomial / Gamma /
 InvGauss / NegBin / Tweedie. scat / TDist multi-smooth fits run and
-converge; reference parity tests are pending. Ocat and Quantile/ELF
-remain single-smooth-only.
+converge; reference parity tests are pending. Quantile/ELF is
+single-smooth-only.
+
+Multi-smooth Ocat fits run but are **experimental**: the joint outer
+optimiser doesn't always pin down the model scale on two or more smooths
+(`converged_=False` is common; predicted η correlates with truth but
+its magnitude can drift). `predict_proba` for ocat also currently
+returns the wrong shape — both are tracked for v0.9.
 
 ## Smooths
 
@@ -156,7 +162,7 @@ so adding a family is a `Loss` impl, not a fork of the optimiser.
 
 ## Versioning
 
-Beta (`0.7.x`). The API is stabilising; minor bumps may carry breaking
+Beta (`0.8.x`). The API is stabilising; minor bumps may carry breaking
 changes until the remaining shape-aware families (scat/Ocat/ELF) gain
 multi-smooth support and the 1.0 surface is locked.
 
