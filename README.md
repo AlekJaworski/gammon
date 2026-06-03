@@ -98,20 +98,39 @@ full port story.
 
 ## Performance
 
-`gamrs` vs `mgcv_rust` 0.23.2, single smooth (k=20), best-of-3 wall time.
-Numbers >1× mean gamrs is faster. See `scripts/bench_large_n.py`.
+`gamrs` vs `mgcv_rust` 0.23.2, single-smooth, best-of-8 wall time after
+warm-up. Numbers >1× mean `gamrs` is faster. Measured on a single 12th-gen
+Intel core. See `scripts/bench_matters.py`.
 
-| family    | n=10K | n=100K | n=1M |
-| --------- | ----: | -----: | ---: |
-| Gaussian  | 0.98× | 1.46×  | 1.62×|
-| Poisson   | 1.50× | 1.20×  | 1.27×|
-| Bernoulli | 1.06× | 1.42×  | 1.49×|
+Single-smooth at gamrs-default `k=10`, n=2K:
+
+| family    | speedup vs mgcv_rust |
+| --------- | -------------------: |
+| Gaussian  | 1.6×                 |
+| Poisson   | 1.9×                 |
+| Bernoulli | 2.1×                 |
+| Tweedie   | 2.6×                 |
+| NegBin    | 1.0×                 |
+| scat      | 0.5×                 |
+| ocat      | 14× *(†)*            |
+
+*(†)* ocat speedup is fixture-dependent; mgcv_rust's ocat path is
+slow on multi-category outputs by construction.
+
+scat is the remaining gap: per-outer-iter overhead from v0.10's outer
+Newton stabilisation stack (GMW-modified Hessian, subset Newton, RD-KKT
+step-halving) costs more than the simpler Newton mgcv_rust uses. The
+**analytic-Hessian** plumbing scat exercises is now complete in v0.11
+(Level-2 derivatives + observed-W PIRLS + warm-start across outer iters),
+moving scat from v0.10's 0.07× to v0.11's 0.5×; closing the remaining
+2× gap is per-iter constants work (caching θ-state across score/grad/hess,
+dropping the per-PIRLS `x_design.clone()`, lightening the outer Newton
+guards on benign fits).
 
 For GLM families at large n, set `method="fREML"` (mgcv R's `bam()`
 equivalent — Wood & Fasiolo 2017 Fellner-Schall multiplicative updates
-with single-step IRLS per outer iteration). The defaults are already
-sensible at small/medium n; the [perf guide](docs/perf.md) covers when
-to switch.
+with single-step IRLS per outer iteration). The defaults are sensible
+at small/medium n; the [perf guide](docs/perf.md) covers when to switch.
 
 ## Rust API
 
