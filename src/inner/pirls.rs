@@ -650,37 +650,51 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         let use_newton = self.family.loss.use_newton_irls();
         for it in 0..self.opts.max_iters {
             // PIRLS step: build (z, W) per row.
+            //   **Observed pair**: families overriding `irls_observed_pair`
+            //     get full control of (W, z) per row. TDist uses this to
+            //     route through mgcv R's `gam.fit4.r:368-399` observed-W
+            //     formula so `fit.a_factor` carries A_obs — what the
+            //     Level-2 analytic Hessian assumes.
             //   Fisher: w = prior/(V·g'²),          z = η + (y-μ)·g'(μ)
             //   Newton: w = wf·α·prior (PSD: α>0), z = η + (y-μ)·g'(μ)/α
             //           Fisher fallback when α ≤ 0:
             //             w = wf·prior,            z = η + (y-μ)·g'(μ)
             //   where wf = 1/(V·g'²), α = 1 + (y-μ)·(V'/V + g''/g').
-            for i in 0..n {
-                let mu_i = mu[i];
-                let var_i = self.family.variance.variance(mu_i).max(1e-300);
-                let g_prime_mu = self.family.link.d_link_dmu(mu_i);
-                let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
-                if !use_newton {
-                    working_weights[i] = prior_w[i] * wf;
-                    working_response[i] = eta[i] + (self.y[i] - mu_i) * g_prime_mu;
-                    continue;
+            if let Some((w_obs, z_obs)) = self.family.loss.irls_observed_pair(
+                self.y.view(),
+                mu.view(),
+                eta.view(),
+                prior_w.view(),
+            ) {
+                for i in 0..n {
+                    working_weights[i] = w_obs[i];
+                    working_response[i] = z_obs[i];
                 }
-                let v_prime = self.family.variance.d_variance(mu_i);
-                let v1n = v_prime / var_i;
-                let g_double_prime = self.family.link.d2_link_dmu(mu_i);
-                let g2n = g_double_prime / g_prime_mu;
-                let c_resid = self.y[i] - mu_i;
-                let alpha = 1.0 + c_resid * (v1n + g2n);
-                if alpha > 0.0 && alpha.is_finite() {
-                    working_weights[i] = prior_w[i] * wf * alpha;
-                    // z = η + (y - μ) · g'(μ) / α
-                    // (NB: mgcv_rust uses `dmu_deta = 1/g'`, so its
-                    // `c_resid / (dmu_deta·α)` is the same `(y-μ)·g'/α`.)
-                    working_response[i] = eta[i] + c_resid * g_prime_mu / alpha;
-                } else {
-                    // Per-row Fisher fallback (mgcv R `gam.fit4.r:392-399`).
-                    working_weights[i] = prior_w[i] * wf;
-                    working_response[i] = eta[i] + c_resid * g_prime_mu;
+            } else {
+                for i in 0..n {
+                    let mu_i = mu[i];
+                    let var_i = self.family.variance.variance(mu_i).max(1e-300);
+                    let g_prime_mu = self.family.link.d_link_dmu(mu_i);
+                    let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+                    if !use_newton {
+                        working_weights[i] = prior_w[i] * wf;
+                        working_response[i] = eta[i] + (self.y[i] - mu_i) * g_prime_mu;
+                        continue;
+                    }
+                    let v_prime = self.family.variance.d_variance(mu_i);
+                    let v1n = v_prime / var_i;
+                    let g_double_prime = self.family.link.d2_link_dmu(mu_i);
+                    let g2n = g_double_prime / g_prime_mu;
+                    let c_resid = self.y[i] - mu_i;
+                    let alpha = 1.0 + c_resid * (v1n + g2n);
+                    if alpha > 0.0 && alpha.is_finite() {
+                        working_weights[i] = prior_w[i] * wf * alpha;
+                        working_response[i] = eta[i] + c_resid * g_prime_mu / alpha;
+                    } else {
+                        // Per-row Fisher fallback (mgcv R `gam.fit4.r:392-399`).
+                        working_weights[i] = prior_w[i] * wf;
+                        working_response[i] = eta[i] + c_resid * g_prime_mu;
+                    }
                 }
             }
 
@@ -796,30 +810,42 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         // the top from the previous μ). Mirrors `OcatInner::ocat_loop`'s
         // final pass at `src/inner/gam_fit5.rs:220-225`. Harmless for
         // Fisher (β converged ⇒ μ unchanged ⇒ same (w, z)), load-bearing
-        // for Newton (the Newton-A `A⁻¹` materialised in
-        // `compute_tk_kkt_inputs` is built from the SAME μ).
-        for i in 0..n {
-            let mu_i = mu[i];
-            let var_i = self.family.variance.variance(mu_i).max(1e-300);
-            let g_prime_mu = self.family.link.d_link_dmu(mu_i);
-            let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
-            if !use_newton {
-                working_weights[i] = prior_w[i] * wf;
-                working_response[i] = eta[i] + (self.y[i] - mu_i) * g_prime_mu;
-                continue;
+        // for Newton and observed-pair paths (the A⁻¹ materialised in
+        // `compute_tk_kkt_inputs` and `fit.a_factor` is built from the SAME μ).
+        if let Some((w_obs, z_obs)) = self.family.loss.irls_observed_pair(
+            self.y.view(),
+            mu.view(),
+            eta.view(),
+            prior_w.view(),
+        ) {
+            for i in 0..n {
+                working_weights[i] = w_obs[i];
+                working_response[i] = z_obs[i];
             }
-            let v_prime = self.family.variance.d_variance(mu_i);
-            let v1n = v_prime / var_i;
-            let g_double_prime = self.family.link.d2_link_dmu(mu_i);
-            let g2n = g_double_prime / g_prime_mu;
-            let c_resid = self.y[i] - mu_i;
-            let alpha = 1.0 + c_resid * (v1n + g2n);
-            if alpha > 0.0 && alpha.is_finite() {
-                working_weights[i] = prior_w[i] * wf * alpha;
-                working_response[i] = eta[i] + c_resid * g_prime_mu / alpha;
-            } else {
-                working_weights[i] = prior_w[i] * wf;
-                working_response[i] = eta[i] + c_resid * g_prime_mu;
+        } else {
+            for i in 0..n {
+                let mu_i = mu[i];
+                let var_i = self.family.variance.variance(mu_i).max(1e-300);
+                let g_prime_mu = self.family.link.d_link_dmu(mu_i);
+                let wf = 1.0 / (var_i * g_prime_mu * g_prime_mu);
+                if !use_newton {
+                    working_weights[i] = prior_w[i] * wf;
+                    working_response[i] = eta[i] + (self.y[i] - mu_i) * g_prime_mu;
+                    continue;
+                }
+                let v_prime = self.family.variance.d_variance(mu_i);
+                let v1n = v_prime / var_i;
+                let g_double_prime = self.family.link.d2_link_dmu(mu_i);
+                let g2n = g_double_prime / g_prime_mu;
+                let c_resid = self.y[i] - mu_i;
+                let alpha = 1.0 + c_resid * (v1n + g2n);
+                if alpha > 0.0 && alpha.is_finite() {
+                    working_weights[i] = prior_w[i] * wf * alpha;
+                    working_response[i] = eta[i] + c_resid * g_prime_mu / alpha;
+                } else {
+                    working_weights[i] = prior_w[i] * wf;
+                    working_response[i] = eta[i] + c_resid * g_prime_mu;
+                }
             }
         }
 

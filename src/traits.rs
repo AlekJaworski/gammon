@@ -436,6 +436,39 @@ pub trait Loss {
         None
     }
 
+    /// Per-row observed PIRLS `(W, z)` pair, OR `None` to fall through to
+    /// the standard Fisher / Newton-α paths. Used by families whose
+    /// deviance isn't an exponential family (scat / TDist) so the
+    /// Fisher / Newton-α weights aren't aligned with the observed
+    /// `∂²D/∂μ²` — port of mgcv R's `gam.fit4.r:368-369` direct
+    /// `w = 0.5·dd$Dmu2·(dμ/dη)²` build.
+    ///
+    /// Returns parallel vectors `(W, z)` of length `y.len()`. Required
+    /// fallback (mgcv R `gam.fit4.r:392-399`): when the observed curvature
+    /// is non-positive on a row, substitute the family's **expected**
+    /// curvature `½·E[D_μμ]·(dμ/dη)²` and use the Fisher working response
+    /// `z = η + (y − μ)·g'(μ)` for that row only. Prior weights MUST be
+    /// baked into `W` (PIRLS multiplies in `prior_w` itself for the
+    /// Fisher / Newton-α paths; this method is responsible when it owns
+    /// the W formula).
+    ///
+    /// Default returns `None` — every existing gamrs family stays on
+    /// the Fisher / Newton-α paths. TDist overrides this to align with
+    /// mgcv R's `scat$Dd` and the `gdi2` Level-2 Hessian convention; that
+    /// alignment makes the Level-2 analytic Hessian path
+    /// (`hess_via_ift_level2`) exact-vs-FD instead of the ~ 30 % mixed-
+    /// convention gap that comes from running Fisher PIRLS underneath
+    /// observed-W Level-1 / Level-2 chains.
+    fn irls_observed_pair(
+        &self,
+        _y: ndarray::ArrayView1<f64>,
+        _mu: ndarray::ArrayView1<f64>,
+        _eta: ndarray::ArrayView1<f64>,
+        _prior_w: ndarray::ArrayView1<f64>,
+    ) -> Option<(ndarray::Array1<f64>, ndarray::Array1<f64>)> {
+        None
+    }
+
     /// Whether `PirlsInner` should use the Newton (observed-info) IRLS
     /// weights with per-row Fisher fallback rather than pure Fisher
     /// scoring. Default `false` — pure Fisher is correct for canonical-link

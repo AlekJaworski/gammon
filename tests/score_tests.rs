@@ -4,7 +4,7 @@
 //! >700-LOC threshold (architecture-assumptions.md §G).
 
 use approx::assert_relative_eq;
-use gamrs::family::{negbin_log, tweedie_log};
+use gamrs::family::{negbin_log, tdist_identity, tweedie_log};
 use gamrs::inner::PirlsOpts;
 use gamrs::score::{
     FixedAtOneProfile, GaussianClosedFormScore, OwnedByLossProfile, PirlsInnerBuilder,
@@ -780,6 +780,118 @@ fn negbin_multismooth_analytic_hess_matches_fd_on_grad() {
                 let rel = (h_anal[[i, j]] - h_fd[[i, j]]).abs() / denom;
                 assert!(
                     rel < 1e-1,
+                    "θ={theta_init:?} H[{i},{j}] analytic={:+.4e} fd={:+.4e} rel={:.2e}",
+                    h_anal[[i, j]],
+                    h_fd[[i, j]],
+                    rel
+                );
+            }
+        }
+    }
+}
+
+/// TDist's full Level-2 analytic Hessian against central FD of the
+/// analytic gradient. The Hessian covers the entire joint
+/// `(M + n_shape) = (1 + 2) = 3` block, including ρ×shape and
+/// shape×shape — closed form via the mgcv R `gdi2` chain rule.
+///
+/// **Bar**: 10% relative (matches NegBin / Tweedie analytic-vs-FD bars).
+/// Made tight by the observed-W PIRLS path (`TDist::irls_observed_pair`)
+/// which routes gamrs's TDist PIRLS through `W = ½·D_μμ` — the same A
+/// the Level-1 / Level-2 chain arrays were derived under. Without that
+/// PIRLS shim, this same test failed at ≈ 30 % on σ²×σ² because gamrs's
+/// default Fisher W is constant in μ for TDist+identity (its log|A| has
+/// no μ-derivative).
+#[test]
+fn tdist_analytic_hess_matches_fd_on_grad() {
+    use gamrs::design::{Additive, DesignStrategy, TermSpec};
+
+    let n = 300;
+    let mut x_flat = Vec::with_capacity(n);
+    let mut ys = Vec::with_capacity(n);
+    let mut state: u64 = 0xa1b2_c3d4_5566_77ee;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        ((state >> 11) as f64) / ((1u64 << 53) as f64)
+    };
+    for _ in 0..n {
+        let x = next() * 10.0;
+        x_flat.push(x);
+        let eta = (x).sin();
+        // Pseudo-t-distributed residual via the Cauchy clip-tail trick;
+        // doesn't matter for derivative parity (β̂ is whatever PIRLS lands).
+        let u = next() - 0.5;
+        let noise = 0.3 * (u / (1.0 - 4.0 * u * u).abs().max(1e-3).sqrt());
+        ys.push(eta + noise);
+    }
+    let x = Array2::from_shape_vec((n, 1), x_flat).unwrap();
+    let y = Array1::from_vec(ys);
+    let terms = vec![TermSpec::Cr { col: 0, k: 10 }];
+    let prep = Additive { terms }.prepare(x.view()).unwrap();
+
+    let family_base = tdist_identity(5.0, 0.1);
+    let score: gamrs::score::ShapeAwarePirlsScore<_, _, _> = ShapeAwareEnvelopeScore {
+        x_design: prep.x_design.clone(),
+        y: y.clone(),
+        prior_weights: None,
+        s_list: prep.s_list.clone(),
+        family_base,
+        rank_s_list: prep.rank_s_list.clone(),
+        mp: prep.mp,
+        log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
+        coords: CoordsKind::Identity,
+        pirls_opts: PirlsOpts::default(),
+        inner_builder: PirlsInnerBuilder,
+        profile: FixedAtOneProfile,
+        _solver: std::marker::PhantomData,
+        accepted_state: std::cell::RefCell::new(None),
+        stats: gamrs::stats::FitStats::new(),
+    };
+
+    // Three probes — different (ρ, log σ², log(ν-2)) regions. Kept
+    // moderate (σ² > 0.05; ν − 2 in (1, 5)) so the FD reference at
+    // h = 1e-4 isn't dominated by truncation error on small σ².
+    let probes: &[[f64; 3]] = &[
+        [0.0, (0.1_f64).ln(), (3.0_f64).ln()],
+        [-1.0, (0.15_f64).ln(), (4.0_f64).ln()],
+        [2.0, (0.3_f64).ln(), (2.0_f64).ln()],
+    ];
+
+    for theta_init in probes {
+        let theta = Array1::from_vec(theta_init.to_vec());
+        let (_, _, h_anal) = score.value_grad_hess(&theta).unwrap();
+
+        // Reference: central FD on the analytic gradient.
+        let eps = 1e-4_f64;
+        let d = 3;
+        let mut h_fd = Array2::<f64>::zeros((d, d));
+        for i in 0..d {
+            let mut t_plus = theta.clone();
+            let mut t_minus = theta.clone();
+            t_plus[i] += eps;
+            t_minus[i] -= eps;
+            let (_, g_plus) = score.value_and_grad(&t_plus).unwrap();
+            let (_, g_minus) = score.value_and_grad(&t_minus).unwrap();
+            for j in 0..d {
+                h_fd[[j, i]] = (g_plus[j] - g_minus[j]) / (2.0 * eps);
+            }
+        }
+        for i in 0..d {
+            for j in i + 1..d {
+                let avg = 0.5 * (h_fd[[i, j]] + h_fd[[j, i]]);
+                h_fd[[i, j]] = avg;
+                h_fd[[j, i]] = avg;
+            }
+        }
+
+        for i in 0..d {
+            for j in 0..d {
+                let denom = h_fd[[i, j]].abs().max(1.0);
+                let rel = (h_anal[[i, j]] - h_fd[[i, j]]).abs() / denom;
+                assert!(
+                    rel < 0.1,
                     "θ={theta_init:?} H[{i},{j}] analytic={:+.4e} fd={:+.4e} rel={:.2e}",
                     h_anal[[i, j]],
                     h_fd[[i, j]],

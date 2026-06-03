@@ -124,6 +124,73 @@ impl Loss for TDist {
         1.0e-8
     }
 
+    /// **Observed-W PIRLS pair for scat** — port of mgcv R's `gam.fit4.r`
+    /// inner-loop W/z build (lines 368-399). Direct port of `0.5·D_μμ·(dμ/dη)²`
+    /// with `(y − μ) · g'(μ)·dμ/dη / α` working response, expected-Hessian
+    /// fallback when `D_μμ ≤ 0`.
+    ///
+    /// For TDist + identity link the derivatives reduce to:
+    ///   `W_obs = ½·d²L/dμ² = (ν+1)·(νσ² − r²) / (νσ² + r²)²`
+    ///   `z = η − D'_μ / D''_μ = η + r·s / (νσ² − r²)`,  `s = νσ² + r²`
+    /// (the `D'/D''` ratio is the Newton direction along μ). When
+    /// `D_μμ ≤ 0` (heavy-tail outlier: `|r| > √(νσ²)`) substitute the
+    /// expected curvature `E[D_μμ] = (ν+1)/((ν+3)σ²)` and the Fisher
+    /// working response `z = η + (y − μ)·g'(μ) = η + r` — matches
+    /// `gam.fit4.r:392-399`.
+    ///
+    /// This aligns gamrs PIRLS for TDist with mgcv R's `scat`. Without it,
+    /// gamrs PIRLS runs Fisher `W = prior_w/σ²` (constant in μ) — fine for
+    /// β̂ convergence (Fisher and observed share the same fixed point at
+    /// PIRLS convergence) but the resulting `log|A_F|` is a **different**
+    /// function of `(σ², ν)` than `log|A_obs|` that mgcv R's `gdi2`
+    /// Hessian assembly assumes. Routing TDist through the observed-W
+    /// pair makes `fit.a_factor` carry observed A, which feeds straight
+    /// into `analytic_shape_grad_via_ift` / `hess_via_ift_level2` — the
+    /// IFT chain and Level-2 closed-form Hessian now differentiate the
+    /// same A the score's `log|H|` uses.
+    fn irls_observed_pair(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        mu: ndarray::ArrayView1<f64>,
+        eta: ndarray::ArrayView1<f64>,
+        prior_w: ndarray::ArrayView1<f64>,
+    ) -> Option<(ndarray::Array1<f64>, ndarray::Array1<f64>)> {
+        use ndarray::Array1;
+        let n = y.len();
+        debug_assert_eq!(mu.len(), n);
+        debug_assert_eq!(eta.len(), n);
+        debug_assert_eq!(prior_w.len(), n);
+        let nu = self.nu;
+        let sigma2 = self.sigma2;
+        let q = nu * sigma2;
+        // Expected curvature ½·E[D_μμ] for the Fisher fallback row branch.
+        let expected_w = (nu + 1.0) / (2.0 * (nu + 3.0) * sigma2);
+        let mut w = Array1::<f64>::zeros(n);
+        let mut z = Array1::<f64>::zeros(n);
+        for i in 0..n {
+            let r = y[i] - mu[i];
+            let r2 = r * r;
+            let s = q + r2;
+            let dmu2 = 2.0 * (nu + 1.0) * (q - r2) / (s * s);
+            // Identity link → dμ/dη = 1, d²μ/dη² = 0. mgcv R's
+            // `w0 = dd$Dmu2·(dμ/dη)² + dd$Dmu·(d²μ/dη²)` collapses to dmu2.
+            let w_obs = 0.5 * dmu2;
+            if w_obs > 1e-12 && w_obs.is_finite() {
+                // Newton: z = η − D'_μ / D''_μ. Identity link.
+                let dmu = -2.0 * (nu + 1.0) * r / s;
+                let z_new = eta[i] - dmu / dmu2;
+                w[i] = prior_w[i] * w_obs;
+                z[i] = z_new;
+            } else {
+                // Fisher fallback row: expected curvature + standard z.
+                w[i] = prior_w[i] * expected_w;
+                z[i] = eta[i] + r; // identity link: g'(μ) = 1
+            }
+        }
+        Some((w, z))
+    }
+
+
     /// EXPERIMENTAL — diagnostic toggle for the mgcv-style rank heuristic
     /// (centered CR(k) treated as rank k−2 by mgcv vs gamrs's k−1). Empirical
     /// check for scat parallel to ocat (commit `d91b710`).

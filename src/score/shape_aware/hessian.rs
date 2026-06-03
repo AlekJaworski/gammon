@@ -16,7 +16,7 @@ use ndarray::{Array1, Array2};
 
 use crate::error::Result;
 use crate::inner::{GaussianInnerFit, LinearSolver};
-use crate::traits::{Link, Loss, VarianceFn};
+use crate::traits::{shape_pair_index, Link, Loss, VarianceFn};
 
 use super::super::hess_ift::{
     build_xtwx, compute_dev_grad_beta_working_rss, hess_ift_rho, HessIftCtx,
@@ -118,18 +118,39 @@ where
             // Tweedie path: 2·M PIRLS + 0 shape solves.
             self.hess_via_fd_frozen_beta(theta, &fit, &ctx)?
         } else if has_ift_shape_grad {
-            // NegBin / scat / Ocat path: analytic IFT for the M×M ρ block
-            // (0 PIRLS solves — port of mgcv_rust
-            // `reml_hessian_mgcv_exact_ift` at `src/reml/mod.rs:2511-2813`)
-            // plus **frozen-β IFT** FD along the shape axes (0 PIRLS solves
-            // — the IFT gradient at θ ± h reuses the converged β̂/μ̂/η̂
-            // and only re-evaluates the per-row Level-1 derivatives with
-            // the perturbed family). Previously this column re-ran PIRLS
-            // 2·n_shape times; for TDist (n_shape=2) that was the
-            // dominant cost in the v0.10 scat bench. Matches mgcv_rust's
-            // `tdist_gdi2_native` cost profile (one factorisation, no
-            // extra inner solves) on the shape axis.
-            self.hess_via_ift_analytic(theta, &fit, &family, n_shape, &ctx)?
+            // NegBin / scat / Ocat path. Two sub-paths:
+            //
+            //   (i)  **Full Level-2 analytic** when the family supplies
+            //        `level2_shape_derivatives` AND `level1_shape_derivatives`
+            //        — closed-form joint (M+n_shape)×(M+n_shape) Hessian
+            //        via mgcv R's `gdi2` chain rule (port of mgcv_rust
+            //        `tdist_gdi2_native`). Zero PIRLS, zero FD on shape
+            //        axes. Requires the family's PIRLS to use the same A
+            //        the Level-1 / Level-2 derivatives were derived under
+            //        (`W = ½·D_μμ`) — TDist routes through
+            //        `irls_observed_pair` to deliver that.
+            //
+            //   (ii) **Analytic-ρ + frozen-β IFT shape FD** when only
+            //        Level-1 is supplied (NegBin / Ocat today). Same cost
+            //        profile as (i) but the shape rows come from central
+            //        FD of the analytic IFT gradient at frozen β̂
+            //        (introduced in v0.11).
+            let level1 = family.loss.level1_shape_derivatives(
+                self.y.view(),
+                fit.eta.view(),
+                self.prior_weights.as_ref().map(|w| w.view()),
+            );
+            let level2 = family.loss.level2_shape_derivatives(
+                self.y.view(),
+                fit.eta.view(),
+                self.prior_weights.as_ref().map(|w| w.view()),
+            );
+            match (level1, level2) {
+                (Some(lv1), Some(lv2)) => {
+                    self.hess_via_ift_level2(theta, &fit, &family, &lv1, &lv2, n_shape)?
+                }
+                _ => self.hess_via_ift_analytic(theta, &fit, &family, n_shape, &ctx)?,
+            }
         } else {
             // Safety-net path: direct FD on REML value.
             self.hess_via_fd_on_value(theta)?
@@ -735,5 +756,493 @@ where
         }
 
         Ok(h)
+    }
+
+    /// **Full Level-2 analytic** REML/LAML Hessian over the joint
+    /// `(M + n_shape)` outer-Newton coordinates — port of mgcv_rust
+    /// `src/reml/mod.rs::tdist_gdi2_native` (the Hessian half, lines
+    /// 1434-1562), translated into gamrs's outer ordering
+    /// `[ρ_1, …, ρ_M, θ_1, …, θ_n_shape]` directly so there's no
+    /// permutation step.
+    ///
+    /// Mathematical sketch. At PIRLS-converged β̂ the score is
+    /// `S = Dp/(2φ) − ls + ½ log|A| − ½ log|λS|+ − ½·Mp·log(2πφ)` where
+    /// `A = X' W X + Σλ_k S_k` and `W = ½·d2_loss_dmu` (mgcv convention).
+    /// The total derivative w.r.t. an outer axis `θ` chains through β
+    /// via the IFT first-order `b1[k] = ∂β/∂θ_k`:
+    ///   - **λ axis**: `b1[k] = −λ_k · A⁻¹ S_k β`
+    ///   - **shape axis**: `b1[k] = −½ · A⁻¹ X' Dmuth[k]`
+    /// `η1[k] = X·b1[k]` is the linear-predictor sensitivity per axis,
+    /// `a1[k] = ∂A/∂θ_k` the matrix sensitivity, and `b2[i,k]` /
+    /// `eta2[i,k]` / `a2[i,k]` the matched second-order quantities (with
+    /// `b2` solved against the same `A`). The Hessian assembles as
+    /// `hess[i,k] = ½·(d2[i,k] + p2[i,k]) − ls2[i,k] + ½·ldet2[i,k]`,
+    /// each component a Level-1 / Level-2 chain — see comments inline.
+    ///
+    /// PIRLS economy: **0 inner solves** (the converged fit's A_inv is
+    /// reused; b2 is solved via the same factorisation). One pass over
+    /// the `(M + n_shape)²` upper-triangular Hessian entries.
+    ///
+    /// **A convention**: uses `fit.a_factor` (Fisher A for use_newton_irls
+    /// = false families, Newton A otherwise) to match the existing
+    /// `analytic_shape_grad_via_ift` IFT gradient. This is the same
+    /// matrix the score formula's `log|H|` differentiates, so the
+    /// Hessian and gradient share a single A throughout.
+    #[allow(clippy::too_many_arguments)]
+    fn hess_via_ift_level2(
+        &self,
+        theta: &Array1<f64>,
+        fit: &GaussianInnerFit<S>,
+        family: &crate::family::Family<L, K, V>,
+        lv1: &crate::traits::Level1ShapeDerivs,
+        lv2: &crate::traits::Level2ShapeDerivs,
+        n_shape: usize,
+    ) -> Result<Array2<f64>> {
+        use ndarray::s;
+        let n_terms = self.s_list.len();
+        let ntot = n_terms + n_shape;
+        debug_assert_eq!(theta.len(), ntot);
+        let n = fit.n;
+        let p = fit.p;
+
+        // ---- Pick A_inv (Newton-A for use_newton_irls families, else
+        // the Fisher A from the converged fit). Mirrors
+        // `analytic_shape_grad_via_ift` — keeps grad/Hess consistent.
+        let rho_slice: Vec<f64> = theta.slice(s![..n_terms]).to_vec();
+        let lambda: Vec<f64> = rho_slice.iter().map(|&r| r.exp()).collect();
+        let use_newton = family.loss.use_newton_irls();
+        let lazy_tk = if use_newton {
+            let prior_w = self
+                .prior_weights
+                .clone()
+                .unwrap_or_else(|| Array1::ones(n));
+            let rho_arr = Array1::from(rho_slice.clone());
+            let s_total = crate::design::combined_s(&self.s_list, &rho_arr);
+            crate::inner::pirls::lazy_tk_kkt_inputs(
+                family,
+                &self.y,
+                &fit.mu,
+                &fit.beta,
+                &prior_w,
+                &self.x_design,
+                &self.s_list,
+                &s_total,
+                &rho_arr,
+            )
+        } else {
+            None
+        };
+        let a_inv: Array2<f64> = if let Some(ref tk) = lazy_tk {
+            tk.a_newton_inv.clone()
+        } else {
+            fit.a_inv()
+        };
+
+        // ---- η-coord (vs μ-coord) Level-1 derivs. For identity link the
+        // factors collapse to identity. We mirror `analytic_shape_grad_via_ift`
+        // verbatim so the same A and the same Level-1 transformations are
+        // shared between grad and Hessian.
+        let mut ig1 = Array1::<f64>::zeros(n);
+        let mut g2g = Array1::<f64>::zeros(n);
+        let mut g3g = Array1::<f64>::zeros(n);
+        let mut dmu_arr = Array1::<f64>::zeros(n);
+        let mut dmu2_arr = Array1::<f64>::zeros(n);
+        for i in 0..n {
+            let mu_i = fit.mu[i];
+            let gp = self.family_base.link.d_link_dmu(mu_i);
+            let gpp = self.family_base.link.d2_link_dmu(mu_i);
+            let gppp = self.family_base.link.d3_link_dmu(mu_i);
+            if gp.abs() < 1e-300 {
+                ig1[i] = 0.0;
+                g2g[i] = 0.0;
+                g3g[i] = 0.0;
+            } else {
+                ig1[i] = 1.0 / gp;
+                g2g[i] = gpp / (gp * gp);
+                g3g[i] = gppp / (gp * gp * gp);
+            }
+            let wt_i = self.prior_weights.as_ref().map(|w| w[i]).unwrap_or(1.0);
+            dmu_arr[i] = wt_i * self.family_base.loss.d_loss_dmu(self.y[i], mu_i);
+            dmu2_arr[i] = wt_i * self.family_base.loss.d2_loss_dmu(self.y[i], mu_i);
+        }
+
+        // Identity-link short-circuits — the full η-coord chain reduces to
+        // μ-coord here. Non-identity links would need the `Detath` /
+        // `Deta2th` / `Deta3` / `Deta4` cascade (mgcv R `gam.fit4.r:47-78`);
+        // gamrs's `analytic_shape_grad_via_ift` builds them but TDist
+        // (the only Level-2 family today) is identity-link, so we don't
+        // gate on it yet. When NegBin / Ocat Level-2 ports land, swap the
+        // identity-only forms below for the general η-chain.
+        let is_identity = ig1.iter().all(|&x| (x - 1.0).abs() < 1e-12)
+            && g2g.iter().all(|&x| x.abs() < 1e-12)
+            && g3g.iter().all(|&x| x.abs() < 1e-12);
+        debug_assert!(
+            is_identity,
+            "hess_via_ift_level2 currently assumes identity link \
+             (TDist is the only Level-2 family — wire η-coord chain when \
+             NegBin / Ocat land)."
+        );
+
+        // ---- b1[k]:  k=0..M-1 → ρ_k axis,  k=M..M+n_shape-1 → shape (k-M).
+        // Layout: b1 is (p × ntot), column k is ∂β/∂axis_k.
+        let mut b1 = Array2::<f64>::zeros((p, ntot));
+        for k in 0..n_terms {
+            // ρ axis: b1 = -λ_k · A_inv · S_k · β
+            let s_k_beta: Array1<f64> = self.s_list[k].dot(&fit.beta);
+            let ainv_sk_beta: Array1<f64> = a_inv.dot(&s_k_beta);
+            let lam = lambda[k];
+            for r in 0..p {
+                b1[[r, k]] = -lam * ainv_sk_beta[r];
+            }
+        }
+        for kk in 0..n_shape {
+            // shape axis: b1 = -0.5 · A_inv · X' · Dmuth[:, kk]
+            let dmuth_kk: Array1<f64> = lv1.dmuth.column(kk).to_owned();
+            let xt_v: Array1<f64> = self.x_design.t().dot(&dmuth_kk);
+            let ainv_v: Array1<f64> = a_inv.dot(&xt_v);
+            let col = n_terms + kk;
+            for r in 0..p {
+                b1[[r, col]] = -0.5 * ainv_v[r];
+            }
+        }
+        // η1[k] = X · b1[k] (n × ntot).
+        let mut eta1 = Array2::<f64>::zeros((n, ntot));
+        for k in 0..ntot {
+            let b1k = b1.column(k);
+            for i in 0..n {
+                let mut s_i = 0.0_f64;
+                for r in 0..p {
+                    s_i += self.x_design[[i, r]] * b1k[r];
+                }
+                eta1[[i, k]] = s_i;
+            }
+        }
+
+        // ---- s_beta_total = (Σ λ_j S_j) · β — reused throughout p1, p2.
+        let mut s_beta_total = Array1::<f64>::zeros(p);
+        for j in 0..n_terms {
+            let s_j_beta = self.s_list[j].dot(&fit.beta);
+            for r in 0..p {
+                s_beta_total[r] += lambda[j] * s_j_beta[r];
+            }
+        }
+
+        // ---- a1[k]: ∂A/∂axis_k — stored as a single weight vector w1[k]
+        // representing the diagonal of X' diag(w1[k]) X plus a separate
+        // penalty contribution for ρ axes. We never materialise the dense
+        // a1; instead carry (w1, lam_penalty_idx) and compute traces on
+        // the fly.
+        //   ρ axis k:    a1[k] = X' diag(0.5·dmu3·η1[k]) X + λ_k·S_k
+        //   shape k:     a1[k] = X' diag(0.5·dmu3·η1[k] + 0.5·Dmu2th[:, k-M]) X
+        // We accumulate the LEVERAGE diag(X·A_inv·X') = h_diag and the
+        // factored A_inv to compute tr(A_inv · a1) and tr((A_inv·a1)·(A_inv·a1')).
+        let dmu3 = &lv1.dmu3;
+        let mut w1 = Array2::<f64>::zeros((n, ntot)); // per-axis diag-weights
+        for k in 0..n_terms {
+            for i in 0..n {
+                w1[[i, k]] = 0.5 * dmu3[i] * eta1[[i, k]];
+            }
+        }
+        for kk in 0..n_shape {
+            let col = n_terms + kk;
+            for i in 0..n {
+                w1[[i, col]] = 0.5 * dmu3[i] * eta1[[i, col]] + 0.5 * lv1.dmu2th[[i, kk]];
+            }
+        }
+
+        // ---- Precompute A_inv · A_1[k]  (p × p) per axis (used by ldet2).
+        // For ρ axis k, A_1[k] includes the λ_k·S_k term; that's a separate
+        // contribution: A_inv·(X'·diag(w1)·X + λ_k·S_k).
+        // To avoid n_shape+M dense p×p matrices, we accumulate the trace
+        // pieces lazily. ldet2 needs tr((A_inv·a1[i])·(A_inv·a1[k])) —
+        // we build a_inv_xt_w (p × n) on the fly per axis (k) and reuse.
+        let xt = self.x_design.t().to_owned();
+        let mut ai_a1: Vec<Array2<f64>> = Vec::with_capacity(ntot);
+        for k in 0..ntot {
+            // A_1[k] = X' diag(w1[:, k]) X + (λ_k·S_k if k < M)
+            let mut wx = self.x_design.clone();
+            for i in 0..n {
+                let wi = w1[[i, k]];
+                for j in 0..p {
+                    wx[[i, j]] *= wi;
+                }
+            }
+            let mut a1_k = xt.dot(&wx);
+            if k < n_terms {
+                let lam = lambda[k];
+                // Add λ_k · S_k.
+                for r in 0..p {
+                    for c in 0..p {
+                        a1_k[[r, c]] += lam * self.s_list[k][[r, c]];
+                    }
+                }
+            }
+            ai_a1.push(a_inv.dot(&a1_k));
+        }
+
+        // ---- ls1, ls2 (saturated-LL gradient + Hessian over θ-shape only).
+        // Both are zero on ρ axes — ls is λ-independent.
+        let sum_dls = family.loss.sum_saturated_log_lik_dtheta(
+            self.y.view(),
+            1.0,
+            self.prior_weights.as_ref().map(|w| w.view()),
+        );
+        let sum_d2ls = family.loss.sum_saturated_log_lik_d2theta(
+            self.y.view(),
+            1.0,
+            self.prior_weights.as_ref().map(|w| w.view()),
+        );
+        debug_assert_eq!(sum_dls.len(), n_shape);
+        debug_assert_eq!(sum_d2ls.len(), n_shape * (n_shape + 1) / 2);
+        let mut ls2_full = Array2::<f64>::zeros((ntot, ntot));
+        for a in 0..n_shape {
+            for b in a..n_shape {
+                let v = sum_d2ls[shape_pair_index(a, b, n_shape)];
+                let r = n_terms + a;
+                let c = n_terms + b;
+                ls2_full[[r, c]] = v;
+                ls2_full[[c, r]] = v;
+            }
+        }
+
+        // ---- Main symmetric loop: for each (i, k) with i ≤ k, fill the
+        // Hessian entry. Mirrors `tdist_gdi2_native` lines 1441-1551 with
+        // index ranges adjusted to gamrs's `[ρ; θ]` layout.
+        let mut hess = Array2::<f64>::zeros((ntot, ntot));
+        for i in 0..ntot {
+            for k in i..ntot {
+                // ── Build RHS for b2[i,k] solve ──────────────────────
+                // mgcv: rhs_w starts as -det3 · η1[i] · η1[k] (n-vector).
+                // Then μ-cross-θ corrections: -Dmuth[k]·η1[i] (if k shape)
+                // and -Dmuth[i]·η1[k] (if i shape). The η-coord chain
+                // collapses to μ-coord here because identity link.
+                let mut rhs_w = Array1::<f64>::zeros(n);
+                for r in 0..n {
+                    rhs_w[r] = -dmu3[r] * eta1[[r, i]] * eta1[[r, k]];
+                }
+                if k >= n_terms {
+                    let kk = k - n_terms;
+                    for r in 0..n {
+                        rhs_w[r] -= lv1.dmuth[[r, kk]] * eta1[[r, i]];
+                    }
+                }
+                if i >= n_terms {
+                    let ii = i - n_terms;
+                    for r in 0..n {
+                        rhs_w[r] -= lv1.dmuth[[r, ii]] * eta1[[r, k]];
+                    }
+                }
+                // rhs (length p) = X' · rhs_w
+                let mut rhs: Array1<f64> = xt.dot(&rhs_w);
+                // Penalty contributions to RHS:
+                //   if k is ρ: -2 λ_k · S_k · b1[i]
+                //   if i is ρ: -2 λ_i · S_i · b1[k]
+                //   if i == k AND ρ: extra -2 λ_i · S_i · β
+                if k < n_terms {
+                    let s_k_b1_i: Array1<f64> =
+                        self.s_list[k].dot(&b1.column(i).to_owned());
+                    let lam = lambda[k];
+                    for r in 0..p {
+                        rhs[r] -= 2.0 * lam * s_k_b1_i[r];
+                    }
+                }
+                if i < n_terms {
+                    let s_i_b1_k: Array1<f64> =
+                        self.s_list[i].dot(&b1.column(k).to_owned());
+                    let lam = lambda[i];
+                    for r in 0..p {
+                        rhs[r] -= 2.0 * lam * s_i_b1_k[r];
+                    }
+                }
+                if i == k && i < n_terms {
+                    // mgcv `tdist_gdi2_native:1467-1469`: extra -2λ_i·S_i·β
+                    // for the diagonal ρ entry (catches the second λ in
+                    // ρ_i's RHS — `2·λ_i·S_i·β` total counted twice via b1[i]
+                    // already gives one; the diagonal needs one more).
+                    let s_i_beta: Array1<f64> = self.s_list[i].dot(&fit.beta);
+                    let lam = lambda[i];
+                    for r in 0..p {
+                        rhs[r] -= 2.0 * lam * s_i_beta[r];
+                    }
+                }
+                // Level-2 shape×shape cross term: -X' · Dmu_th2[pair]
+                if i >= n_terms && k >= n_terms {
+                    let ii = i - n_terms;
+                    let kk = k - n_terms;
+                    let pair = shape_pair_index(ii.min(kk), ii.max(kk), n_shape);
+                    let dmu_th2_p: Array1<f64> = lv2.dmu_th2.column(pair).to_owned();
+                    let xt_v: Array1<f64> = xt.dot(&dmu_th2_p);
+                    for r in 0..p {
+                        rhs[r] -= xt_v[r];
+                    }
+                }
+                // b2[i,k] = 0.5 · A_inv · rhs
+                let b2_ik: Array1<f64> = a_inv.dot(&rhs);
+                let b2_ik: Array1<f64> = &b2_ik * 0.5;
+                // η2[i,k] = X · b2[i,k]
+                let eta2_ik: Array1<f64> = self.x_design.dot(&b2_ik);
+
+                // ── d2[i,k]: second deriv of D ────────────────────────
+                let mut d2_ik = 0.0_f64;
+                // det2 · η1[i] · η1[k]  per-row sum  (det2 = dmu2_arr).
+                for r in 0..n {
+                    d2_ik += dmu2_arr[r] * eta1[[r, i]] * eta1[[r, k]];
+                }
+                // det · η2[i,k]  (det = dmu_arr).
+                for r in 0..n {
+                    d2_ik += dmu_arr[r] * eta2_ik[r];
+                }
+                // dth2 pair sum if both shape.
+                if i >= n_terms && k >= n_terms {
+                    let ii = i - n_terms;
+                    let kk = k - n_terms;
+                    let pair = shape_pair_index(ii.min(kk), ii.max(kk), n_shape);
+                    for r in 0..n {
+                        d2_ik += lv2.dth2[[r, pair]];
+                    }
+                }
+                // Mixed: Dmuth[i].dot(η1[k]) + Dmuth[k].dot(η1[i]) (only
+                // when the corresponding axis is shape).
+                if i >= n_terms {
+                    let ii = i - n_terms;
+                    for r in 0..n {
+                        d2_ik += lv1.dmuth[[r, ii]] * eta1[[r, k]];
+                    }
+                }
+                if k >= n_terms {
+                    let kk = k - n_terms;
+                    for r in 0..n {
+                        d2_ik += lv1.dmuth[[r, kk]] * eta1[[r, i]];
+                    }
+                }
+
+                // ── p2[i,k]: second deriv of P = β'(Σ λ S)β ──────────
+                // p2 = 2·b2'·s_beta_total + 2·b1[i]'·(Σ λ_m S_m · b1[k])
+                //      + extra λ terms when i or k is ρ.
+                let mut p2_ik = 0.0_f64;
+                for r in 0..p {
+                    p2_ik += 2.0 * b2_ik[r] * s_beta_total[r];
+                }
+                // 2 · b1[i]' · (Σ λ_m S_m · b1[k])
+                let mut s_b1_k = Array1::<f64>::zeros(p);
+                for m in 0..n_terms {
+                    let s_m_b1_k: Array1<f64> =
+                        self.s_list[m].dot(&b1.column(k).to_owned());
+                    for r in 0..p {
+                        s_b1_k[r] += lambda[m] * s_m_b1_k[r];
+                    }
+                }
+                for r in 0..p {
+                    p2_ik += 2.0 * b1[[r, i]] * s_b1_k[r];
+                }
+                if k < n_terms {
+                    let s_k_beta: Array1<f64> = self.s_list[k].dot(&fit.beta);
+                    let lam = lambda[k];
+                    let mut acc = 0.0_f64;
+                    for r in 0..p {
+                        acc += b1[[r, i]] * s_k_beta[r];
+                    }
+                    p2_ik += 2.0 * lam * acc;
+                }
+                if i < n_terms {
+                    let s_i_beta: Array1<f64> = self.s_list[i].dot(&fit.beta);
+                    let lam = lambda[i];
+                    let mut acc = 0.0_f64;
+                    for r in 0..p {
+                        acc += b1[[r, k]] * s_i_beta[r];
+                    }
+                    p2_ik += 2.0 * lam * acc;
+                }
+                if i == k && i < n_terms {
+                    let s_i_beta: Array1<f64> = self.s_list[i].dot(&fit.beta);
+                    let lam = lambda[i];
+                    let mut acc = 0.0_f64;
+                    for r in 0..p {
+                        acc += fit.beta[r] * s_i_beta[r];
+                    }
+                    p2_ik += lam * acc;
+                }
+
+                // ── ldet2[i,k]: ½ ∂² log|A| via trace identity.
+                //   ldet2 = tr(A_inv · a2[i,k]) - tr((A_inv·a1[i])·(A_inv·a1[k]))
+                // Build w2[r] = ∂²(W's diag)/(∂θ_i ∂θ_k) at converged β plus
+                // the β-chain corrections.
+                let mut w2 = Array1::<f64>::zeros(n);
+                // det4 · η1[i] · η1[k]
+                for r in 0..n {
+                    w2[r] = lv2.dmu4[r] * eta1[[r, i]] * eta1[[r, k]];
+                }
+                // det3 · η2[i,k]
+                for r in 0..n {
+                    w2[r] += dmu3[r] * eta2_ik[r];
+                }
+                // det3_th[i] · η1[k]  (if i shape)
+                if i >= n_terms {
+                    let ii = i - n_terms;
+                    for r in 0..n {
+                        w2[r] += lv2.dmu3_th[[r, ii]] * eta1[[r, k]];
+                    }
+                }
+                // det3_th[k] · η1[i]  (if k shape)
+                if k >= n_terms {
+                    let kk = k - n_terms;
+                    for r in 0..n {
+                        w2[r] += lv2.dmu3_th[[r, kk]] * eta1[[r, i]];
+                    }
+                }
+                // dmu2_th2[pair]  (if both shape)
+                if i >= n_terms && k >= n_terms {
+                    let ii = i - n_terms;
+                    let kk = k - n_terms;
+                    let pair = shape_pair_index(ii.min(kk), ii.max(kk), n_shape);
+                    for r in 0..n {
+                        w2[r] += lv2.dmu2_th2[[r, pair]];
+                    }
+                }
+                // a2[i,k] = X' · diag(0.5·w2) · X  (+ λ_i·S_i if diagonal ρ)
+                let mut wx2 = self.x_design.clone();
+                for r in 0..n {
+                    let wi = 0.5 * w2[r];
+                    for j in 0..p {
+                        wx2[[r, j]] *= wi;
+                    }
+                }
+                let mut a2_ik = xt.dot(&wx2);
+                if i == k && i < n_terms {
+                    let lam = lambda[i];
+                    for r in 0..p {
+                        for c in 0..p {
+                            a2_ik[[r, c]] += lam * self.s_list[i][[r, c]];
+                        }
+                    }
+                }
+                // tr(A_inv · a2[i,k])
+                let ai_a2 = a_inv.dot(&a2_ik);
+                let mut tr_term1 = 0.0_f64;
+                for r in 0..p {
+                    tr_term1 += ai_a2[[r, r]];
+                }
+                // tr((A_inv·a1[i])·(A_inv·a1[k]))
+                let mut tr_term2 = 0.0_f64;
+                for r in 0..p {
+                    for c in 0..p {
+                        tr_term2 += ai_a1[i][[r, c]] * ai_a1[k][[c, r]];
+                    }
+                }
+                let ldet2_ik = tr_term1 - tr_term2;
+
+                // ── Assemble Hessian entry ────────────────────────────
+                let v = 0.5 * (d2_ik + p2_ik) - ls2_full[[i, k]] + 0.5 * ldet2_ik;
+                hess[[i, k]] = v;
+                hess[[k, i]] = v;
+            }
+        }
+
+        // Suppress unused-warning for `sum_dls` — kept here so the
+        // signature is parallel to the gradient path (future Level-2
+        // families may need a Hessian-side adjustment that references it).
+        let _ = sum_dls;
+
+        Ok(hess)
     }
 }
