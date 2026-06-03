@@ -49,6 +49,7 @@ pub mod family;
 pub mod fit;
 pub mod inner;
 pub mod outer;
+pub mod profile;
 pub mod score;
 pub mod special;
 pub mod stats;

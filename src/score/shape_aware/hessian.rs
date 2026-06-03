@@ -72,11 +72,21 @@ where
         &self,
         theta: &Array1<f64>,
     ) -> Result<(f64, Array1<f64>, Array2<f64>)> {
-        let (fit, family) = self.fit_inner_at(theta)?;
+        let _phase_total = crate::profile::scoped("value_grad_hess_total");
+        let (fit, family) = {
+            let _t = crate::profile::scoped("fit_inner_at");
+            self.fit_inner_at(theta)?
+        };
         let n_terms = self.s_list.len();
         let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
-        let value = self.score_value(&fit, &family, &rho_slice);
-        let (g_center, ctx) = self.eval_grad_with_fit(theta, &fit, &family)?;
+        let value = {
+            let _t = crate::profile::scoped("score_value");
+            self.score_value(&fit, &family, &rho_slice)
+        };
+        let (g_center, ctx) = {
+            let _t = crate::profile::scoped("eval_grad_with_fit");
+            self.eval_grad_with_fit(theta, &fit, &family)?
+        };
 
         let n_shape = family.n_shape_params();
         let has_analytic_shape_grad = n_shape == 0
@@ -112,6 +122,7 @@ where
         // `reml_joint_ocat_finite_diff`) because its ordered-threshold
         // surface has a near-flat coordinated-shift ridge that the IFT
         // path's sparse off-diagonal Hessian doesn't stabilise.
+        let _t_hess = crate::profile::scoped("hess_dispatch");
         let mut hess = if family.loss.prefers_full_fd_hessian() {
             self.hess_via_fd_on_value(theta)?
         } else if has_analytic_shape_grad {
@@ -956,7 +967,13 @@ where
         // To avoid n_shape+M dense p×p matrices, we accumulate the trace
         // pieces lazily. ldet2 needs tr((A_inv·a1[i])·(A_inv·a1[k])) —
         // we build a_inv_xt_w (p × n) on the fly per axis (k) and reuse.
-        let xt = self.x_design.t().to_owned();
+        // `xt` is a *view* (Array2::t() returns ArrayView2; no copy).
+        // ndarray's `.dot()` accepts views, so the downstream
+        // `xt.dot(...)` sites are unchanged. Removing the previous
+        // `.to_owned()` saves one O(n·p) transpose copy (~160 KB at
+        // n=2000, p=10) per Hessian assembly call — measured ~20 μs
+        // saving per call by the `profile` feature's phase timers.
+        let xt = self.x_design.t();
         let mut ai_a1: Vec<Array2<f64>> = Vec::with_capacity(ntot);
         for k in 0..ntot {
             // A_1[k] = X' diag(w1[:, k]) X + (λ_k·S_k if k < M)

@@ -45,6 +45,10 @@ default-features = false
 default = ["persistence", "blas", "blas-system"]
 python = ["dep:pyo3", "dep:numpy", "persistence"]
 persistence = ["dep:serde", "dep:serde_json", "dep:bincode", "ndarray/serde"]
+# Phase-level wall-clock timers in hot paths. Off by default — zero
+# overhead when the feature is disabled (each `profile::scoped(...)`
+# becomes a zero-sized type whose Drop is a no-op).
+profile = []
 # BLAS features — pick exactly one of blas-system / blas-static / blas-mkl-static.
 # `ndarray/blas` routes `Array2::dot()` through the chosen BLAS backend; without
 # it, ndarray-linalg's BLAS hookup only accelerates linalg routines
@@ -90,6 +94,11 @@ name = "bench_nb"
 path = "benches/bench_nb.rs"
 harness = false
 
+[[bench]]
+name = "bench_scat_profile"
+path = "benches/bench_scat_profile.rs"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"
@@ -103,6 +112,14 @@ strip = true
 inherits = "release"
 lto = false
 codegen-units = 16
+strip = false
+
+# Profiling profile — release-tier optimizations + line-table debug info
+# so samply / perf can resolve function names. Use for cargo
+# flamegraph / samply record runs.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
 strip = false
 
 [profile.dev]
