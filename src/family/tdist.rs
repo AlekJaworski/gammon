@@ -255,6 +255,215 @@ impl Loss for TDist {
             dmu2th,
         })
     }
+
+    /// Per-row Level-2 derivatives feeding the full analytic Hessian path
+    /// (port of mgcv_rust `src/reml/mod.rs::tdist_dd_arrays` lines
+    /// 1267–1329's Level-2 outputs: `det4`, `det3_th`, `dth2`, `det_th2`,
+    /// `det2_th2`).
+    ///
+    /// Returned in gamrs's outer-Newton convention `θ = [log σ², log(ν−2)]`.
+    /// mgcv_rust's `tdist_dd_arrays` works in `[log(ν−2), log σ]`; the
+    /// `log σ → log σ²` Jacobian is `d/d(log σ²) = (1/2)·d/d(log σ)` and
+    /// is applied here per axis (×½ on the σ² axis, ×¼ on the σ²×σ²
+    /// pair). The (ν−2) axis is identical in both conventions.
+    ///
+    /// Cross-reference for the assembly: `tdist_gdi2_native` at
+    /// `nn_exploring/src/reml/mod.rs:1338-1564`. The outer-vs-native
+    /// remap function `reml_joint_gh_gamfit4_tdist_analytic` at
+    /// `nn_exploring/src/reml/mod.rs:1687-1745` documents the same
+    /// ½ / ¼ Jacobian.
+    fn level2_shape_derivatives(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        eta: ndarray::ArrayView1<f64>,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<crate::traits::Level2ShapeDerivs> {
+        use ndarray::{Array1, Array2};
+        let n = y.len();
+        let nu = self.nu;
+        let sigma2 = self.sigma2;
+        let nu_p1 = nu + 1.0;
+        let nu_minus_2 = nu - 2.0;
+        let q = nu * sigma2;
+        // Mgcv intermediates from `tdist_dd_arrays` lines 1218-1264.
+        // We re-derive locally for clarity / inlining vs calling a
+        // separate helper.
+        let nu1nu = nu_p1 / nu;
+        let nu2nu = nu_minus_2 / nu;
+
+        let mut dmu4 = Array1::<f64>::zeros(n);
+        // (n × 2)  — outer order [log σ², log(ν − 2)]
+        let mut dmu3_th = Array2::<f64>::zeros((n, 2));
+        // packed (0,0)→0, (0,1)→1, (1,1)→2
+        let mut dth2 = Array2::<f64>::zeros((n, 3));
+        let mut dmu_th2 = Array2::<f64>::zeros((n, 3));
+        let mut dmu2_th2 = Array2::<f64>::zeros((n, 3));
+
+        for i in 0..n {
+            let r = y[i] - eta[i];
+            let r2 = r * r;
+            let s = q + r2;
+            let s2 = s * s;
+            let s3 = s2 * s;
+            let wt = prior_w.map(|w| w[i]).unwrap_or(1.0);
+
+            // Mgcv's per-row intermediates (lines 1253-1264). All scoped
+            // to this iteration so the loop fits in registers.
+            let a = 1.0 + r2 / q; // = s / q
+            let sig2a = sigma2 * a; // = s / nu
+            let nusig2a = s; // = ν σ² + r²
+            let f = nu_p1 * r / nusig2a; // (ν+1) r / s
+            let f1 = r / nusig2a; // r / s
+            let nu1nusig2a = nu_p1 / nusig2a; // (ν+1) / s
+            let fym = f * r; // (ν+1) r² / s
+            let ff1 = f * f1; // (ν+1) r² / s²
+            let f1ym = f1 * r; // r² / s
+            let fymf1 = fym * f1; // (ν+1) r³ / s²
+            let ymsig2a = r / sig2a; // ν r / s
+            let fymf1ym = fym * f1ym; // (ν+1) r⁴ / s²
+            let f1ymf1 = f1ym * f1; // r³ / s²  (mgcv R `f1ymf1`)
+            // NB: mgcv R `efam.r:1373-1375`'s Dmu2th2[,2]/[,3] uses `f1ymf1`
+            // (= f1ym·f1 = r³/s²), NOT `fymf1` (= fym·f1 = (ν+1)·r³/s²).
+            // mgcv_rust's `tdist_dd_arrays` mis-copies the symbol from
+            // `Dmuth2` (which DOES use `fymf1`) into Dmu2th2 — verified
+            // by FD at the gamrs Level-2 boundary tests. We use the R
+            // formula directly here.
+
+            // ── ∂⁴D / ∂μ⁴  (mgcv `det4`, line 1270) ─────────────────────
+            dmu4[i] = wt
+                * 12.0
+                * (-nu1nusig2a / nusig2a + 8.0 * ff1 / nusig2a
+                    - 8.0 * ff1 * f1 * f1);
+
+            // ── ∂⁴D / (∂μ³ ∂θ_k)  in NATIVE order [log(ν−2), log σ] ────
+            //   mgcv `det3_th[0]` = ∂(∂³D/∂μ³)/∂(log(ν−2)),
+            //   mgcv `det3_th[1]` = ∂(∂³D/∂μ³)/∂(log σ).
+            let det3_th_nu = wt
+                * 4.0
+                * (-6.0 * f / nusig2a + 3.0 * f1 / sig2a + 18.0 * ff1 * f1
+                    - 4.0 * f1ymf1 / sig2a
+                    - 12.0 * nu_p1 * r * f1.powi(4))
+                * nu2nu;
+            let det3_th_logsigma =
+                wt * 48.0 * f * (-1.0 / nusig2a + 3.0 * f1 * f1 - 2.0 * f1ymf1 * f1);
+            //   gamrs outer order [log σ², log(ν−2)]:
+            //     col 0 = log σ² ← native log σ × (1/2 Jacobian)
+            //     col 1 = log(ν−2) ← native log(ν−2) (identity)
+            dmu3_th[[i, 0]] = 0.5 * det3_th_logsigma;
+            dmu3_th[[i, 1]] = det3_th_nu;
+
+            // ── ∂²D / (∂θ_i ∂θ_j)  (mgcv `dth2`, lines 1282-1287) ──────
+            //   mgcv native packing: (0,0)=νν, (0,1)=νσ, (1,1)=σσ.
+            let dth2_nu_nu = wt
+                * (nu_minus_2 * a.ln()
+                    + nu2nu * r * r
+                        * (-2.0 * nu_minus_2 - nu_p1 + 2.0 * nu_p1 * nu2nu
+                            - nu_p1 * nu2nu * f1ym)
+                        / nusig2a);
+            let dth2_nu_logsigma = wt * 2.0 * (fym - r * ymsig2a - fymf1ym) * nu2nu;
+            let dth2_logsigma_logsigma = wt * 4.0 * fym * (1.0 - f1ym);
+            //   gamrs outer packing: (0,0)=σ²σ², (0,1)=σ²ν, (1,1)=νν.
+            //     σ²σ² ← σσ × ¼   (two Jacobian factors)
+            //     σ²ν ← σν × ½    (one Jacobian factor)
+            //     νν  ← νν        (identity)
+            dth2[[i, 0]] = 0.25 * dth2_logsigma_logsigma;
+            dth2[[i, 1]] = 0.5 * dth2_nu_logsigma;
+            dth2[[i, 2]] = dth2_nu_nu;
+
+            // ── ∂³D / (∂μ ∂θ_i ∂θ_j)  (mgcv `det_th2`, lines 1290-1299) ─
+            let term = 2.0 * nu2nu - 2.0 * nu1nu * nu2nu - 1.0 + nu1nu;
+            let det_th2_nu_nu = wt
+                * 2.0
+                * f1
+                * nu_minus_2
+                * (term - 2.0 * nu2nu * f1ym + 4.0 * fym * nu2nu / nu
+                    - fym / nu
+                    - 2.0 * fymf1ym * nu2nu / nu);
+            let det_th2_nu_logsigma = wt
+                * 4.0
+                * (-f + ymsig2a + 3.0 * fymf1 - ymsig2a * f1ym - 2.0 * fymf1 * f1ym)
+                * nu2nu;
+            let det_th2_logsigma_logsigma = wt * 8.0 * f * (-1.0 + 3.0 * f1ym - 2.0 * f1ym * f1ym);
+            dmu_th2[[i, 0]] = 0.25 * det_th2_logsigma_logsigma;
+            dmu_th2[[i, 1]] = 0.5 * det_th2_nu_logsigma;
+            dmu_th2[[i, 2]] = det_th2_nu_nu;
+
+            // ── ∂⁴D / (∂μ² ∂θ_i ∂θ_j)  (mgcv `det2_th2`, lines 1307-1328)
+            let det2_th2_nu_nu = wt
+                * 2.0
+                * nu_minus_2
+                * (-term + 10.0 * nu2nu * f1ym - 16.0 * fym * nu2nu / nu - 2.0 * f1ym
+                    + 5.0 * nu1nu * f1ym
+                    - 8.0 * nu2nu * f1ym * f1ym
+                    + 26.0 * fymf1ym * nu2nu / nu
+                    - 4.0 * nu1nu * f1ym * f1ym
+                    - 12.0 * nu1nu * nu2nu * f1ym * f1ym * f1ym)
+                / nusig2a;
+            let det2_th2_nu_logsigma = wt
+                * 4.0
+                * (nu1nusig2a - 1.0 / sig2a - 11.0 * nu_p1 * f1 * f1
+                    + 5.0 * f1ym / sig2a
+                    + 22.0 * nu_p1 * f1ymf1 * f1
+                    - 4.0 * f1ym * f1ym / sig2a
+                    - 12.0 * nu_p1 * f1ymf1 * f1ymf1)
+                * nu2nu;
+            let det2_th2_logsigma_logsigma = wt
+                * 8.0
+                * (nu1nusig2a - 11.0 * nu_p1 * f1 * f1 + 22.0 * nu_p1 * f1ymf1 * f1
+                    - 12.0 * nu_p1 * f1ymf1 * f1ymf1);
+            dmu2_th2[[i, 0]] = 0.25 * det2_th2_logsigma_logsigma;
+            dmu2_th2[[i, 1]] = 0.5 * det2_th2_nu_logsigma;
+            dmu2_th2[[i, 2]] = det2_th2_nu_nu;
+        }
+
+        Some(crate::traits::Level2ShapeDerivs {
+            dmu4,
+            dmu3_th,
+            dth2,
+            dmu_th2,
+            dmu2_th2,
+        })
+    }
+
+    /// `Σᵢ wt_i · ∂²ls(y_i)/(∂θ_i ∂θ_j)` for the two scat shape axes
+    /// `θ = [log σ², log(ν − 2)]`. Packed upper-triangular per
+    /// `shape_pair_index`: `[0]=σ²σ², [1]=σ²ν, [2]=νν`.
+    ///
+    /// Per-obs ls is `log Γ((ν+1)/2) − log Γ(ν/2) − 0.5·log(π·ν·σ²)`.
+    /// Direct computation in gamrs's outer convention:
+    /// - `∂²ls/∂(log σ²)² = 0` (the `−0.5·log σ²` is linear in `log σ²`).
+    /// - `∂²ls/(∂(log σ²) ∂(log(ν − 2))) = 0` (factorable).
+    /// - `∂²ls/∂(log(ν − 2))² = (ν − 2)/2 · {(ν − 2)/2 · [ψ'((ν+1)/2)
+    ///       − ψ'(ν/2)] + [ψ((ν+1)/2) − ψ(ν/2)] + ((ν − 2)/ν − 1)/ν}`.
+    ///
+    /// The mgcv_rust counterpart is `ls2[0,0]` in `tdist_gdi2_native`
+    /// (line 1428-1432); the σ row/col are 0 there too (matches our
+    /// `[0]=0`, `[1]=0`) but the indexing differs — mgcv's index 0 is
+    /// log(ν−2) so its `ls2[0,0]` maps to gamrs's pair `[2]=νν`.
+    fn sum_saturated_log_lik_d2theta(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        _scale: f64,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Vec<f64> {
+        use crate::special::{digamma, trigamma};
+        let nu = self.nu;
+        let nu_minus_2 = nu - 2.0;
+        let half_nu_p1 = (nu + 1.0) / 2.0;
+        let half_nu = nu / 2.0;
+        let nu2nu = nu_minus_2 / nu;
+        let sum_w: f64 = match prior_w {
+            Some(w) => w.iter().sum(),
+            None => y.len() as f64,
+        };
+        // ∂²ls/∂(log(ν−2))² (derived above; matches mgcv_rust line 1428-1432
+        // with the substitution `nu2 = ν − 2`, `nu2nu = (ν − 2)/ν`).
+        let d2ls_dnu2 = nu_minus_2 * nu_minus_2 * 0.25 * (trigamma(half_nu_p1) - trigamma(half_nu))
+            + nu_minus_2 * 0.5 * (digamma(half_nu_p1) - digamma(half_nu))
+            + 0.5 * nu2nu * nu2nu
+            - 0.5 * nu2nu;
+        vec![0.0, 0.0, sum_w * d2ls_dnu2]
+    }
 }
 
 impl VarianceFn for TVariance {

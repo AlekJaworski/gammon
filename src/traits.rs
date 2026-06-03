@@ -59,6 +59,44 @@ pub struct Level1ShapeDerivs {
     pub dmu2th: ndarray::Array2<f64>,
 }
 
+/// Per-observation Level-2 shape derivatives — the second-order analogue
+/// of [`Level1ShapeDerivs`], consumed by the full analytic-Hessian path
+/// (port of mgcv_rust `reml/mod.rs::tdist_gdi2_native`'s `gdi2`-style
+/// assembly). Returned by `Loss::level2_shape_derivatives`.
+///
+/// The shape-pair packing convention is **upper-triangular row-major**:
+/// for `n_θ` shape parameters, `n_pairs = n_θ·(n_θ+1)/2` and
+/// `pair_index(i, j) = i·n_θ - i·(i-1)/2 + (j - i)` with `i ≤ j`.
+/// For `n_θ = 2`: `(0,0) → 0`, `(0,1) → 1`, `(1,1) → 2` — matching the
+/// `dth2`/`det_th2`/`det2_th2` layout in mgcv_rust's `tdist_dd_arrays`.
+///
+/// Shapes:
+/// - `dmu4`: `(n,)` — `∂⁴D / ∂μ⁴`.
+/// - `dmu3_th`: `(n, n_θ)` — `∂(∂³D/∂μ³) / ∂θ_k = ∂⁴D / (∂μ³ ∂θ_k)`.
+/// - `dth2`: `(n, n_pairs)` — `∂²D / (∂θ_i ∂θ_j)` (i ≤ j).
+/// - `dmu_th2`: `(n, n_pairs)` — `∂³D / (∂μ ∂θ_i ∂θ_j)` (i ≤ j).
+/// - `dmu2_th2`: `(n, n_pairs)` — `∂⁴D / (∂μ² ∂θ_i ∂θ_j)` (i ≤ j).
+///
+/// Prior weights are baked into every array per the
+/// [`Level1ShapeDerivs`] convention (mgcv's `efam.r:2814-2832`).
+#[derive(Clone)]
+pub struct Level2ShapeDerivs {
+    pub dmu4: ndarray::Array1<f64>,
+    pub dmu3_th: ndarray::Array2<f64>,
+    pub dth2: ndarray::Array2<f64>,
+    pub dmu_th2: ndarray::Array2<f64>,
+    pub dmu2_th2: ndarray::Array2<f64>,
+}
+
+/// Helper for the upper-triangular shape-pair packing used by
+/// [`Level2ShapeDerivs`]. Returns the column index in the `dth2` /
+/// `dmu_th2` / `dmu2_th2` arrays for the pair `(i, j)` with `i ≤ j`.
+#[inline]
+pub fn shape_pair_index(i: usize, j: usize, n_theta: usize) -> usize {
+    debug_assert!(i <= j && j < n_theta);
+    i * n_theta - i * (i.saturating_sub(1)) / 2 + (j - i)
+}
+
 /// Layer 2a — `D(y, μ)` per observation, plus first/second derivatives in
 /// μ. PIRLS uses `d_loss_dmu` / `d2_loss_dmu` to build working weights and
 /// working response; the score body uses `deviance_per_obs` and
@@ -211,6 +249,51 @@ pub trait Loss {
         _prior_w: Option<ndarray::ArrayView1<f64>>,
     ) -> Option<Level1ShapeDerivs> {
         None
+    }
+
+    /// Per-observation Level-2 shape derivatives feeding the **full
+    /// analytic** REML/LAML Hessian path (port of mgcv_rust
+    /// `src/reml/mod.rs::tdist_gdi2_native`'s `gdi2`-style assembly,
+    /// itself a port of mgcv's C `gdi2`).
+    ///
+    /// Pre-condition for shipping: any family that overrides
+    /// `level2_shape_derivatives` MUST also override
+    /// [`Self::level1_shape_derivatives`] (Level-2 is meaningful only on
+    /// top of Level-1's `(dmu3, dth, dmuth, dmu2th)` chain). The
+    /// shape-aware Hessian dispatch checks both — if Level-2 is `Some`,
+    /// it runs the closed-form joint Hessian; otherwise it falls back to
+    /// central FD on the Level-1 IFT gradient.
+    ///
+    /// Convention: every array is **post-Jacobian** in the family's
+    /// outer parameter convention (e.g. TDist returns derivatives w.r.t.
+    /// `θ = [log σ², log(ν − 2)]`, NOT mgcv's native `[log(ν − 2), log σ]`).
+    /// Prior weights are baked in per the [`Level1ShapeDerivs`] contract.
+    fn level2_shape_derivatives(
+        &self,
+        _y: ndarray::ArrayView1<f64>,
+        _eta: ndarray::ArrayView1<f64>,
+        _prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<Level2ShapeDerivs> {
+        None
+    }
+
+    /// `Σᵢ ∂²ls(y_i; scale) / (∂θ_i ∂θ_j)` packed upper-triangular per
+    /// [`shape_pair_index`]. The full analytic Hessian path subtracts
+    /// this per axis pair (the `−ls2` row of mgcv `gam.fit5.r:1668`).
+    ///
+    /// Default returns `vec![0.0; n_θ·(n_θ+1)/2]` — correct when
+    /// `saturated_log_lik` is θ-independent (Bernoulli/Poisson/Gaussian/
+    /// Ocat). Families with θ-dependent ls (TDist, NegBin, Tweedie via
+    /// φ-Hessian) MUST override or the Hessian's `∂²ls/∂θ²` term is
+    /// silently zeroed.
+    fn sum_saturated_log_lik_d2theta(
+        &self,
+        _y: ndarray::ArrayView1<f64>,
+        _scale: f64,
+        _prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Vec<f64> {
+        let n_theta = self.n_shape_params();
+        vec![0.0; n_theta * (n_theta + 1) / 2]
     }
 
     /// `Σᵢ ∂ls(y_i; scale) / ∂θ_k` for k in 0..n_shape_params — the

@@ -246,6 +246,272 @@ fn tdist_d2_is_negative_for_outliers() {
     assert!(t.d2_loss_dmu(-(threshold + 0.5), 0.0) < 0.0);
 }
 
+// ─── TDist Level-1 and Level-2 derivative oracles ──────────────────────
+//
+// The Level-1 and Level-2 closed forms drive the full analytic Hessian
+// path; every entry has a numerical FD oracle here so a sign / Jacobian
+// regression surfaces at the architectural component boundary, not
+// downstream as a "scat outer didn't converge" failure.
+
+use ndarray::{Array1, Array2, ArrayView1};
+use gamrs::traits::{shape_pair_index, Level1ShapeDerivs, Level2ShapeDerivs};
+
+fn tdist_level1_at(nu: f64, sigma2: f64, ys: &[f64], mus: &[f64]) -> Level1ShapeDerivs {
+    let t = TDist { nu, sigma2 };
+    let y = Array1::from_vec(ys.to_vec());
+    let mu = Array1::from_vec(mus.to_vec());
+    t.level1_shape_derivatives(y.view(), mu.view(), None)
+        .expect("TDist should supply Level-1")
+}
+
+fn tdist_level2_at(nu: f64, sigma2: f64, ys: &[f64], mus: &[f64]) -> Level2ShapeDerivs {
+    let t = TDist { nu, sigma2 };
+    let y = Array1::from_vec(ys.to_vec());
+    let mu = Array1::from_vec(mus.to_vec());
+    t.level2_shape_derivatives(y.view(), mu.view(), None)
+        .expect("TDist should supply Level-2")
+}
+
+/// Level-1 `dmu3` per-row matches central FD of `d2_loss_dmu` in μ.
+#[test]
+fn tdist_level1_dmu3_matches_fd() {
+    let ys = vec![-1.2, -0.3, 0.0, 0.5, 1.8];
+    for &nu in &[3.5, 5.0, 8.0] {
+        for &sigma2 in &[0.25, 1.0, 2.0] {
+            let mus = vec![0.0; ys.len()];
+            let lv1 = tdist_level1_at(nu, sigma2, &ys, &mus);
+            let h = 1e-4;
+            for (i, &y) in ys.iter().enumerate() {
+                let t = TDist { nu, sigma2 };
+                let fd = (t.d2_loss_dmu(y, mus[i] + h) - t.d2_loss_dmu(y, mus[i] - h)) / (2.0 * h);
+                let rel = (lv1.dmu3[i] - fd).abs() / (fd.abs() + 1.0);
+                assert!(
+                    rel < 1e-5,
+                    "dmu3[{i}] (ν={nu}, σ²={sigma2}, y={y}): analytic={} fd={fd} rel={rel}",
+                    lv1.dmu3[i]
+                );
+            }
+        }
+    }
+}
+
+/// Level-1 `dth` per-row matches FD of `deviance_per_obs` in shape.
+#[test]
+fn tdist_level1_dth_matches_fd() {
+    // θ_0 = log σ², θ_1 = log(ν - 2)
+    let ys = vec![-0.8, 0.2, 1.1];
+    let mus = vec![0.0; 3];
+    for &nu in &[4.0, 6.0] {
+        for &sigma2 in &[0.5, 1.5] {
+            let lv1 = tdist_level1_at(nu, sigma2, &ys, &mus);
+            let h = 1e-5;
+            // σ² axis
+            for (i, &y) in ys.iter().enumerate() {
+                let sig_plus = (sigma2.ln() + h).exp();
+                let sig_minus = (sigma2.ln() - h).exp();
+                let d_plus = TDist { nu, sigma2: sig_plus }.deviance_per_obs(y, mus[i]);
+                let d_minus = TDist { nu, sigma2: sig_minus }.deviance_per_obs(y, mus[i]);
+                let fd = (d_plus - d_minus) / (2.0 * h);
+                let rel = (lv1.dth[[i, 0]] - fd).abs() / (fd.abs() + 1.0);
+                assert!(rel < 1e-5, "dth[σ²][{i}]: analytic={} fd={fd}", lv1.dth[[i, 0]]);
+            }
+            // ν axis: θ = log(ν - 2)
+            for (i, &y) in ys.iter().enumerate() {
+                let nu_plus = ((nu - 2.0).ln() + h).exp() + 2.0;
+                let nu_minus = ((nu - 2.0).ln() - h).exp() + 2.0;
+                let d_plus = TDist { nu: nu_plus, sigma2 }.deviance_per_obs(y, mus[i]);
+                let d_minus = TDist { nu: nu_minus, sigma2 }.deviance_per_obs(y, mus[i]);
+                let fd = (d_plus - d_minus) / (2.0 * h);
+                let rel = (lv1.dth[[i, 1]] - fd).abs() / (fd.abs() + 1.0);
+                assert!(rel < 1e-5, "dth[ν][{i}]: analytic={} fd={fd}", lv1.dth[[i, 1]]);
+            }
+        }
+    }
+}
+
+/// Level-2 `dmu4` per-row matches FD of Level-1 `dmu3` in μ.
+#[test]
+fn tdist_level2_dmu4_matches_fd_of_dmu3() {
+    let ys = vec![-1.0, -0.2, 0.0, 0.7, 1.5];
+    let mus = vec![0.0; ys.len()];
+    for &nu in &[4.0, 6.0] {
+        for &sigma2 in &[0.5, 1.5] {
+            let lv2 = tdist_level2_at(nu, sigma2, &ys, &mus);
+            let h = 1e-4;
+            for (i, &y) in ys.iter().enumerate() {
+                let mu_plus_vec = vec![mus[i] + h];
+                let mu_minus_vec = vec![mus[i] - h];
+                let lv1_p = tdist_level1_at(nu, sigma2, &[y], &mu_plus_vec);
+                let lv1_m = tdist_level1_at(nu, sigma2, &[y], &mu_minus_vec);
+                let fd = (lv1_p.dmu3[0] - lv1_m.dmu3[0]) / (2.0 * h);
+                let rel = (lv2.dmu4[i] - fd).abs() / (fd.abs() + 1.0);
+                assert!(rel < 1e-4, "dmu4[{i}] (ν={nu}, σ²={sigma2}, y={y}): analytic={} fd={fd}", lv2.dmu4[i]);
+            }
+        }
+    }
+}
+
+/// Level-2 `dmu3_th` per-row matches FD of Level-1 `dmu3` in θ.
+#[test]
+fn tdist_level2_dmu3_th_matches_fd_of_dmu3() {
+    let ys = vec![-0.4, 0.3, 1.0];
+    let mus = vec![0.0; ys.len()];
+    for &nu in &[4.0, 6.0] {
+        for &sigma2 in &[0.5, 1.5] {
+            let lv2 = tdist_level2_at(nu, sigma2, &ys, &mus);
+            let h = 1e-5;
+            // σ² axis
+            for (i, &y) in ys.iter().enumerate() {
+                let sig_plus = (sigma2.ln() + h).exp();
+                let sig_minus = (sigma2.ln() - h).exp();
+                let lv1_p = tdist_level1_at(nu, sig_plus, &[y], &[mus[i]]);
+                let lv1_m = tdist_level1_at(nu, sig_minus, &[y], &[mus[i]]);
+                let fd = (lv1_p.dmu3[0] - lv1_m.dmu3[0]) / (2.0 * h);
+                let rel = (lv2.dmu3_th[[i, 0]] - fd).abs() / (fd.abs() + 1.0);
+                assert!(rel < 1e-5, "dmu3_th[σ²][{i}]: analytic={} fd={fd}", lv2.dmu3_th[[i, 0]]);
+            }
+            // ν axis
+            for (i, &y) in ys.iter().enumerate() {
+                let nu_plus = ((nu - 2.0).ln() + h).exp() + 2.0;
+                let nu_minus = ((nu - 2.0).ln() - h).exp() + 2.0;
+                let lv1_p = tdist_level1_at(nu_plus, sigma2, &[y], &[mus[i]]);
+                let lv1_m = tdist_level1_at(nu_minus, sigma2, &[y], &[mus[i]]);
+                let fd = (lv1_p.dmu3[0] - lv1_m.dmu3[0]) / (2.0 * h);
+                let rel = (lv2.dmu3_th[[i, 1]] - fd).abs() / (fd.abs() + 1.0);
+                assert!(rel < 1e-5, "dmu3_th[ν][{i}]: analytic={} fd={fd}", lv2.dmu3_th[[i, 1]]);
+            }
+        }
+    }
+}
+
+/// Level-2 `dth2`, `dmu_th2`, `dmu2_th2` per-row match FD of Level-1
+/// `dth`, `dmuth`, `dmu2th` (respectively) on every shape-axis pair.
+#[test]
+fn tdist_level2_shape_cross_derivs_match_fd_of_level1() {
+    let ys = vec![-0.7, 0.0, 0.9];
+    let mus = vec![0.0; ys.len()];
+    for &nu in &[4.0, 7.0] {
+        for &sigma2 in &[0.4, 1.2] {
+            let lv2 = tdist_level2_at(nu, sigma2, &ys, &mus);
+            let h = 1e-5;
+            // (a, b) over upper triangle: (0,0), (0,1), (1,1).
+            for (a, b) in [(0usize, 0usize), (0, 1), (1, 1)] {
+                let pair = shape_pair_index(a, b, 2);
+                for (i, &y) in ys.iter().enumerate() {
+                    // Perturb axis `b`, read column `a` of Level-1.
+                    let (nu_plus, sig_plus) = perturb_tdist(nu, sigma2, b, h);
+                    let (nu_minus, sig_minus) = perturb_tdist(nu, sigma2, b, -h);
+                    let lv1_p = tdist_level1_at(nu_plus, sig_plus, &[y], &[mus[i]]);
+                    let lv1_m = tdist_level1_at(nu_minus, sig_minus, &[y], &[mus[i]]);
+                    let fd_dth2 = (lv1_p.dth[[0, a]] - lv1_m.dth[[0, a]]) / (2.0 * h);
+                    let fd_dmuth2 = (lv1_p.dmuth[[0, a]] - lv1_m.dmuth[[0, a]]) / (2.0 * h);
+                    let fd_dmu2th2 = (lv1_p.dmu2th[[0, a]] - lv1_m.dmu2th[[0, a]]) / (2.0 * h);
+                    let rel_dth = (lv2.dth2[[i, pair]] - fd_dth2).abs() / (fd_dth2.abs() + 1.0);
+                    let rel_dmuth = (lv2.dmu_th2[[i, pair]] - fd_dmuth2).abs()
+                        / (fd_dmuth2.abs() + 1.0);
+                    let rel_dmu2th = (lv2.dmu2_th2[[i, pair]] - fd_dmu2th2).abs()
+                        / (fd_dmu2th2.abs() + 1.0);
+                    assert!(
+                        rel_dth < 5e-5,
+                        "dth2 pair=({a},{b}) row={i}: analytic={} fd={fd_dth2}",
+                        lv2.dth2[[i, pair]]
+                    );
+                    assert!(
+                        rel_dmuth < 5e-5,
+                        "dmu_th2 pair=({a},{b}) row={i}: analytic={} fd={fd_dmuth2}",
+                        lv2.dmu_th2[[i, pair]]
+                    );
+                    assert!(
+                        rel_dmu2th < 5e-5,
+                        "dmu2_th2 pair=({a},{b}) row={i}: analytic={} fd={fd_dmu2th2}",
+                        lv2.dmu2_th2[[i, pair]]
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn perturb_tdist(nu: f64, sigma2: f64, axis: usize, h: f64) -> (f64, f64) {
+    match axis {
+        0 => (nu, (sigma2.ln() + h).exp()), // log σ²
+        1 => (((nu - 2.0).ln() + h).exp() + 2.0, sigma2), // log(ν - 2)
+        _ => unreachable!("TDist has 2 shape axes"),
+    }
+}
+
+/// `sum_saturated_log_lik_dtheta` matches FD of `saturated_log_lik` per axis.
+#[test]
+fn tdist_sum_dls_dtheta_matches_fd() {
+    let ys = vec![-0.2, 0.0, 0.8, 1.3];
+    for &nu in &[4.0, 6.0, 10.0] {
+        for &sigma2 in &[0.3, 1.0, 2.5] {
+            let t = TDist { nu, sigma2 };
+            let y_view = Array1::from_vec(ys.clone());
+            let analytic = t.sum_saturated_log_lik_dtheta(y_view.view(), 1.0, None);
+            let h = 1e-6;
+            // σ² axis
+            let t_plus = TDist { nu, sigma2: (sigma2.ln() + h).exp() };
+            let t_minus = TDist { nu, sigma2: (sigma2.ln() - h).exp() };
+            let ls_plus: f64 = ys.iter().map(|&y| t_plus.saturated_log_lik(y, 1.0)).sum();
+            let ls_minus: f64 = ys.iter().map(|&y| t_minus.saturated_log_lik(y, 1.0)).sum();
+            let fd = (ls_plus - ls_minus) / (2.0 * h);
+            let rel = (analytic[0] - fd).abs() / (fd.abs() + 1.0);
+            assert!(rel < 1e-5, "dls/d(log σ²) ν={nu} σ²={sigma2}: analytic={} fd={fd}", analytic[0]);
+            // ν axis
+            let nu_plus = ((nu - 2.0).ln() + h).exp() + 2.0;
+            let nu_minus = ((nu - 2.0).ln() - h).exp() + 2.0;
+            let t_plus = TDist { nu: nu_plus, sigma2 };
+            let t_minus = TDist { nu: nu_minus, sigma2 };
+            let ls_plus: f64 = ys.iter().map(|&y| t_plus.saturated_log_lik(y, 1.0)).sum();
+            let ls_minus: f64 = ys.iter().map(|&y| t_minus.saturated_log_lik(y, 1.0)).sum();
+            let fd = (ls_plus - ls_minus) / (2.0 * h);
+            let rel = (analytic[1] - fd).abs() / (fd.abs() + 1.0);
+            assert!(rel < 1e-5, "dls/d(log(ν-2)) ν={nu} σ²={sigma2}: analytic={} fd={fd}", analytic[1]);
+        }
+    }
+}
+
+/// `sum_saturated_log_lik_d2theta` matches FD of `sum_saturated_log_lik_dtheta` per pair.
+#[test]
+fn tdist_sum_d2ls_d2theta_matches_fd() {
+    let ys = vec![-0.4, 0.0, 0.6, 1.2];
+    for &nu in &[4.0, 8.0] {
+        for &sigma2 in &[0.5, 1.5] {
+            let t = TDist { nu, sigma2 };
+            let y_view = Array1::from_vec(ys.clone());
+            let analytic = t.sum_saturated_log_lik_d2theta(y_view.view(), 1.0, None);
+            // Larger h here than the per-row tests because the ν-axis
+            // d²ls/dθ² magnitude is ~3e-3 near ν=4 (cancellation between
+            // trigamma terms): FD with h=1e-5 floors at noise of order
+            // ~1e-5 absolute. h=1e-4 puts the truncation error well below
+            // the (also-small) value while keeping enough digits.
+            let h = 1e-4;
+            assert!(analytic[0].abs() < 1e-10, "σ²σ² block should be 0 (got {})", analytic[0]);
+            assert!(analytic[1].abs() < 1e-10, "σ²ν block should be 0 (got {})", analytic[1]);
+            let nu_plus = ((nu - 2.0).ln() + h).exp() + 2.0;
+            let nu_minus = ((nu - 2.0).ln() - h).exp() + 2.0;
+            let t_plus = TDist { nu: nu_plus, sigma2 };
+            let t_minus = TDist { nu: nu_minus, sigma2 };
+            let g_plus = t_plus.sum_saturated_log_lik_dtheta(y_view.view(), 1.0, None)[1];
+            let g_minus = t_minus.sum_saturated_log_lik_dtheta(y_view.view(), 1.0, None)[1];
+            let fd = (g_plus - g_minus) / (2.0 * h);
+            let abs = (analytic[2] - fd).abs();
+            // Hybrid abs/rel bound: pass if either the absolute or
+            // relative gap is under 1e-5. Pure relative tolerances are
+            // brittle for small d²ls values (the ν=4 case is ~3e-3, so
+            // 1e-5 rel = 3e-8 abs — at the FD noise floor); pure
+            // absolute tolerances are brittle for large ν.
+            let rel = abs / (fd.abs().max(1e-3));
+            assert!(
+                abs < 1e-5 || rel < 1e-3,
+                "d²ls/d(log(ν-2))² ν={nu} σ²={sigma2}: analytic={} fd={fd} abs={abs} rel={rel}",
+                analytic[2]
+            );
+        }
+    }
+}
+
 // ─── Poisson / Log / PoissonVariance ───────────────────────────────────
 
 #[test]
