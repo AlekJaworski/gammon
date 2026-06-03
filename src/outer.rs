@@ -257,13 +257,50 @@ impl OuterSolver for NewtonWithHalving {
                 }
             }
 
-            // Newton step. Replace negative / tiny eigenvalues of H with
-            // `hess_floor` so the step direction is always descent — same
-            // strategy as mgcv `gam.fit3.r:1397-1417`.
-            let h_psd = make_psd(&h, opts.hess_floor);
-            let step = match h_psd.solve(&(-&g)) {
-                Ok(s) => s,
-                Err(_) => -&g / opts.hess_floor.max(1.0), // fallback: steepest descent
+            // Newton step with the mgcv R `gam.fit3.r:~1380-1417` stack:
+            //   1. Diagonal preconditioning: `D_ii = sqrt(|H_ii|)` so the
+            //      preconditioned Hessian has unit-magnitude diagonal
+            //      regardless of how wildly the raw coordinate scales differ
+            //      (e.g. ρ axes vs θ shape axes for scat / ocat).
+            //   2. Gill-Murray-Wright eigen-fix on the preconditioned Hess
+            //      (`make_psd_gmw`): ABS negative eigvals + relative floor
+            //      at `max(|λ|) · ε^0.7`. Safe in preconditioned coords
+            //      because the magnitudes are already normalised; the
+            //      raw-Hessian variant would over-step in high-curvature
+            //      coordinates (verified on scat parity fixture).
+            //   3. Solve in preconditioned coords, then back-transform.
+            // Falls back to `make_psd` floor-only path when D is degenerate.
+            let dim = g.len();
+            let mut diag_precond = Array1::<f64>::zeros(dim);
+            for i in 0..dim {
+                let hii = h[[i, i]].abs();
+                // mgcv uses `sqrt(|H_ii|)`; tiny floor avoids division blowup
+                // when a row of H is effectively zero (e.g. fully frozen axis).
+                diag_precond[i] = hii.sqrt().max(opts.hess_floor.sqrt());
+            }
+            let step = {
+                // Precondition: H_p = D^-1 H D^-1, g_p = D^-1 g.
+                let mut h_pre = Array2::<f64>::zeros((dim, dim));
+                for i in 0..dim {
+                    for j in 0..dim {
+                        h_pre[[i, j]] = h[[i, j]] / (diag_precond[i] * diag_precond[j]);
+                    }
+                }
+                let mut g_pre = Array1::<f64>::zeros(dim);
+                for i in 0..dim {
+                    g_pre[i] = g[i] / diag_precond[i];
+                }
+                let h_psd = make_psd_gmw(&h_pre, opts.hess_floor);
+                let step_pre = match h_psd.solve(&(-&g_pre)) {
+                    Ok(s) => s,
+                    Err(_) => -&g_pre / opts.hess_floor.max(1.0),
+                };
+                // Back-transform: step = D^-1 step_pre.
+                let mut step = Array1::<f64>::zeros(dim);
+                for i in 0..dim {
+                    step[i] = step_pre[i] / diag_precond[i];
+                }
+                step
             };
             // Cap the step — per-axis caps (mgcv-style, set by shape-aware
             // scores per family) if provided; otherwise the global L_∞ cap.
