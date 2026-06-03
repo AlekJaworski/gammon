@@ -253,11 +253,13 @@ def test_constant_column_auto_dropped(rng):
     assert mu.shape == (n,)
 
 
-def test_typed_terms_do_not_auto_drop(rng):
-    """When the user is explicit via `terms=`, do NOT silently drop a
-    constant column referenced by one of their terms — that would be more
-    confusing than the natural error. (mgcv_rust auto-drop only fires on
-    the predictors= mapping path.)"""
+def test_typed_terms_constant_col_raises_clearly(rng):
+    """When the user is explicit via `terms=`, a constant column on a
+    CrTerm raises a clear `column is constant` ValueError BEFORE any
+    auto-promotion — gives a friendlier error than the natural downstream
+    singular-matrix failure. (Auto-drop only happens on the predictors=
+    path; the typed-term path is fully explicit, so we surface the issue
+    rather than silently mangling the design.)"""
     pd = pytest.importorskip("pandas")
     n = 200
     df = pd.DataFrame({
@@ -265,7 +267,7 @@ def test_typed_terms_do_not_auto_drop(rng):
         "stories": np.full(n, 1.0),
     })
     df["y"] = np.sin(df.x0) + rng.normal(0, 0.3, n)
-    with pytest.raises(Exception):  # native raises a basis-construction error
+    with pytest.raises(ValueError, match="column is constant"):
         gamrs.Gam(
             terms=[gamrs.CrTerm("x0", k=10), gamrs.CrTerm("stories", k=10)]
         ).fit(df[["x0", "stories"]], df.y)
@@ -337,6 +339,70 @@ def test_parametric_via_predictor_basis_map_matches_typed_term(rng):
     ).fit(X, df.y)
     np.testing.assert_allclose(g_typed.coef_, g_map.coef_, rtol=1e-10, atol=1e-12)
     np.testing.assert_allclose(g_typed.lambda_, g_map.lambda_, rtol=1e-10)
+
+
+def test_typed_crterm_k2_auto_promotes_to_parametric(rng):
+    """A typed `CrTerm("x", k=2)` auto-promotes to `ParametricTerm` with
+    a UserWarning instead of failing with the cryptic 'needs k ≥ 3'
+    error. (mgcv R bumps silently; we warn explicitly.)"""
+    pd = pytest.importorskip("pandas")
+    n = 200
+    df = pd.DataFrame({
+        "x_smooth": rng.uniform(0, 10, n),
+        "z": rng.uniform(-5, 5, n),
+    })
+    df["y"] = np.sin(df.x_smooth) + 0.3 * df.z + rng.normal(0, 0.3, n)
+    with pytest.warns(UserWarning, match=r"CrTerm\('z', k=2\).*auto-promoted"):
+        g = gamrs.Gam(terms=[
+            gamrs.CrTerm("x_smooth", k=10),
+            gamrs.CrTerm("z", k=2),
+        ]).fit(df[["x_smooth", "z"]], df.y)
+    assert g.converged_
+    # `z`'s coefficient is now a single parametric slope, not a 2-DoF smooth.
+    # Total coefs = 1 (intercept) + 9 (x_smooth centred CR) + 1 (z param) = 11.
+    assert len(g.coef_) == 11
+
+
+def test_typed_n_obs_lt_k_raises_clear_error(rng):
+    """`n_obs < k` for a typed CrTerm fails fast with an explicit
+    ValueError instead of a native panic."""
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame({"x": rng.uniform(0, 10, 5)})
+    df["y"] = df.x + rng.normal(0, 0.3, 5)
+    with pytest.raises(ValueError, match="n_obs=5 < k=10"):
+        gamrs.Gam(terms=[gamrs.CrTerm("x", k=10)]).fit(df[["x"]], df.y)
+
+
+def test_predictors_path_warns_on_k_bump_and_cap(rng):
+    """`term_k_mapping={"x": 2}` bumps k to the min_k floor and warns;
+    `k_default=50` with n_unique=10 caps k and warns."""
+    pd = pytest.importorskip("pandas")
+    n = 200
+    df = pd.DataFrame({
+        "x": rng.uniform(0, 10, n),
+        "z": rng.choice(np.linspace(0, 5, 10), n),  # only 10 unique values
+    })
+    df["y"] = np.sin(df.x) + df.z + rng.normal(0, 0.3, n)
+
+    with pytest.warns(UserWarning, match="bumped from 2 to 3"):
+        gamrs.Gam(term_k_mapping={"x": 2}).fit(df[["x"]], df.y)
+
+    with pytest.warns(UserWarning, match="capped from 50 to 9"):
+        gamrs.Gam(k_default=50).fit(df[["z"]], df.y)
+
+
+def test_all_parametric_design_raises(rng):
+    """A design composed entirely of parametric terms (zero smoothing
+    parameters) can't be fit by gamrs's penalty machinery — error with
+    a pointer at the sklearn linear-regression alternative."""
+    pd = pytest.importorskip("pandas")
+    n = 100
+    df = pd.DataFrame({"is_promo": rng.integers(0, 2, n).astype(float)})
+    df["y"] = 2.0 * df.is_promo + rng.normal(0, 0.3, n)
+    with pytest.raises(ValueError, match="All terms are parametric"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            gamrs.Gam().fit(df[["is_promo"]], df.y)
 
 
 def test_n_unique_2_auto_promotes_to_parametric(rng):

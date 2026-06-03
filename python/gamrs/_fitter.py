@@ -544,8 +544,27 @@ class Gam:
             # Resolve any string col references against the now-known
             # column names. Ints pass through unchanged.
             term_objs = [_resolve_term_cols(t, list(cols)) for t in self.terms]
+            # Apply the same demotion / sample-size guards as the
+            # predictors= path so a typed CrTerm("x", k=2) doesn't fail
+            # with a cryptic "needs k ≥ 3" error and so `n_obs < k` gets
+            # caught with an explicit message rather than a native panic.
+            term_objs = self._guard_typed_terms(term_objs, X_arr, cols)
         else:
             term_objs = self._build_terms_from_columns(X_arr, cols)
+
+        # All-parametric designs (zero smoothing parameters) currently
+        # blow up downstream — gamrs's penalty machinery assumes at
+        # least one entry in `s_list`. Catch and fail cleanly with a
+        # pointer at the sklearn alternative.
+        if term_objs and all(isinstance(t, ParametricTerm) for t in term_objs):
+            param_cols = [cols[t.col] if isinstance(t.col, int) else t.col for t in term_objs]
+            raise ValueError(
+                f"All terms are parametric ({param_cols!r}); a gamrs fit "
+                "needs at least one smooth or random-effect term. Use "
+                "sklearn.linear_model.LinearRegression for a pure linear "
+                "model, or add a smooth term (e.g. CrTerm) alongside the "
+                "parametric ones."
+            )
 
         # Capture per-parametric-term training means for subset-view
         # baseline substitution at predict time. When `gam[["x_smooth"]]`
@@ -713,6 +732,102 @@ class Gam:
             if not grew or all_capped:
                 break
 
+    def _guard_typed_terms(
+        self,
+        term_objs: list[Term],
+        X_arr: np.ndarray,
+        cols: Sequence[str],
+    ) -> list[Term]:
+        """Apply demotion + sample-size guards to a user-supplied
+        ``terms=`` list. Mirrors the predictors= path's safety net:
+
+        * ``CrTerm(k<3)`` → ParametricTerm with a UserWarning (CR splines
+          refuse fits below k=3; mgcv R bumps k to 3 silently). The typed
+          path used to error with "needs k ≥ 3" — better to demote with
+          a warning and let the fit succeed.
+        * ``n_unique(x) < 3`` on a CrTerm → ParametricTerm with a
+          UserWarning (the column doesn't have enough distinct values
+          to support any cubic spline).
+        * ``n_obs < k`` on a CrTerm → hard ``ValueError`` — the basis
+          has more DoF than data; the design is over-determined.
+        * ``n_obs < 2 * k`` → UserWarning (over-parameterised region).
+
+        TeTerm / TeMultiTerm / TiTerm / TpsTerm and ParametricTerm /
+        ReTerm pass through unchanged. (Tensor terms have richer k
+        semantics — guarding them requires per-margin logic which we'd
+        rather grow on demand.)
+        """
+        out: list[Term] = []
+        n_obs = int(X_arr.shape[0])
+        for t in term_objs:
+            # ParametricTerm: reject if the column is constant — collinear
+            # with the intercept, the design matrix will be singular.
+            if isinstance(t, ParametricTerm):
+                col_idx = int(t.col)
+                col_name = cols[col_idx] if col_idx < len(cols) else f"col_{col_idx}"
+                n_unique = int(np.unique(X_arr[:, col_idx]).size)
+                if n_unique < 2:
+                    raise ValueError(
+                        f"ParametricTerm({col_name!r}): column is constant "
+                        f"(n_unique={n_unique}); collinear with the intercept "
+                        "and would produce a singular design. Drop this term."
+                    )
+                out.append(t)
+                continue
+            if not isinstance(t, CrTerm):
+                out.append(t)
+                continue
+            col_idx = int(t.col)
+            col_name = cols[col_idx] if col_idx < len(cols) else f"col_{col_idx}"
+            n_unique = int(np.unique(X_arr[:, col_idx]).size)
+            if n_unique < 2:
+                raise ValueError(
+                    f"CrTerm({col_name!r}): column is constant "
+                    f"(n_unique={n_unique}); can't fit any term on it. "
+                    "Drop this column or check your data pipeline."
+                )
+            if n_unique < 3:
+                warnings.warn(
+                    f"CrTerm({col_name!r}): only {n_unique} unique "
+                    "value(s); auto-promoted to ParametricTerm. CR splines "
+                    "need ≥ 3 distinct values. Pass "
+                    f"ParametricTerm({col_name!r}) explicitly to silence.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                out.append(ParametricTerm(col=col_idx))
+                continue
+            if t.k < 3:
+                warnings.warn(
+                    f"CrTerm({col_name!r}, k={t.k}): CR splines need "
+                    "k ≥ 3 (mgcv silently bumps and gamrs's engine "
+                    "refuses); auto-promoted to ParametricTerm. Pass "
+                    f"ParametricTerm({col_name!r}) explicitly to silence "
+                    "or raise k to ≥ 3 to keep the smooth.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                out.append(ParametricTerm(col=col_idx))
+                continue
+            if n_obs < t.k:
+                raise ValueError(
+                    f"CrTerm({col_name!r}, k={t.k}): n_obs={n_obs} < "
+                    f"k={t.k}. A CR smooth needs at least k observations "
+                    "to support k basis functions. Lower k or drop this "
+                    "term."
+                )
+            if n_obs < 2 * t.k:
+                warnings.warn(
+                    f"CrTerm({col_name!r}, k={t.k}): n_obs={n_obs} is "
+                    "close to k; the basis has nearly as many DoF as "
+                    "data points and the smooth will over-fit unless "
+                    "λ is large. Consider lowering k.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            out.append(t)
+        return out
+
     def _build_terms_from_columns(
         self, X_arr: np.ndarray, cols: Sequence[str]
     ) -> list[Term]:
@@ -737,6 +852,7 @@ class Gam:
                 )
             requested_k = int(self.term_k_mapping.get(pname, self.k_default))
             n_unique = int(np.unique(X_arr[:, col_idx]).size)
+            n_obs = int(X_arr.shape[0])
             # Auto-promote to ParametricTerm when there aren't enough
             # distinct values to support a CR smooth (needs k≥3, which in
             # turn needs n_unique≥3). 0/1 indicators are the canonical
@@ -759,6 +875,32 @@ class Gam:
                 continue
             cap = max(n_unique - 1, self.min_k)
             k = max(self.min_k, min(requested_k, cap))
+            # Warn whenever k was bumped or capped — silent clamping
+            # makes "I set k=15 and got back edf=2.something" surprising.
+            # Matches mgcv_rust _fitter.py:761-783 warnings.
+            if k != requested_k:
+                source = (
+                    f"term_k_mapping[{pname!r}]={requested_k}"
+                    if pname in self.term_k_mapping
+                    else f"k_default={requested_k}"
+                )
+                if k > requested_k:
+                    warnings.warn(
+                        f"k for predictor {pname!r} bumped from "
+                        f"{requested_k} to {k} (min_k floor; {source}). "
+                        "Pass min_k=2 (or lower) to keep the requested "
+                        "value, though CR splines refuse fits at k<3.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
+                else:  # k < requested_k → capped by n_unique
+                    warnings.warn(
+                        f"k for predictor {pname!r} capped from "
+                        f"{requested_k} to {k} (n_unique({pname})-1; "
+                        f"{source}). The basis can't exceed n_unique - 1.",
+                        UserWarning,
+                        stacklevel=3,
+                    )
             # Belt-and-braces: if the user explicitly requested a tiny k
             # (or set min_k < 3), the CR engine would still refuse the
             # fit. Auto-promote rather than crash.
@@ -773,6 +915,28 @@ class Gam:
                 )
                 out.append(ParametricTerm(col=col_idx))
                 continue
+            # Sample-size sanity: refuse to fit a basis whose DoF (k)
+            # exceeds the number of observations — that's a guaranteed
+            # over-determined system. Warn when n_obs is uncomfortably
+            # close to k (heuristic: <2k) since the model will overfit
+            # without much smoothing-parameter pushback.
+            if n_obs < k:
+                raise ValueError(
+                    f"n_obs={n_obs} < k={k} for predictor {pname!r}: a "
+                    "CR smooth needs at least k observations to support "
+                    "k basis functions. Pass term_k_mapping="
+                    f"{{{pname!r}: {n_obs}}} (or smaller) — or drop "
+                    "this predictor — to fit on this dataset."
+                )
+            if n_obs < 2 * k:
+                warnings.warn(
+                    f"n_obs={n_obs} is close to k={k} for predictor "
+                    f"{pname!r}; the basis has nearly as many DoF as "
+                    "data points and the smooth will over-fit unless λ "
+                    "is large. Consider lowering k via term_k_mapping=.",
+                    UserWarning,
+                    stacklevel=3,
+                )
             out.append(CrTerm(col=col_idx, k=k))
         return out
 
