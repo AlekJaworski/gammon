@@ -1107,37 +1107,23 @@ where
                 let eta2_ik: Array1<f64> = self.x_design.dot(&b2_ik);
 
                 // ── d2[i,k]: second deriv of D ────────────────────────
-                let mut d2_ik = 0.0_f64;
-                // det2 · η1[i] · η1[k]  per-row sum  (det2 = dmu2_arr).
-                for r in 0..n {
-                    d2_ik += dmu2_arr[r] * eta1[[r, i]] * eta1[[r, k]];
-                }
-                // det · η2[i,k]  (det = dmu_arr).
-                for r in 0..n {
-                    d2_ik += dmu_arr[r] * eta2_ik[r];
-                }
-                // dth2 pair sum if both shape.
+                // Broadcast-expr form — see rhs_w build comment above for
+                // why this beats indexed for-loops.
+                let mut d2_ik = (&dmu2_arr * &eta1_i * &eta1_k).sum()
+                    + (&dmu_arr * &eta2_ik).sum();
                 if i >= n_terms && k >= n_terms {
                     let ii = i - n_terms;
                     let kk = k - n_terms;
                     let pair = shape_pair_index(ii.min(kk), ii.max(kk), n_shape);
-                    for r in 0..n {
-                        d2_ik += lv2.dth2[[r, pair]];
-                    }
+                    d2_ik += lv2.dth2.column(pair).sum();
                 }
-                // Mixed: Dmuth[i].dot(η1[k]) + Dmuth[k].dot(η1[i]) (only
-                // when the corresponding axis is shape).
                 if i >= n_terms {
                     let ii = i - n_terms;
-                    for r in 0..n {
-                        d2_ik += lv1.dmuth[[r, ii]] * eta1[[r, k]];
-                    }
+                    d2_ik += (&lv1.dmuth.column(ii) * &eta1_k).sum();
                 }
                 if k >= n_terms {
                     let kk = k - n_terms;
-                    for r in 0..n {
-                        d2_ik += lv1.dmuth[[r, kk]] * eta1[[r, i]];
-                    }
+                    d2_ik += (&lv1.dmuth.column(kk) * &eta1_i).sum();
                 }
 
                 // ── p2[i,k]: second deriv of P = β'(Σ λ S)β ──────────
@@ -1189,47 +1175,31 @@ where
 
                 // ── ldet2[i,k]: ½ ∂² log|A| via trace identity.
                 //   ldet2 = tr(A_inv · a2[i,k]) - tr((A_inv·a1[i])·(A_inv·a1[k]))
-                // Build w2[r] = ∂²(W's diag)/(∂θ_i ∂θ_k) at converged β plus
-                // the β-chain corrections.
-                let mut w2 = Array1::<f64>::zeros(n);
-                // det4 · η1[i] · η1[k]
-                for r in 0..n {
-                    w2[r] = lv2.dmu4[r] * eta1[[r, i]] * eta1[[r, k]];
-                }
-                // det3 · η2[i,k]
-                for r in 0..n {
-                    w2[r] += dmu3[r] * eta2_ik[r];
-                }
-                // det3_th[i] · η1[k]  (if i shape)
+                // Build w2[r] = ∂²(W's diag)/(∂θ_i ∂θ_k) — broadcast-expr form.
+                let mut w2: Array1<f64> = &lv2.dmu4 * &eta1_i * &eta1_k + dmu3 * &eta2_ik;
                 if i >= n_terms {
                     let ii = i - n_terms;
-                    for r in 0..n {
-                        w2[r] += lv2.dmu3_th[[r, ii]] * eta1[[r, k]];
-                    }
+                    w2 = w2 + &lv2.dmu3_th.column(ii) * &eta1_k;
                 }
-                // det3_th[k] · η1[i]  (if k shape)
                 if k >= n_terms {
                     let kk = k - n_terms;
-                    for r in 0..n {
-                        w2[r] += lv2.dmu3_th[[r, kk]] * eta1[[r, i]];
-                    }
+                    w2 = w2 + &lv2.dmu3_th.column(kk) * &eta1_i;
                 }
-                // dmu2_th2[pair]  (if both shape)
                 if i >= n_terms && k >= n_terms {
                     let ii = i - n_terms;
                     let kk = k - n_terms;
                     let pair = shape_pair_index(ii.min(kk), ii.max(kk), n_shape);
-                    for r in 0..n {
-                        w2[r] += lv2.dmu2_th2[[r, pair]];
-                    }
+                    w2 = w2 + &lv2.dmu2_th2.column(pair);
                 }
-                // a2[i,k] = X' · diag(0.5·w2) · X  (+ λ_i·S_i if diagonal ρ)
+                // a2[i,k] = X' · diag(0.5·w2) · X  (+ λ_i·S_i if diagonal ρ).
+                // wx2 = X scaled per-row by 0.5·w2: use ndarray's broadcast
+                // (each row gets multiplied by the scalar 0.5·w2[r]).
+                let half_w2 = &w2 * 0.5;
                 let mut wx2 = self.x_design.clone();
                 for r in 0..n {
-                    let wi = 0.5 * w2[r];
-                    for j in 0..p {
-                        wx2[[r, j]] *= wi;
-                    }
+                    let wi = half_w2[r];
+                    let mut row = wx2.row_mut(r);
+                    row.mapv_inplace(|x| x * wi);
                 }
                 let mut a2_ik = xt.dot(&wx2);
                 if i == k && i < n_terms {
