@@ -265,9 +265,34 @@ class Gam:
         # When both are passed, terms= wins and the others are ignored.
         self.terms: Optional[list[Term]] = list(terms) if terms is not None else None
 
-        # Forward-compat: stash unknown kwargs without erroring so a
-        # textual mgcv_rust → gamrs substitution doesn't blow up at
-        # construction time.
+        # API-compat knobs accepted from mgcv_rust source-compatible code
+        # but currently no-ops in gamrs. Warn once per Gam() construction so
+        # users aren't quietly mismatched against their mgcv expectations.
+        if self.discrete:
+            warnings.warn(
+                "discrete=True is accepted for mgcv_rust source compatibility "
+                "but is currently a no-op in gamrs — the dense PIRLS path is "
+                "already faster than mgcv_rust 0.23's discrete-binning path at "
+                "n ≤ 1M (see docs/perf.md). The fit will proceed without "
+                "discrete binning.",
+                UserWarning,
+                stacklevel=2,
+            )
+        nthreads_arg = kwargs.pop("nthreads", None)
+        if nthreads_arg is not None:
+            warnings.warn(
+                f"nthreads={nthreads_arg!r} is accepted for mgcv_rust source "
+                "compatibility but gamrs doesn't expose a thread count "
+                "directly — set OPENBLAS_NUM_THREADS / MKL_NUM_THREADS in the "
+                "environment instead. The fit will proceed using whatever the "
+                "BLAS thread pool is currently configured for.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # Forward-compat: stash any remaining unknown kwargs without
+        # erroring so a textual mgcv_rust → gamrs substitution doesn't
+        # blow up at construction time.
         if kwargs:
             self._unknown_kwargs = kwargs
 
@@ -363,9 +388,47 @@ class Gam:
 
         if self.predictors is None:
             self.predictors = cols
-        self._effective_predictors = list(cols)
         self._original_predictors = list(cols)
         self.dropped_predictors_ = {}
+
+        # Auto-drop columns with n_unique == 1 — they contribute zero signal
+        # and would otherwise blow up the CR-basis k≥3 check. Matches
+        # mgcv_rust 0.23.0's silent-drop behaviour (which in turn matches
+        # mgcv R's QR rank detection at fit time).
+        #
+        # Only applies on the predictors= / predictor_basis_map= path; when
+        # the user passes `terms=` they're being fully explicit about which
+        # columns map to which smooths, and silently dropping one of their
+        # terms would be more confusing than the original "k≥3" error.
+        if self.terms is None:
+            keep_mask = np.array(
+                [int(np.unique(X_arr[:, i]).size) > 1 for i in range(X_arr.shape[1])],
+                dtype=bool,
+            )
+            if not keep_mask.all():
+                for i, keep in enumerate(keep_mask):
+                    if not keep:
+                        name = cols[i]
+                        const_val = float(X_arr[0, i])
+                        self.dropped_predictors_[name] = const_val
+                        warnings.warn(
+                            f"predictor {name!r} is constant (n_unique=1, "
+                            f"value={const_val}); dropping from the design — "
+                            "adds no signal and would otherwise fail the "
+                            "spline k≥3 check. Available on "
+                            "`dropped_predictors_`.",
+                            UserWarning,
+                            stacklevel=3,
+                        )
+                X_arr = X_arr[:, keep_mask]
+                cols = [c for c, k in zip(cols, keep_mask) if k]
+                if X_arr.shape[1] == 0:
+                    raise ValueError(
+                        "all predictor columns are constant — nothing to fit. "
+                        f"Dropped: {list(self.dropped_predictors_)!r}"
+                    )
+
+        self._effective_predictors = list(cols)
         self.X = X_arr
         self.y = y_arr
 

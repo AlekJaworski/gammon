@@ -14,6 +14,8 @@ file is the standing guard the checkpoint called for.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -207,6 +209,86 @@ def test_high_level_gam_smoke(toy_gaussian):
     assert pred.shape == y.shape
     assert np.all(np.isfinite(pred))
     assert g.edf_total_ > 1.0
+
+
+def test_discrete_true_emits_warning(rng):
+    """discrete=True is a no-op for API compat; warns to keep users from
+    silently mismatching their mgcv expectations."""
+    x = rng.uniform(0, 1, 100)
+    y = x + rng.normal(0, 0.1, 100)
+    with pytest.warns(UserWarning, match="discrete=True is accepted"):
+        gamrs.Gam(family="gaussian", discrete=True).fit(x, y)
+
+
+def test_nthreads_emits_warning(rng):
+    """nthreads is accepted for source compat but routes through the BLAS
+    env vars in gamrs; warn so users aren't surprised it's a no-op."""
+    x = rng.uniform(0, 1, 100)
+    y = x + rng.normal(0, 0.1, 100)
+    with pytest.warns(UserWarning, match="nthreads=4"):
+        gamrs.Gam(family="gaussian", nthreads=4).fit(x, y)
+
+
+def test_constant_column_auto_dropped(rng):
+    """A constant predictor column (n_unique=1) is silently dropped on the
+    predictors= path, exposed on dropped_predictors_, and a UserWarning is
+    emitted. Predicts from a DataFrame containing the dropped column still
+    work (it gets subselected away). Matches mgcv_rust 0.23.0 + mgcv R."""
+    pd = pytest.importorskip("pandas")
+    n = 200
+    df = pd.DataFrame({
+        "x0": rng.uniform(0, 10, n),
+        "stories": np.full(n, 1.0),
+        "x2": rng.uniform(-5, 5, n),
+    })
+    df["y"] = np.sin(df.x0) + 0.3 * df.x2 + rng.normal(0, 0.3, n)
+
+    with pytest.warns(UserWarning, match="'stories' is constant"):
+        g = gamrs.Gam(family="gaussian").fit(df[["x0", "stories", "x2"]], df.y)
+
+    assert g.dropped_predictors_ == {"stories": 1.0}
+    assert g._effective_predictors == ["x0", "x2"]
+    # Predict from the original (3-col) DataFrame — the constant col gets subselected
+    mu = g.predict(df[["x0", "stories", "x2"]])
+    assert mu.shape == (n,)
+
+
+def test_typed_terms_do_not_auto_drop(rng):
+    """When the user is explicit via `terms=`, do NOT silently drop a
+    constant column referenced by one of their terms — that would be more
+    confusing than the natural error. (mgcv_rust auto-drop only fires on
+    the predictors= mapping path.)"""
+    pd = pytest.importorskip("pandas")
+    n = 200
+    df = pd.DataFrame({
+        "x0": rng.uniform(0, 10, n),
+        "stories": np.full(n, 1.0),
+    })
+    df["y"] = np.sin(df.x0) + rng.normal(0, 0.3, n)
+    with pytest.raises(Exception):  # native raises a basis-construction error
+        gamrs.Gam(
+            terms=[gamrs.CrTerm("x0", k=10), gamrs.CrTerm("stories", k=10)]
+        ).fit(df[["x0", "stories"]], df.y)
+
+
+def test_all_constant_predictors_raises(rng):
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame({"a": np.ones(100), "b": np.full(100, 2.0)})
+    df["y"] = np.zeros(100)
+    with pytest.raises(ValueError, match="all predictor columns are constant"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            gamrs.Gam(family="gaussian").fit(df[["a", "b"]], df.y)
+
+
+def test_default_gam_emits_no_warning(rng):
+    """Sanity: a default Gam() does NOT warn — the warnings are only for
+    the API-compat knobs that don't take effect."""
+    x = rng.uniform(0, 1, 100)
+    y = x + rng.normal(0, 0.1, 100)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        gamrs.Gam(family="gaussian").fit(x, y)
 
 
 def test_term_string_cols_resolve_against_dataframe(rng):
