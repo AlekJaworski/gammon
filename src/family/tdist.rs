@@ -131,6 +131,52 @@ impl Loss for TDist {
         -1
     }
 
+    /// `Σᵢ wt_i · ∂ls_i/∂θ_k` for the two scat shape axes
+    /// `θ = [log σ², log(ν − 2)]`. The per-obs ls is y-independent for scat
+    /// (location-scale) and equal to
+    /// `log Γ((ν+1)/2) − log Γ(ν/2) − 0.5·log(π·ν·σ²)`; its θ-derivatives
+    /// are therefore constants across rows, so the row sum is just
+    /// `(Σ wt) · ∂ls/∂θ_k`.
+    ///
+    /// - **log σ²**: `∂ls/∂(log σ²) = -0.5` (only the `-0.5·log σ²` part
+    ///   depends on σ²).
+    /// - **log(ν − 2)**: with `dν/d(log(ν−2)) = ν − 2`,
+    ///   `∂ls/∂(log(ν−2)) = (ν−2)/2·[ψ((ν+1)/2) − ψ(ν/2)] − (ν−2)/(2ν)`
+    ///   — matches mgcv_rust's `ls1[0]` block in
+    ///   `reml/mod.rs::tdist_gdi2_native` line 1425
+    ///   (their native order has `log(ν−2)` at index 0 and `log σ` at 1;
+    ///   gamrs reorders to `[log σ², log(ν−2)]`).
+    ///
+    /// Without this override the trait default ships `vec![0.0; 2]`, which
+    /// the IFT analytic shape-gradient consumer subtracts at
+    /// `score/shape_aware/gradient.rs::analytic_shape_grad_via_ift` — the
+    /// resulting ∂score/∂(shape) at the centre is off by a constant per
+    /// axis. Before v0.10.x, `eval_grad_with_fit` fell back to FD-on-value
+    /// for TDist (which sees ls implicitly through `score_value`), so the
+    /// missing ls-derivatives were masked; routing TDist's centre gradient
+    /// through the IFT path exposes it.
+    fn sum_saturated_log_lik_dtheta(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        _scale: f64,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Vec<f64> {
+        use crate::special::digamma;
+        let nu = self.nu;
+        let nu_minus_2 = nu - 2.0;
+        let half_nu_p1 = (nu + 1.0) / 2.0;
+        let half_nu = nu / 2.0;
+        let nu2nu = nu_minus_2 / nu;
+        let sum_w: f64 = match prior_w {
+            Some(w) => w.iter().sum(),
+            None => y.len() as f64,
+        };
+        let dls_dlog_sigma2 = -0.5;
+        let dls_dlog_nu_m2 =
+            0.5 * nu_minus_2 * (digamma(half_nu_p1) - digamma(half_nu)) - 0.5 * nu2nu;
+        vec![sum_w * dls_dlog_sigma2, sum_w * dls_dlog_nu_m2]
+    }
+
     /// Provide Level-1 derivatives (`Dmu3, Dth, Dmuth, Dmu2th`) to the
     /// shape-aware score's analytic θ-gradient assembly. Mirrors ocat's
     /// `OcatLoss::level1_shape_derivatives` (commits `85946a1` + `c38083c`)

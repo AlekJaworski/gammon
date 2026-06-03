@@ -118,14 +118,18 @@ where
             // Tweedie path: 2·M PIRLS + 0 shape solves.
             self.hess_via_fd_frozen_beta(theta, &fit, &ctx)?
         } else if has_ift_shape_grad {
-            // NegBin / scat path: analytic IFT for the M×M ρ block
+            // NegBin / scat / Ocat path: analytic IFT for the M×M ρ block
             // (0 PIRLS solves — port of mgcv_rust
             // `reml_hessian_mgcv_exact_ift` at `src/reml/mod.rs:2511-2813`)
-            // plus FD-on-grad along shape axes only (2·n_shape PIRLS solves).
-            // For NegBin (n_shape=1) the total drops from `2·d` PIRLS solves
-            // to `2`. Matches mgcv_rust's M-dim ρ-Newton + 1-D shape-Newton
-            // PIRLS economy (`src/smooth.rs:2383` + `3562-3637`).
-            self.hess_via_ift_analytic(theta, &fit, &family, n_shape)?
+            // plus **frozen-β IFT** FD along the shape axes (0 PIRLS solves
+            // — the IFT gradient at θ ± h reuses the converged β̂/μ̂/η̂
+            // and only re-evaluates the per-row Level-1 derivatives with
+            // the perturbed family). Previously this column re-ran PIRLS
+            // 2·n_shape times; for TDist (n_shape=2) that was the
+            // dominant cost in the v0.10 scat bench. Matches mgcv_rust's
+            // `tdist_gdi2_native` cost profile (one factorisation, no
+            // extra inner solves) on the shape axis.
+            self.hess_via_ift_analytic(theta, &fit, &family, n_shape, &ctx)?
         } else {
             // Safety-net path: direct FD on REML value.
             self.hess_via_fd_on_value(theta)?
@@ -556,6 +560,7 @@ where
         fit: &GaussianInnerFit<S>,
         family: &crate::family::Family<L, K, V>,
         n_shape: usize,
+        frozen_ctx: &FrozenBetaCtx,
     ) -> Result<Array2<f64>> {
         let d = theta.len();
         let n_terms = self.s_list.len();
@@ -682,8 +687,17 @@ where
         }
 
         // -----------------------------------------------------------------
-        // 2) FD-on-grad for shape rows/cols (n_shape probes, 2·n_shape PIRLS).
+        // 2) Frozen-β IFT FD for shape rows/cols (n_shape probes, 0 PIRLS).
         // -----------------------------------------------------------------
+        // Previous implementation ran `compute_value_grad(θ ± h)` per shape
+        // axis, which re-converges PIRLS at the perturbed shape (2·n_shape
+        // PIRLS / outer iter). `eval_grad_frozen_beta` returns the IFT
+        // analytic gradient at frozen β̂ / μ̂ / η̂ with perturbed family,
+        // so the FD now costs only level-1 evaluations + one A_inv·X'·v
+        // solve per probe — zero PIRLS. Envelope-theorem analysis: the
+        // gradient error from frozen β is O(h), which becomes O(h²) under
+        // central FD — the same bound the IFT shape probes against
+        // converged β̂ already achieve.
         if n_shape > 0 {
             let eps = 1.0e-4;
             for k in 0..n_shape {
@@ -691,8 +705,8 @@ where
                 let mut t_minus = theta.clone();
                 t_plus[n_terms + k] += eps;
                 t_minus[n_terms + k] -= eps;
-                let (_, g_plus) = self.compute_value_grad(&t_plus)?;
-                let (_, g_minus) = self.compute_value_grad(&t_minus)?;
+                let g_plus = self.eval_grad_frozen_beta(&t_plus, fit, frozen_ctx)?;
+                let g_minus = self.eval_grad_frozen_beta(&t_minus, fit, frozen_ctx)?;
                 let col = n_terms + k;
                 for j in 0..d {
                     h[[j, col]] = (g_plus[j] - g_minus[j]) / (2.0 * eps);

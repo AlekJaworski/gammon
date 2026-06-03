@@ -847,6 +847,17 @@ where
         if n_shape > 0 {
             let n_minus_mp = (fit.n as f64) - (self.mp as f64);
             let dp = fit.deviance + bsb_total;
+            // Mirror `compute_value_grad`'s shape-gradient dispatch: prefer
+            // the closed-form `analytic_shape_score_gradient`, then the
+            // Level-1 IFT path (`analytic_shape_grad_via_ift`), then fall
+            // back to FD on the score value. Before v0.10 this dropped
+            // straight from analytic to FD-on-value — which forced TDist /
+            // NegBin / Ocat (Level-1 families with no closed-form
+            // envelope-gradient) to re-converge PIRLS `2·n_shape` times
+            // for the centre gradient. The IFT path needs only the already
+            // converged `fit`, so plumbing it here saves those probes
+            // verbatim. (For TDist n_shape=2 that's 4 PIRLS / outer iter —
+            // the dominant cost in the v0.10 scat bench row.)
             if let Some(analytic) = family.loss.analytic_shape_score_gradient(
                 self.y.view(),
                 fit.mu.view(),
@@ -858,8 +869,22 @@ where
                 for k in 0..n_shape {
                     g[n_terms + k] = analytic[k];
                 }
+            } else if let Some(level1) = family.loss.level1_shape_derivatives(
+                self.y.view(),
+                fit.eta.view(),
+                self.prior_weights.as_ref().map(|w| w.view()),
+            ) {
+                let shape_grad =
+                    self.analytic_shape_grad_via_ift(fit, family, &level1, n_terms, &rho_slice)?;
+                debug_assert_eq!(shape_grad.len(), n_shape);
+                for k in 0..n_shape {
+                    g[n_terms + k] = shape_grad[k];
+                }
             } else {
-                // FD fallback (TDist, NegBin, ocat): runs PIRLS at θ ± h.
+                // Last-resort FD fallback: runs PIRLS at θ ± h. None of
+                // gamrs's shipped families hit this — every shape-aware
+                // family (Tweedie, NegBin, TDist, Ocat) supplies either
+                // `analytic_shape_score_gradient` or `level1_shape_derivatives`.
                 let h = 1.0e-5;
                 for k in 0..n_shape {
                     let mut t_plus = theta.clone();
@@ -887,15 +912,20 @@ where
 
     /// Evaluate the analytic envelope gradient at `theta` using a FROZEN
     /// inner fit (β̂, μ̂, tr(H⁻¹S), bsb, deviance from θ_center). The
-    /// family is cloned and `set_shape_params(θ[1..])` is called so
-    /// `analytic_shape_score_gradient` sees the perturbed shape state.
+    /// family is cloned and `set_shape_params(θ[1..])` is called so the
+    /// shape-gradient sees the perturbed state.
     ///
-    /// **Pre-condition**: `family_base.loss.analytic_shape_score_gradient(
-    /// ...) == Some(...)`. Callers (only `hess_via_fd_frozen_beta`)
-    /// gate on this — otherwise the per-probe gradient at frozen β̂ is
-    /// structurally inconsistent with the FD-on-value gradient used at
-    /// θ_center, and Newton stalls. Confirmed in the canonical_api
-    /// tests during the v0.x port (2026-05-25).
+    /// Shape-gradient dispatch mirrors `compute_value_grad` /
+    /// `eval_grad_with_fit`: closed-form `analytic_shape_score_gradient`
+    /// → Level-1 `analytic_shape_grad_via_ift` → panic. The IFT branch
+    /// recomputes the per-row Level-1 derivatives at frozen `eta` but with
+    /// the perturbed family so the resulting gradient picks up the shape
+    /// perturbation — exactly what the Hessian FD probes need from a
+    /// frozen-β evaluator. Without the IFT branch, TDist / NegBin / Ocat
+    /// (which only provide Level-1, not closed-form, shape derivatives)
+    /// would have no way to drive `hess_via_fd_frozen_beta`'s shape FD
+    /// probes and the dispatch had to fall back to `hess_via_ift_analytic`
+    /// (2·n_shape PIRLS per outer iter).
     pub(super) fn eval_grad_frozen_beta(
         &self,
         theta: &Array1<f64>,
@@ -943,23 +973,43 @@ where
         }
         if n_shape > 0 {
             let dp = ctx.deviance + bsb_total;
-            let analytic = family
-                .loss
-                .analytic_shape_score_gradient(
-                    self.y.view(),
-                    fit.mu.view(),
-                    dp,
-                    ctx.n_minus_mp,
-                    phi,
-                )
-                .expect(
+            if let Some(analytic) = family.loss.analytic_shape_score_gradient(
+                self.y.view(),
+                fit.mu.view(),
+                dp,
+                ctx.n_minus_mp,
+                phi,
+            ) {
+                debug_assert_eq!(analytic.len(), n_shape);
+                for k in 0..n_shape {
+                    g[n_terms + k] = analytic[k];
+                }
+            } else if let Some(level1) = family.loss.level1_shape_derivatives(
+                self.y.view(),
+                fit.eta.view(),
+                self.prior_weights.as_ref().map(|w| w.view()),
+            ) {
+                // IFT analytic shape gradient at frozen β̂ / μ̂ / η̂ but
+                // PERTURBED family. The Level-1 derivs above already
+                // reflect the perturbed (ν, σ²) / θ_NB / etc; the IFT
+                // pieces (A⁻¹, h_diag) are recomputed inside via the
+                // frozen `fit`. This is the structural twin of
+                // `compute_value_grad`'s IFT path but without re-running
+                // PIRLS at θ ± h.
+                let shape_grad = self.analytic_shape_grad_via_ift(
+                    fit, &family, &level1, n_terms, &rho_slice,
+                )?;
+                debug_assert_eq!(shape_grad.len(), n_shape);
+                for k in 0..n_shape {
+                    g[n_terms + k] = shape_grad[k];
+                }
+            } else {
+                panic!(
                     "eval_grad_frozen_beta called for a family without \
-                     analytic_shape_score_gradient — gate this with \
-                     has_analytic_shape_grad in the caller.",
+                     analytic_shape_score_gradient or level1_shape_derivatives \
+                     — gate this with has_analytic_shape_grad / has_ift_shape_grad \
+                     in the caller."
                 );
-            debug_assert_eq!(analytic.len(), n_shape);
-            for k in 0..n_shape {
-                g[n_terms + k] = analytic[k];
             }
         }
         Ok(g)
