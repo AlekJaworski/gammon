@@ -287,6 +287,7 @@ impl PyFittedGam {
             profile: FixedAtOneProfile,
             _solver: PhantomData,
             accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
             stats: crate::stats::FitStats::new(),
         };
         let family_ocat = crate::family::ocat_identity(

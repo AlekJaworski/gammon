@@ -143,6 +143,7 @@ fn tweedie_analytic_shape_grad_matches_fd() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -224,6 +225,7 @@ fn tweedie_analytic_hess_matches_fd_on_grad() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -333,6 +335,7 @@ fn debug_tweedie_real_data_grad_walk() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -472,6 +475,7 @@ fn negbin_multismooth_analytic_grad_matches_fd() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -591,6 +595,7 @@ fn nb_hess_microbench() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
     let theta = Array1::from_vec(vec![1.0, 1.0, 1.0]);
@@ -663,6 +668,7 @@ fn nb_hess_microbench() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
     let theta1 = Array1::from_vec(vec![1.0, 1.0]);
@@ -736,6 +742,7 @@ fn negbin_multismooth_analytic_hess_matches_fd_on_grad() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -847,6 +854,7 @@ fn tdist_analytic_hess_matches_fd_on_grad() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 

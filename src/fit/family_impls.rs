@@ -580,6 +580,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             profile: FixedAtOneProfile,
             _solver: PhantomData,
             accepted_state: std::cell::RefCell::new(None),
+            last_eta: std::cell::RefCell::new(None),
             stats: crate::stats::FitStats::new(),
         };
 

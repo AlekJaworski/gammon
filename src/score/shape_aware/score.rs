@@ -116,6 +116,14 @@ where
     /// fit_inner_at, and compute_value_no_refresh. Read after fit via
     /// `score.stats().unwrap().snapshot()`.
     pub stats: crate::stats::FitStats,
+    /// Last converged `η̂` from a prior PIRLS solve, kept across outer
+    /// Newton iters as a warm-start seed for the next `fit_inner_at`.
+    /// Cold-starting every call from η=link(initial_μ) costs significant
+    /// inner-iter count on nonlinear PIRLS paths (scat / TDist's observed-W
+    /// inner loop: 10 iters/call cold vs 2-3 warm). mgcv R's `gam.fit4`
+    /// keeps `coefold`/`etaold` across outer iters and reuses them as
+    /// the inner-PIRLS init.
+    pub last_eta: RefCell<Option<Array1<f64>>>,
 }
 
 /// PIRLS-driven shape-aware score — what TDist/scat, NegBin use.
@@ -231,16 +239,33 @@ where
         if n_shape > 0 {
             family.set_shape_params(&shape_slice);
         }
+        // Warm-start PIRLS from the previous outer iter's converged η̂.
+        // Cold-starting from β=0 (PIRLS default) costs significant inner
+        // iters on nonlinear paths like TDist's observed-W (≈ 10 iters
+        // cold vs 2-3 warm). The eta_init opts field is the supported
+        // entry point — pirls.rs:600 unconditionally honours it. Only
+        // override when shape dims match; resizing X or s_list mid-fit
+        // would invalidate the stashed η.
+        let mut opts = self.pirls_opts.clone();
+        if opts.eta_init.is_none() {
+            if let Some(eta_warm) = self.last_eta.borrow().as_ref() {
+                if eta_warm.len() == self.y.len() {
+                    opts.eta_init = Some(eta_warm.clone());
+                }
+            }
+        }
         let inner = self.inner_builder.build(
             family.clone(),
             self.x_design.clone(),
             self.y.clone(),
             self.prior_weights.clone(),
             self.s_list.clone(),
-            self.pirls_opts.clone(),
+            opts,
         );
         let fit = inner.fit(&rho_slice)?;
         self.stats.record_pirls_call(fit.iterations);
+        // Stash the converged η̂ for the next outer iter's warm-start.
+        *self.last_eta.borrow_mut() = Some(fit.eta.clone());
         Ok((fit, family))
     }
 
