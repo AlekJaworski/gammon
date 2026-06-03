@@ -811,6 +811,22 @@ where
         fit: &GaussianInnerFit<S>,
         family: &Family<L, K, V>,
     ) -> Result<(Array1<f64>, FrozenBetaCtx)> {
+        self.eval_grad_with_fit_cached(theta, fit, family, None)
+    }
+
+    /// Cached variant of [`Self::eval_grad_with_fit`] — accepts a
+    /// pre-computed `Level1ShapeDerivs` to skip the internal
+    /// `family.loss.level1_shape_derivatives(...)` call. Used by
+    /// `compute_value_grad_hess_analytical` to share Level-1 with the
+    /// Hessian dispatch (both consumers need it at the same θ; cost was
+    /// being paid twice).
+    pub(super) fn eval_grad_with_fit_cached(
+        &self,
+        theta: &Array1<f64>,
+        fit: &GaussianInnerFit<S>,
+        family: &Family<L, K, V>,
+        level1_cached: Option<&Level1ShapeDerivs>,
+    ) -> Result<(Array1<f64>, FrozenBetaCtx)> {
         let n_terms = self.s_list.len();
         let n_shape = family.n_shape_params();
         let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
@@ -869,31 +885,49 @@ where
                 for k in 0..n_shape {
                     g[n_terms + k] = analytic[k];
                 }
-            } else if let Some(level1) = family.loss.level1_shape_derivatives(
-                self.y.view(),
-                fit.eta.view(),
-                self.prior_weights.as_ref().map(|w| w.view()),
-            ) {
-                let shape_grad =
-                    self.analytic_shape_grad_via_ift(fit, family, &level1, n_terms, &rho_slice)?;
-                debug_assert_eq!(shape_grad.len(), n_shape);
-                for k in 0..n_shape {
-                    g[n_terms + k] = shape_grad[k];
-                }
             } else {
-                // Last-resort FD fallback: runs PIRLS at θ ± h. None of
-                // gamrs's shipped families hit this — every shape-aware
-                // family (Tweedie, NegBin, TDist, Ocat) supplies either
-                // `analytic_shape_score_gradient` or `level1_shape_derivatives`.
-                let h = 1.0e-5;
-                for k in 0..n_shape {
-                    let mut t_plus = theta.clone();
-                    let mut t_minus = theta.clone();
-                    t_plus[n_terms + k] += h;
-                    t_minus[n_terms + k] -= h;
-                    let v_plus = self.compute_value(&t_plus)?;
-                    let v_minus = self.compute_value(&t_minus)?;
-                    g[n_terms + k] = (v_plus - v_minus) / (2.0 * h);
+                // Try the cached Level-1 (if caller supplied); else
+                // compute on demand. The cached path eliminates one
+                // per-row Level-1 pass (~50-100 μs on scat 1d n=2000)
+                // when the caller already needs Level-1 elsewhere
+                // (e.g. for the Hessian assembly).
+                let level1_owned;
+                let level1_ref: Option<&Level1ShapeDerivs> = match level1_cached {
+                    Some(lv) => Some(lv),
+                    None => match family.loss.level1_shape_derivatives(
+                        self.y.view(),
+                        fit.eta.view(),
+                        self.prior_weights.as_ref().map(|w| w.view()),
+                    ) {
+                        Some(lv) => {
+                            level1_owned = lv;
+                            Some(&level1_owned)
+                        }
+                        None => None,
+                    },
+                };
+                if let Some(level1) = level1_ref {
+                    let shape_grad = self
+                        .analytic_shape_grad_via_ift(fit, family, level1, n_terms, &rho_slice)?;
+                    debug_assert_eq!(shape_grad.len(), n_shape);
+                    for k in 0..n_shape {
+                        g[n_terms + k] = shape_grad[k];
+                    }
+                } else {
+                    // Last-resort FD fallback: runs PIRLS at θ ± h. None
+                    // of gamrs's shipped families hit this — every
+                    // shape-aware family supplies either
+                    // `analytic_shape_score_gradient` or `level1_shape_derivatives`.
+                    let h = 1.0e-5;
+                    for k in 0..n_shape {
+                        let mut t_plus = theta.clone();
+                        let mut t_minus = theta.clone();
+                        t_plus[n_terms + k] += h;
+                        t_minus[n_terms + k] -= h;
+                        let v_plus = self.compute_value(&t_plus)?;
+                        let v_minus = self.compute_value(&t_minus)?;
+                        g[n_terms + k] = (v_plus - v_minus) / (2.0 * h);
+                    }
                 }
             }
         }

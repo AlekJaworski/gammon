@@ -83,12 +83,29 @@ where
             let _t = crate::profile::scoped("score_value");
             self.score_value(&fit, &family, &rho_slice)
         };
-        let (g_center, ctx) = {
-            let _t = crate::profile::scoped("eval_grad_with_fit");
-            self.eval_grad_with_fit(theta, &fit, &family)?
+
+        // **Tier 1a cache**: compute Level-1 derivatives ONCE here and
+        // share between the gradient assembly (`eval_grad_with_fit_cached`)
+        // and the Hessian dispatch (both consumers need it at the same
+        // θ; this eliminates the second `family.loss.level1_shape_derivatives`
+        // call that was costing ~50-100 μs per outer iter on scat).
+        let n_shape = family.n_shape_params();
+        let level1_cached = if n_shape > 0 {
+            let _t = crate::profile::scoped("level1_compute_once");
+            family.loss.level1_shape_derivatives(
+                self.y.view(),
+                fit.eta.view(),
+                self.prior_weights.as_ref().map(|w| w.view()),
+            )
+        } else {
+            None
         };
 
-        let n_shape = family.n_shape_params();
+        let (g_center, ctx) = {
+            let _t = crate::profile::scoped("eval_grad_with_fit");
+            self.eval_grad_with_fit_cached(theta, &fit, &family, level1_cached.as_ref())?
+        };
+
         let has_analytic_shape_grad = n_shape == 0
             || family
                 .loss
@@ -100,21 +117,9 @@ where
                     ctx.phi_center,
                 )
                 .is_some();
-        // The IFT analytic shape-gradient path (gradient.rs:278) fires
-        // whenever the family supplies `level1_shape_derivatives` — even
-        // without the simpler closed-form `analytic_shape_score_gradient`.
-        // Check it on a tiny probe (just the per-row Level-1 derivs at the
-        // converged η̂) so the dispatch below can route NegBin / scat / Ocat
-        // off the slow `hess_via_fd_on_value` path.
-        let has_ift_shape_grad = n_shape == 0
-            || family
-                .loss
-                .level1_shape_derivatives(
-                    self.y.view(),
-                    fit.eta.view(),
-                    self.prior_weights.as_ref().map(|w| w.view()),
-                )
-                .is_some();
+        // The IFT analytic shape-gradient path fires when the family
+        // supplies `level1_shape_derivatives` — already cached above.
+        let has_ift_shape_grad = n_shape == 0 || level1_cached.is_some();
 
         // Per-family opt-in: families with `prefers_full_fd_hessian = true`
         // skip the analytic / partial-FD paths and use full FD on the REML
@@ -146,19 +151,17 @@ where
             //        profile as (i) but the shape rows come from central
             //        FD of the analytic IFT gradient at frozen β̂
             //        (introduced in v0.11).
-            let level1 = family.loss.level1_shape_derivatives(
-                self.y.view(),
-                fit.eta.view(),
-                self.prior_weights.as_ref().map(|w| w.view()),
-            );
+            // Level-1 is the cached one from above (Tier 1a). Level-2
+            // is family-only and computed fresh here — it's only needed
+            // for the Hessian path and isn't shared.
             let level2 = family.loss.level2_shape_derivatives(
                 self.y.view(),
                 fit.eta.view(),
                 self.prior_weights.as_ref().map(|w| w.view()),
             );
-            match (level1, level2) {
+            match (level1_cached.as_ref(), level2) {
                 (Some(lv1), Some(lv2)) => {
-                    self.hess_via_ift_level2(theta, &fit, &family, &lv1, &lv2, n_shape)?
+                    self.hess_via_ift_level2(theta, &fit, &family, lv1, &lv2, n_shape)?
                 }
                 _ => self.hess_via_ift_analytic(theta, &fit, &family, n_shape, &ctx)?,
             }
