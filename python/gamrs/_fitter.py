@@ -632,9 +632,44 @@ class Gam:
                     UserWarning,
                     stacklevel=3,
                 )
-            k = int(self.term_k_mapping.get(pname, self.k_default))
+            requested_k = int(self.term_k_mapping.get(pname, self.k_default))
             n_unique = int(np.unique(X_arr[:, col_idx]).size)
-            k = max(2, min(k, max(2, n_unique - 1)))
+            # Auto-promote to ParametricTerm when there aren't enough
+            # distinct values to support a CR smooth (needs k≥3, which in
+            # turn needs n_unique≥3). 0/1 indicators are the canonical
+            # case; mgcv R bumps k<3 to 3 silently and would then refuse
+            # the fit, mgcv_rust auto-downgrades to parametric to keep the
+            # fit moving. We match the mgcv_rust behaviour: a clear warning
+            # so the user knows what happened, but the fit succeeds.
+            if n_unique < 3:
+                warnings.warn(
+                    f"predictor {pname!r} has only {n_unique} unique "
+                    "value(s); auto-promoted to a parametric (linear, "
+                    "unpenalised) term — a CR smooth needs ≥ 3 distinct "
+                    "values (mgcv smooth.r:1460 'reduce k'). Set "
+                    f"predictor_basis_map[{pname!r}]='parametric' to "
+                    "silence this warning.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                out.append(ParametricTerm(col=col_idx))
+                continue
+            cap = max(n_unique - 1, self.min_k)
+            k = max(self.min_k, min(requested_k, cap))
+            # Belt-and-braces: if the user explicitly requested a tiny k
+            # (or set min_k < 3), the CR engine would still refuse the
+            # fit. Auto-promote rather than crash.
+            if k < 3:
+                warnings.warn(
+                    f"k for predictor {pname!r} resolved to {k} < 3 "
+                    f"(min_k={self.min_k}, requested={requested_k}, "
+                    f"n_unique={n_unique}); auto-promoted to parametric. "
+                    "Raise min_k to 3 to keep the smooth.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                out.append(ParametricTerm(col=col_idx))
+                continue
             out.append(CrTerm(col=col_idx, k=k))
         return out
 

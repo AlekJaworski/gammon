@@ -339,6 +339,49 @@ def test_parametric_via_predictor_basis_map_matches_typed_term(rng):
     np.testing.assert_allclose(g_typed.lambda_, g_map.lambda_, rtol=1e-10)
 
 
+def test_n_unique_2_auto_promotes_to_parametric(rng):
+    """A 0/1 indicator column on the implicit predictors= path is
+    auto-promoted to ParametricTerm with a UserWarning (matches
+    mgcv_rust + mgcv R smooth.r:1460 'reduce k' semantics)."""
+    pd = pytest.importorskip("pandas")
+    n = 600
+    df = pd.DataFrame({
+        "x": rng.uniform(0, 10, n),
+        "is_promo": rng.integers(0, 2, n).astype(float),
+    })
+    df["y"] = np.sin(df.x) + 1.7 * df.is_promo + rng.normal(0, 0.3, n)
+    X = df[["x", "is_promo"]]
+    with pytest.warns(UserWarning, match="'is_promo'.*auto-promoted"):
+        g = gamrs.Gam(family="gaussian").fit(X, df.y)
+    # Only the smooth has a smoothing parameter
+    assert len(g.lambda_) == 1
+    assert abs(g.coef_[-1] - 1.7) < 0.05
+
+
+def test_auto_k_works_with_parametric_terms(rng):
+    """auto_k=True grows k on smooth terms but skips ParametricTerm (k=0
+    placeholder; never grown). The parametric coefficient still recovers."""
+    pd = pytest.importorskip("pandas")
+    n = 1200
+    df = pd.DataFrame({
+        "x": rng.uniform(0, 10, n),
+        "is_promo": rng.integers(0, 2, n).astype(float),
+    })
+    df["y"] = (
+        np.sin(df.x * 1.5) + np.cos(df.x * 2.5)
+        + 1.7 * df.is_promo + rng.normal(0, 0.2, n)
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        g = gamrs.Gam(
+            family="gaussian", auto_k=True, k_default=4, max_k_auto=20
+        ).fit(df[["x", "is_promo"]], df.y)
+    # x's k grew from 4 → something larger; is_promo stayed parametric (k=0)
+    assert g._k_used[0] > 4
+    assert g._k_used[1] == 0
+    assert abs(g.coef_[-1] - 1.7) < 0.05
+
+
 def test_parametric_linear_alias(rng):
     """`predictor_basis_map={"x": "linear"}` is the mgcv-user-friendly
     alias for `"parametric"` — same fit either way."""
