@@ -46,7 +46,11 @@ default = ["persistence", "blas", "blas-system"]
 python = ["dep:pyo3", "dep:numpy", "persistence"]
 persistence = ["dep:serde", "dep:serde_json", "dep:bincode", "ndarray/serde"]
 # BLAS features — pick exactly one of blas-system / blas-static / blas-mkl-static.
-blas = ["dep:ndarray-linalg"]
+# `ndarray/blas` routes `Array2::dot()` through the chosen BLAS backend; without
+# it, ndarray-linalg's BLAS hookup only accelerates linalg routines
+# (`Cholesky::cholesky`, `Solve::solve`, etc.) and leaves plain `.dot()` on the
+# pure-Rust path. mgcv_rust's perf gap on scat at v0.10 was traceable here.
+blas = ["dep:ndarray-linalg", "ndarray/blas"]
 blas-system = ["ndarray-linalg/openblas-system"]      # Linux / dev box
 blas-static = ["ndarray-linalg/openblas-static"]      # macOS wheel
 blas-mkl-static = ["ndarray-linalg/intel-mkl-static"] # Windows wheel
