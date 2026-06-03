@@ -367,22 +367,27 @@ impl OuterSolver for NewtonWithHalving {
             if !accepted {
                 // Step-halving exhausted — Newton's quadratic approximation
                 // can't find a strictly-decreasing step from this point.
-                // Two distinct convergence cases:
+                // Three distinct convergence cases:
                 //
                 //   (a) Interior minimum: `|grad|_∞` small relative to the
                 //       score scale. Double-precision FD Hessians on flat
                 //       regions can't find a strictly-decreasing trial,
                 //       but the gradient says we're there.
                 //
-                //   (b) KKT at active box constraint: the unconstrained
-                //       Newton step pushed entirely outside the box on
-                //       every axis where the step was non-trivial, so all
-                //       movement got clamped to zero. This is the
-                //       saturating-λ ridge: gradient stays bounded away
-                //       from zero, but axis bounds make the boundary a
-                //       constrained local optimum. (Score-relative
-                //       criterion (a) used to fire by accident here once
-                //       `|v|` drifted large enough.)
+                //   (b) KKT at active box constraint (strict): the
+                //       unconstrained Newton step pushed entirely outside
+                //       the box on every axis where the step was
+                //       non-trivial, so all movement got clamped to zero.
+                //
+                //   (c) Projected-gradient KKT (general box-constrained
+                //       case): some axes are at active bounds with their
+                //       gradient pointing outward (blocked by the box),
+                //       and the projected gradient on the remaining
+                //       feasible axes is small. The standard KKT condition
+                //       for box-constrained optimisation — covers ocat's
+                //       saturating-θ ridge where one or more shape axes
+                //       sit against the bound but the ρ axes still need
+                //       to satisfy a (relaxed) gradient tolerance.
                 let kkt_at_boundary = axis_bounds.as_ref().map_or(false, |bnds| {
                     // For each axis with any unconstrained Newton movement,
                     // require that movement to point outside the active
@@ -410,12 +415,46 @@ impl OuterSolver for NewtonWithHalving {
                     }
                     any_movement && all_blocked
                 });
+                // Case (c): the gradient projected onto the feasible
+                // directions of the box. For each axis at an active
+                // bound with grad pointing OUTWARD (blocked), zero out
+                // that component before measuring the norm.
+                let proj_grad_small = axis_bounds.as_ref().is_some_and(|bnds| {
+                    let mut any_at_bound = false;
+                    let mut proj = 0.0_f64;
+                    for (i, &gi) in g.iter().enumerate() {
+                        let (lo, hi) = bnds.get(i).copied().unwrap_or((
+                            f64::NEG_INFINITY,
+                            f64::INFINITY,
+                        ));
+                        let eps_at_bound = 1e-9 * (theta[i].abs().max(1.0));
+                        let at_lo = (theta[i] - lo).abs() <= eps_at_bound;
+                        let at_hi = (hi - theta[i]).abs() <= eps_at_bound;
+                        let blocked = (at_hi && gi < 0.0) || (at_lo && gi > 0.0);
+                        if at_lo || at_hi {
+                            any_at_bound = true;
+                        }
+                        if !blocked {
+                            proj = proj.max(gi.abs());
+                        }
+                    }
+                    // Only declare convergence via projected-grad when at
+                    // least one axis sits at an active bound — otherwise
+                    // fall back to the unprojected case (a) test below.
+                    // Use a tier looser than the unprojected `1e-3` because
+                    // FD gradients near a box face are noisier than in the
+                    // interior (the active-bound axis acts as a non-smooth
+                    // jump in the FD stencil that bleeds into nearby axes).
+                    any_at_bound && proj < 1e-1 * (v.abs() + 1.0)
+                });
                 return Ok(OuterFit {
                     theta,
                     value: v,
                     grad_norm,
                     iterations: iter + 1,
-                    converged: kkt_at_boundary || grad_norm < 1e-3 * (v.abs() + 1.0),
+                    converged: kkt_at_boundary
+                        || proj_grad_small
+                        || grad_norm < 1e-3 * (v.abs() + 1.0),
                 });
             }
         }

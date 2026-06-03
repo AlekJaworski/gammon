@@ -450,25 +450,24 @@ def test_auto_k_works_with_parametric_terms(rng):
 
 def test_ocat_single_smooth_usable(rng):
     """Single-smooth ocat: regression guard on `predict_proba` quality
-    and well-formedness. The joint (ρ, θ) Newton may report
-    converged_=False because the ordered-thresholds + η joint surface
-    has a near-flat scale-indeterminacy ridge (mgcv_rust hits the same
-    200-iter non-convergence on the same kind of fixture); what matters
-    for users is that predictions stay sharp on the inverted-link
-    response scale. Pin THAT, not the optimizer flag."""
+    and well-formedness. With the `(-3, 3)` log-gap bounds + projected-
+    gradient KKT check, single-smooth ocat now converges cleanly on
+    typical fixtures (the bound is hit and the projected gradient on
+    the ρ axis is small). Pin both converged_=True and the proba
+    quality so a regression in either is visible."""
     n = 1200
     x = rng.uniform(0, 10, n)
     eta_true = np.sin(x)
     qs = np.quantile(eta_true, [0.25, 0.5, 0.75])
     y = (np.digitize(eta_true, qs) + 1).astype(float)
     g = gamrs.Gam(family="ocat", r=4).fit(x, y)
-    # Probabilities are well-formed regardless of optimiser convergence.
+    assert g.converged_, (
+        f"single-smooth ocat regressed: converged_={g.converged_}, "
+        f"n_iters={g.n_iters_}, λ={g.lambda_}"
+    )
     proba = g.predict_proba(x)
     assert proba.shape == (n, 4)
     np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-10)
-    # On this synthetic fixture (clean cumulative-logit cut points),
-    # accuracy is near-perfect. Catch a regression that breaks the
-    # fit quality even if the optimizer still reports a number of iters.
     acc = float((np.argmax(proba, axis=1) + 1 == y).mean())
     assert acc > 0.95
 

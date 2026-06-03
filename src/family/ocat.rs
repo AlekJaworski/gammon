@@ -223,6 +223,41 @@ impl Loss for OcatLoss {
         1.0e-8
     }
 
+    /// Use full FD on the score value for the joint Hessian instead of
+    /// the partial-analytic IFT path. The IFT path's shape-FD column
+    /// becomes especially noisy near the now-tight log-gap bounds
+    /// (`(-3, 3)` below), where the active-bound axis induces a
+    /// non-smooth jump in the FD stencil that bleeds into the ρ-θ
+    /// off-diagonal Hessian entries. Full FD on the score value
+    /// computes the joint Hessian symmetrically and matches mgcv_rust's
+    /// `reml_joint_ocat_finite_diff` at `~/vibe_coding/nn_exploring/
+    /// src/smooth.rs:622`. Cost: `1 + 2·d²` PIRLS per outer iter vs
+    /// `2·d` for the IFT path (d ~ 4 here → 33 vs 8 PIRLS), still
+    /// affordable at the small n_iters multi-smooth ocat needs.
+    fn prefers_full_fd_hessian(&self) -> bool {
+        true
+    }
+
+    /// Tighter log-gap bounds than the trait default `(-10, 10)`. The
+    /// joint (ρ, θ) REML score has a near-flat ridge along the
+    /// coordinated (η-scale, θ-magnitude) direction; with the loose
+    /// default the joint Newton can walk θ out toward ±10 in step with
+    /// a degenerate λ → 0 trajectory and never resolve the scale before
+    /// step-halving exhausts.
+    ///
+    /// `(-3, 3)` caps each α-gap at `exp(3) ≈ 20`, well above any
+    /// realistic 4-7 category model (which rarely needs gaps above 2-3
+    /// in η-units), but tight enough that the optimiser hits a wall
+    /// before the ridge becomes pathologically flat. Empirically the
+    /// active bound is what KEEPS λ in the regularising range; without
+    /// it gamrs's ocat overfits via the coordinated (λ→0, θ→large)
+    /// trajectory. The projected-gradient KKT check in `outer.rs`
+    /// declares convergence cleanly when θ saturates at the bound and
+    /// the ρ-axis gradient is small.
+    fn shape_axis_bounds(&self) -> Vec<(f64, f64)> {
+        vec![(-3.0, 3.0); self.n_shape_params()]
+    }
+
     /// Provide Level-1 derivatives (`Dmu3, Dth, Dmuth, Dmu2th`) to the
     /// shape-aware score's analytic θ-gradient assembly. Ports v0.x's
     /// `ocat_dd` at `OcatDerivLevel::Level1`. The score uses these to
