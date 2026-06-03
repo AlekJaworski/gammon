@@ -449,6 +449,61 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, TweedieVariance, S> for Tweed
     }
 }
 
+/// Smart θ initialisation for ocat from empirical category frequencies.
+/// Port of mgcv R `~/gitlab/mgcv/R/efam.r:464-476` (`ocat.ini`).
+///
+/// Computes:
+/// ```text
+///   p_k       = (Σ_{j ≤ k} count_j + 1) / (N + R)   (with Laplace smoothing)
+///   η         = −1 − logit(p_1)                     (latent mean s.t. F(α_1 − η) = p_1)
+///   α_k       = logit(p_k) + η  for k = 2..R−1      (interior cut points)
+///   gap_k     = max(α_{k+1} − α_k, 0.01)            (positive gaps, floor)
+///   θ_k       = log(gap_k)                          (log-gap parameterisation)
+/// ```
+///
+/// With this initialiser the joint Newton starts near the optimum
+/// instead of `θ = 0`, dramatically reducing the walk through the
+/// near-flat (η-scale, θ-magnitude) ridge that otherwise traps it.
+fn ocat_smart_init(y: ArrayView1<f64>, n_cats: usize) -> Array1<f64> {
+    if n_cats < 3 {
+        return Array1::<f64>::zeros(0);
+    }
+    // Laplace-smoothed empirical counts: add one observation to every
+    // category so `p[0] > 0` (mgcv R does `y <- c(1:R, y)` for the same
+    // effect — avoids divide-by-zero on the logit).
+    let mut counts = vec![1usize; n_cats];
+    for &yi in y.iter() {
+        if !yi.is_finite() {
+            continue;
+        }
+        let yi_c = yi.round() as i64;
+        if (1..=n_cats as i64).contains(&yi_c) {
+            counts[yi_c as usize - 1] += 1;
+        }
+    }
+    let total: f64 = counts.iter().sum::<usize>() as f64;
+    let mut p: Vec<f64> = Vec::with_capacity(n_cats);
+    let mut acc = 0.0;
+    for &c in counts.iter() {
+        acc += c as f64 / total;
+        p.push(acc.clamp(1e-9, 1.0 - 1e-9));
+    }
+    let logit = |q: f64| (q / (1.0 - q)).ln();
+    let eta = -1.0 - logit(p[0]);
+    // alpha[0] = -1 (fixed); alpha[k] = logit(p[k]) + eta for k = 1..R-2
+    let mut alpha = vec![-1.0_f64; n_cats - 1];
+    for k in 1..(n_cats - 1) {
+        alpha[k] = logit(p[k]) + eta;
+    }
+    // gaps + log
+    let mut theta = Array1::<f64>::zeros(n_cats - 2);
+    for k in 0..(n_cats - 2) {
+        let gap = (alpha[k + 1] - alpha[k]).max(0.01);
+        theta[k] = gap.ln();
+    }
+    theta
+}
+
 // --- Ocat: identity link + Ocat variance, n_cats + thresholds on family ---
 impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for OcatLoss {
     fn fit_from_prep_canonical(
@@ -479,7 +534,15 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         let prior = prior_weights.map(|w| w.to_owned());
         let n = x.nrows();
 
-        let theta0_shape: Array1<f64> = init_thresholds;
+        // Smart θ init from empirical category frequencies (port of
+        // mgcv R `ocat.ini`). Replaces the family's default zero-init.
+        // If the caller supplied non-default thresholds via the family
+        // constructor, honour them; otherwise compute from data.
+        let theta0_shape: Array1<f64> = if init_thresholds.iter().all(|&t| t == 0.0) {
+            ocat_smart_init(y, n_cats)
+        } else {
+            init_thresholds
+        };
         if theta0_shape.len() != n_cats - 2 {
             return Err(GamrsError::InvalidParameter(format!(
                 "Ocat init_theta length must equal n_cats - 2 = {} (log-gap thresholds between adjacent categories above the first); got {}",
