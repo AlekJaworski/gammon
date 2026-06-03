@@ -32,12 +32,14 @@ use crate::error::Result;
 
 mod additive;
 mod cr;
+mod parametric;
 mod re;
 mod tensor;
 mod tps;
 
 pub use additive::{Additive, AdditivePredictor, MarginKind, TermSpec};
 pub use cr::{Cr, CrPredictor, CrStable, CrStablePredictor};
+pub use parametric::ParametricPredictor;
 pub use re::{Re, RePredictor};
 pub use tensor::{TensorMultiPredictor, TensorPredictor};
 pub use tps::TpsPredictor;
@@ -80,6 +82,9 @@ pub enum Predictor {
     /// 2-D (or higher) isotropic thin-plate regression spline.
     /// Single penalty per term.
     Tps(TpsPredictor),
+    /// Parametric (unsmoothed linear) term — single raw column, no
+    /// penalty. Only used as a sub-Predictor of `Additive`.
+    Parametric(ParametricPredictor),
 }
 
 impl Predictor {
@@ -96,6 +101,7 @@ impl Predictor {
             Self::Tensor(p) => p.design(x_new),
             Self::TensorMulti(p) => p.design(x_new),
             Self::Tps(p) => p.design(x_new),
+            Self::Parametric(p) => p.design(x_new),
         }
     }
 
@@ -111,6 +117,7 @@ impl Predictor {
             Self::Tensor(p) => p.design_deriv(x_new, axis),
             Self::TensorMulti(p) => p.design_deriv(x_new, axis),
             Self::Tps(p) => p.design_deriv(x_new, axis),
+            Self::Parametric(p) => p.design_deriv(x_new, axis),
         }
     }
 }

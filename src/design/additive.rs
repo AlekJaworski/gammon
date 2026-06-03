@@ -82,6 +82,11 @@ pub enum TermSpec {
     /// 2-D (or higher) isotropic thin-plate regression spline. Single
     /// smoothing parameter.
     Tps { cols: Vec<usize>, k: usize },
+    /// Parametric (linear, unsmoothed) term `+ x_col` — one raw column,
+    /// no spline expansion, no penalty. The coefficient retains its full
+    /// degree of freedom. mgcv R's "pterms" block; equivalent to
+    /// `bs="parametric"` (alias `"linear"`) in mgcv_rust 0.16+.
+    Parametric { col: usize },
 }
 
 impl TermSpec {
@@ -93,6 +98,7 @@ impl TermSpec {
             Self::Cr { col, .. } => *col,
             Self::CrStable { col, .. } => *col,
             Self::Re { col } => *col,
+            Self::Parametric { col } => *col,
             Self::Tensor { col_a, .. } => *col_a,
             Self::TeMulti { cols, .. } | Self::Ti { cols, .. } | Self::Tps { cols, .. } => cols[0],
         }
@@ -105,6 +111,7 @@ impl TermSpec {
             Self::Cr { col, .. } => vec![*col],
             Self::CrStable { col, .. } => vec![*col],
             Self::Re { col } => vec![*col],
+            Self::Parametric { col } => vec![*col],
             Self::Tensor { col_a, col_b, .. } => vec![*col_a, *col_b],
             Self::TeMulti { cols, .. } | Self::Ti { cols, .. } | Self::Tps { cols, .. } => {
                 cols.clone()
@@ -374,6 +381,24 @@ impl DesignStrategy for Additive {
                     per_term_s_smooth.push(vec![fit.s_smooth]);
                     per_term_predictor.push(Predictor::Tps(fit.predictor));
                     cols_used.push(tcols);
+                }
+                TermSpec::Parametric { col } => {
+                    // Raw single column; no centring (would absorb effect
+                    // into intercept and destroy the slope interpretation).
+                    let raw = x.column(col).to_owned();
+                    let mut design = Array2::<f64>::zeros((n, 1));
+                    for i in 0..n {
+                        design[[i, 0]] = raw[i];
+                    }
+                    per_term_dim.push(1);
+                    per_term_centred.push(design);
+                    // Empty penalty list — the coefficient is unpenalised;
+                    // no smoothing parameter to optimise.
+                    per_term_s_smooth.push(Vec::new());
+                    per_term_predictor.push(Predictor::Parametric(
+                        super::parametric::ParametricPredictor { col: 0 },
+                    ));
+                    cols_used.push(vec![col]);
                 }
             }
         }

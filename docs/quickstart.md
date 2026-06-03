@@ -119,6 +119,39 @@ X_re = df[["x0", "group"]]
 g = Gam(terms=[CrTerm("x0", k=10), ReTerm("group")]).fit(X_re, df.y)
 ```
 
+## 5b. Parametric (linear, unsmoothed) terms
+
+For columns you want as a raw linear effect — 0/1 indicators, integer
+counts, anything you don't want smoothed. The coefficient retains its
+full degree of freedom (no penalty); equivalent to mgcv R's "pterms".
+
+```python
+from gamrs import ParametricTerm
+
+df["is_promo"] = rng.integers(0, 2, len(df)).astype(float)
+
+# Mix smooths and parametric terms in the same fit
+g = Gam(terms=[
+    CrTerm("x0", k=10),
+    CrTerm("x1", k=10),
+    ParametricTerm("is_promo"),
+]).fit(df[["x0", "x1", "is_promo"]], df.y)
+
+# The parametric coefficient is interpretable as the slope:
+print(g.coef_[-1])   # ≈ true effect of is_promo
+print(len(g.lambda_))  # = number of SMOOTHS (no λ for parametric terms)
+```
+
+The `predictor_basis_map={"is_promo": "parametric"}` (alias
+`"linear"`) flag spells the same thing without the typed-term API:
+
+```python
+g = Gam(
+    family="gaussian",
+    predictor_basis_map={"is_promo": "parametric"},
+).fit(df[["x0", "is_promo"]], df.y)
+```
+
 ## 6. Picking a family
 
 | Data shape                                | Family            | Constructor                                      |

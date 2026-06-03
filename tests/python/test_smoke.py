@@ -291,6 +291,70 @@ def test_default_gam_emits_no_warning(rng):
         gamrs.Gam(family="gaussian").fit(x, y)
 
 
+def test_parametric_term_recovers_slope(rng):
+    """ParametricTerm fits the raw coefficient (no smoothing penalty).
+    On `y = sin(x) + 2 * is_promo`, the parametric coefficient should
+    land within a couple percent of the truth."""
+    pd = pytest.importorskip("pandas")
+    n = 1500
+    x_smooth = rng.uniform(0, 10, n)
+    is_promo = rng.integers(0, 2, n).astype(float)
+    y = np.sin(x_smooth) + 2.0 * is_promo + rng.normal(0, 0.3, n)
+    df = pd.DataFrame({"x": x_smooth, "is_promo": is_promo})
+    X = df[["x", "is_promo"]]
+
+    g = gamrs.Gam(terms=[
+        gamrs.CrTerm("x", k=10),
+        gamrs.ParametricTerm("is_promo"),
+    ]).fit(X, y)
+
+    # Parametric coef is the LAST one (terms concatenated in order).
+    # Only the smooth has a smoothing parameter — lambda len == 1.
+    assert len(g.lambda_) == 1
+    assert abs(g.coef_[-1] - 2.0) < 0.05  # within 2.5% of truth
+    assert g.converged_
+
+
+def test_parametric_via_predictor_basis_map_matches_typed_term(rng):
+    """Two ways to spell a parametric column: typed `ParametricTerm("x")`
+    and `predictor_basis_map={"x": "parametric"}` produce identical fits."""
+    pd = pytest.importorskip("pandas")
+    n = 500
+    df = pd.DataFrame({
+        "x": rng.uniform(0, 10, n),
+        "is_promo": rng.integers(0, 2, n).astype(float),
+    })
+    df["y"] = np.sin(df.x) + 1.5 * df.is_promo + rng.normal(0, 0.3, n)
+    X = df[["x", "is_promo"]]
+
+    g_typed = gamrs.Gam(terms=[
+        gamrs.CrTerm("x", k=10),
+        gamrs.ParametricTerm("is_promo"),
+    ]).fit(X, df.y)
+    g_map = gamrs.Gam(
+        family="gaussian",
+        predictor_basis_map={"is_promo": "parametric"},
+    ).fit(X, df.y)
+    np.testing.assert_allclose(g_typed.coef_, g_map.coef_, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(g_typed.lambda_, g_map.lambda_, rtol=1e-10)
+
+
+def test_parametric_linear_alias(rng):
+    """`predictor_basis_map={"x": "linear"}` is the mgcv-user-friendly
+    alias for `"parametric"` — same fit either way."""
+    pd = pytest.importorskip("pandas")
+    n = 300
+    df = pd.DataFrame({
+        "x": rng.uniform(0, 10, n),
+        "z": rng.integers(0, 2, n).astype(float),
+    })
+    df["y"] = np.sin(df.x) + 0.7 * df.z + rng.normal(0, 0.3, n)
+    X = df[["x", "z"]]
+    g_p = gamrs.Gam(predictor_basis_map={"z": "parametric"}).fit(X, df.y)
+    g_l = gamrs.Gam(predictor_basis_map={"z": "linear"}).fit(X, df.y)
+    np.testing.assert_allclose(g_p.coef_, g_l.coef_, rtol=1e-12)
+
+
 def test_term_string_cols_resolve_against_dataframe(rng):
     """CrTerm/TeTerm/TpsTerm/ReTerm accept string column names and resolve
     them against the DataFrame at fit time."""

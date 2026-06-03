@@ -75,6 +75,10 @@ remain single-smooth-only.
   any n-margin.
 - **Thin-plate** — `s(x0, x1, bs="tp")` via `TpsTerm`.
 - **Random effects** — `s(g, bs="re")` via `ReTerm`.
+- **Parametric (linear)** — unsmoothed raw column via `ParametricTerm` or
+  `predictor_basis_map={"x": "parametric"}` (alias `"linear"`). Use for
+  0/1 indicators, counts, or anything you want unpenalised. mgcv R's
+  "pterms" block.
 
 ## Performance
 

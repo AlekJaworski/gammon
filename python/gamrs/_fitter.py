@@ -19,6 +19,7 @@ from ._coerce import FAMILY_TO_GAMRS, to_1d_array, to_2d_with_columns
 from ._low_level import (
     CrTerm,
     CrStableTerm,
+    ParametricTerm,
     ReTerm,
     TeMultiTerm,
     TeTerm,
@@ -91,6 +92,10 @@ def _resolve_term_cols(term: Term, col_names: Sequence[str]) -> Term:
         )
     if isinstance(term, ReTerm):
         return ReTerm(col=_resolve_col(term.col, col_names, "ReTerm"))
+    if isinstance(term, ParametricTerm):
+        return ParametricTerm(
+            col=_resolve_col(term.col, col_names, "ParametricTerm")
+        )
     if isinstance(term, TeTerm):
         return TeTerm(
             cols=(
@@ -615,11 +620,8 @@ class Gam:
         for col_idx, pname in enumerate(cols):
             bs_override = self.predictor_basis_map.get(pname)
             if bs_override in ("parametric", "linear"):
-                raise NotImplementedError(
-                    f"predictor_basis_map[{pname!r}]={bs_override!r} (parametric / "
-                    "linear unsmoothed term) is not yet wired in gamrs; use the "
-                    "v0.x mgcv_rust.Gam wrapper for parametric columns."
-                )
+                out.append(ParametricTerm(col=col_idx))
+                continue
             if bs_override == "re":
                 out.append(ReTerm(col=col_idx))
                 continue

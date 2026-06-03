@@ -1284,10 +1284,12 @@ fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<Term
                     TermSpec::CrStable { col, k }
                 }
                 "re" => TermSpec::Re { col },
+                "parametric" | "linear" => TermSpec::Parametric { col },
                 other => {
                     return Err(PyValueError::new_err(format!(
-                        "fit_additive: term {j} basis must be 'cr', 'cr_stable', 're', 'te', \
-                         'te_multi', 'ti', or 'tp'; got {other:?}"
+                        "fit_additive: term {j} basis must be 'cr', 'cr_stable', 're', \
+                         'parametric' (alias 'linear'), 'te', 'te_multi', 'ti', or 'tp'; \
+                         got {other:?}"
                     )))
                 }
             }

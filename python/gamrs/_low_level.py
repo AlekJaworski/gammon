@@ -223,6 +223,22 @@ class ReTerm:
 
 
 @dataclass(frozen=True)
+class ParametricTerm:
+    """Parametric (linear, unsmoothed) term — `+ x_col` in the formula.
+
+    Adds one raw column to the linear predictor with no spline expansion
+    and no smoothing penalty; the coefficient retains its full degree of
+    freedom. Equivalent to mgcv R's "pterms" block and mgcv_rust's
+    ``bs="parametric"`` / ``"linear"``.
+
+    Use this for 0/1 indicators, count covariates, or any linear effect
+    you don't want to smooth. ``col`` accepts an int index or a string
+    column name.
+    """
+    col: Col
+
+
+@dataclass(frozen=True)
 class TeTerm:
     """Anisotropic 2-margin tensor product term `te(x_col_a, x_col_b)` —
     two smoothing parameters per term (one per margin). CR margins.
@@ -280,7 +296,16 @@ class TpsTerm:
 
 # Sum type at the Python boundary. Type-checked closed set — adding a
 # new term kind extends this union (a library-controlled change).
-Term = Union[CrTerm, CrStableTerm, ReTerm, TeTerm, TeMultiTerm, TiTerm, TpsTerm]
+Term = Union[
+    CrTerm,
+    CrStableTerm,
+    ReTerm,
+    ParametricTerm,
+    TeTerm,
+    TeMultiTerm,
+    TiTerm,
+    TpsTerm,
+]
 
 
 def _term_to_tuple(term: Term) -> tuple:
@@ -294,6 +319,8 @@ def _term_to_tuple(term: Term) -> tuple:
         return (int(term.col), "cr_stable", int(term.k))
     if isinstance(term, ReTerm):
         return (int(term.col), "re")
+    if isinstance(term, ParametricTerm):
+        return (int(term.col), "parametric")
     if isinstance(term, TeTerm):
         return (
             (int(term.cols[0]), int(term.cols[1])),
@@ -322,7 +349,8 @@ def _term_to_tuple(term: Term) -> tuple:
         return (cols_tup, "tp", k_val)
     raise TypeError(
         f"unknown term type {type(term).__name__}; expected one of "
-        "CrTerm / CrStableTerm / ReTerm / TeTerm / TeMultiTerm / TiTerm / TpsTerm"
+        "CrTerm / CrStableTerm / ReTerm / ParametricTerm / TeTerm / "
+        "TeMultiTerm / TiTerm / TpsTerm"
     )
 
 
