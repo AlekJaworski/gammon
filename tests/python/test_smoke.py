@@ -382,6 +382,80 @@ def test_auto_k_works_with_parametric_terms(rng):
     assert abs(g.coef_[-1] - 1.7) < 0.05
 
 
+def test_ocat_predict_proba_shape_and_row_sums(rng):
+    """predict_proba for ocat should return (n, R) with rows summing
+    to 1 (probabilities). Both single-smooth and multi-smooth ocat fits
+    use the same Python-side `P(Y=k) = F(α_k - η) - F(α_{k-1} - η)`
+    derivation from `shape_params_` + η."""
+    n = 800
+    x = rng.uniform(0, 10, n)
+    eta_true = np.sin(x)
+    qs = np.quantile(eta_true, [0.25, 0.5, 0.75])
+    y = (np.digitize(eta_true, qs) + 1).astype(float)
+
+    # Single-smooth ocat
+    g1 = gamrs.Gam(family="ocat", r=4).fit(x, y)
+    p1 = g1.predict_proba(x)
+    assert p1.shape == (n, 4)
+    np.testing.assert_allclose(p1.sum(axis=1), 1.0, atol=1e-10)
+    assert np.all(p1 >= -1e-12) and np.all(p1 <= 1.0 + 1e-12)
+    acc1 = float((np.argmax(p1, axis=1) + 1 == y).mean())
+    assert acc1 > 0.9  # synthetic data: should be very accurate
+
+    # Multi-smooth ocat — note converged_ may be False, but probabilities
+    # are still well-defined because P(Y=k) is invariant under joint
+    # (η, θ) scale shift.
+    X = np.column_stack([rng.uniform(0, 10, n), rng.uniform(0, 10, n)])
+    eta_m = np.sin(X[:, 0]) + 0.5 * np.sin(X[:, 1] * 0.5)
+    qs_m = np.quantile(eta_m, [0.25, 0.5, 0.75])
+    y_m = (np.digitize(eta_m, qs_m) + 1).astype(float)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        g2 = gamrs.Gam(
+            family="ocat", r=4,
+            terms=[gamrs.CrTerm(0, k=8), gamrs.CrTerm(1, k=8)],
+        ).fit(X, y_m)
+    p2 = g2.predict_proba(X)
+    assert p2.shape == (n, 4)
+    np.testing.assert_allclose(p2.sum(axis=1), 1.0, atol=1e-10)
+    assert np.all(p2 >= -1e-12) and np.all(p2 <= 1.0 + 1e-12)
+
+
+def test_parametric_subset_view_substitutes_training_mean(rng):
+    """On a subset view (link scale), the masked-out parametric column
+    is filled with its training mean — NOT zero. This keeps the
+    `β_param · mean(x_param_train)` contribution in the prediction so
+    the subset prediction isn't biased by that amount. mgcv_rust
+    _fitter.py:451 has the same logic."""
+    pd = pytest.importorskip("pandas")
+    n = 800
+    df = pd.DataFrame({
+        "x_smooth": rng.uniform(0, 10, n),
+        "is_promo": rng.integers(0, 2, n).astype(float),
+    })
+    df["y"] = np.sin(df.x_smooth) + 2.0 * df.is_promo + rng.normal(0, 0.2, n)
+    X = df[["x_smooth", "is_promo"]]
+    g = gamrs.Gam(terms=[
+        gamrs.CrTerm("x_smooth", k=10),
+        gamrs.ParametricTerm("is_promo"),
+    ]).fit(X, df.y)
+
+    beta_param = g.coef_[-1]
+    mean_param = float(df.is_promo.mean())
+
+    # Full-model link prediction vs subset-with-intercept on link scale.
+    mu_full = g.predict(X, scale="link")
+    mu_sub = g[["x_smooth", gamrs.Gam.INTERCEPT]].predict(X, scale="link")
+    # Difference should equal β_param * (x_param_i - mean) exactly.
+    expected_diff = beta_param * (df.is_promo.values - mean_param)
+    np.testing.assert_allclose(mu_full - mu_sub, expected_diff, atol=1e-12)
+
+    # scale='deviation' should NOT include the baseline (pure marginal):
+    # the smooth's deviation contribution is roughly mean-zero across X.
+    mu_dev = g[["x_smooth"]].predict(X, scale="deviation")
+    assert abs(float(mu_dev.mean())) < 0.1
+
+
 def test_parametric_linear_alias(rng):
     """`predictor_basis_map={"x": "linear"}` is the mgcv-user-friendly
     alias for `"parametric"` — same fit either way."""

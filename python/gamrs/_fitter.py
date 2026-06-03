@@ -63,6 +63,93 @@ def _normal_quantile(p: float) -> float:
            (((((b[0]*r + b[1])*r + b[2])*r + b[3])*r + b[4])*r + 1.0)
 
 
+def _ocat_alpha(theta: np.ndarray, r: int) -> np.ndarray:
+    """Build the (R+1)-vector of ocat category boundaries from the R-2
+    log-gap thresholds. Mirrors :func:`gamrs::family::ocat::OcatLoss::alpha`."""
+    alpha = np.empty(r + 1, dtype=float)
+    alpha[0] = -np.inf
+    alpha[1] = -1.0
+    acc = -1.0
+    for k in range(r - 2):
+        acc += float(np.exp(theta[k]))
+        alpha[2 + k] = acc
+    alpha[r] = np.inf
+    return alpha
+
+
+def _ocat_fdiff(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Cancellation-safe ``F(b) - F(a)`` where ``F`` is the logistic CDF,
+    vectorised over arrays. Mirrors
+    :func:`gamrs::family::ocat::OcatLoss::fdiff_boundary` row-by-row.
+
+    Both ``a`` and ``b`` must have the same shape; ``a < b`` element-wise."""
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    out = np.empty_like(a)
+
+    # ±∞ short-circuits.
+    a_neg_inf = np.isneginf(a)
+    b_pos_inf = np.isposinf(b)
+    out[a_neg_inf & b_pos_inf] = 1.0
+
+    # F(b) = 1 / (1 + exp(-b)) for finite b — branch by sign of b to
+    # avoid exp() overflow at large magnitudes.
+    only_a = a_neg_inf & ~b_pos_inf
+    bo = b[only_a]
+    pos = bo >= 0.0
+    sub_pos = bo[pos]
+    sub_neg = bo[~pos]
+    res_a = np.empty_like(bo)
+    res_a[pos] = 1.0 / (1.0 + np.exp(-sub_pos))
+    res_a[~pos] = np.exp(sub_neg) / (1.0 + np.exp(sub_neg))
+    out[only_a] = res_a
+
+    # 1 - F(a) = 1 / (1 + exp(a)) for finite a — same branching trick.
+    only_b = b_pos_inf & ~a_neg_inf
+    ao = a[only_b]
+    neg = ao <= 0.0
+    sub_pos = ao[~neg]
+    sub_neg = ao[neg]
+    res_b = np.empty_like(ao)
+    res_b[neg] = 1.0 / (1.0 + np.exp(sub_neg))
+    res_b[~neg] = np.exp(-sub_pos) / (1.0 + np.exp(-sub_pos))
+    out[only_b] = res_b
+
+    # Finite-a-and-b branch: cancellation-safe expression.
+    finite = ~(a_neg_inf | b_pos_inf)
+    if np.any(finite):
+        af = a[finite]
+        bf = b[finite]
+        ha = np.where(af > 0.0, -1.0, 1.0)
+        hb = np.where(bf > 0.0, -1.0, 1.0)
+        ea = np.exp(af * ha)
+        eb = np.exp(bf * hb)
+        res = np.where(
+            bf < 0.0,
+            eb / (1.0 + eb) - ea / (1.0 + ea),
+            np.where(
+                af > 0.0,
+                (ea - eb) / ((ea + 1.0) * (eb + 1.0)),
+                (1.0 - ea * eb) / ((eb + 1.0) * (ea + 1.0)),
+            ),
+        )
+        out[finite] = res
+    return out
+
+
+def _ocat_prob(eta: np.ndarray, theta: np.ndarray, r: int) -> np.ndarray:
+    """`(n, R)` matrix `P(Y=k | x) = F(α_k - η) - F(α_{k-1} - η)` over
+    every row. Mirrors :func:`gamrs::ocat::ocat_prob`."""
+    alpha = _ocat_alpha(theta, r)
+    n = eta.shape[0]
+    prob = np.zeros((n, r), dtype=float)
+    for k in range(1, r + 1):
+        a = alpha[k - 1] - eta
+        b = alpha[k] - eta
+        prob[:, k - 1] = _ocat_fdiff(a, b)
+    return prob
+
+
 def _resolve_col(col: Any, col_names: Sequence[str], term_name: str) -> int:
     """Resolve one column reference (int or string) to an int index.
 
@@ -460,6 +547,22 @@ class Gam:
         else:
             term_objs = self._build_terms_from_columns(X_arr, cols)
 
+        # Capture per-parametric-term training means for subset-view
+        # baseline substitution at predict time. When `gam[["x_smooth"]]`
+        # masks the parametric column, naively zeroing it would lose the
+        # `β_param · mean(x_param_train)` contribution from the original
+        # full-model fit — predictions on the subset would be biased
+        # by exactly that amount. We instead substitute the training
+        # mean back into the masked parametric column on the link scale
+        # (NOT deviation — that mode wants the pure marginal effect).
+        # Mirrors mgcv_rust _fitter.py:451 `_parametric_training_means`.
+        self._parametric_training_means: dict[int, float] = {}
+        for term_idx, t in enumerate(term_objs):
+            if isinstance(t, ParametricTerm):
+                self._parametric_training_means[term_idx] = float(
+                    x_2d[:, t.col].mean()
+                )
+
         if self.auto_k:
             self._auto_fit_k(x_2d, y_arr, term_objs)
         else:
@@ -757,6 +860,14 @@ class Gam:
         OR if ``scale != "deviation"`` and no intercept directive was given.
         On ``scale='deviation'`` the intercept is dropped, leaving the pure
         marginal effect of the selected terms.
+
+        Parametric terms get a baseline substitution rather than a hard zero
+        on the link scale: the masked column is filled with the training-time
+        column mean so that the prediction includes
+        ``β_param · mean(x_param_train)``, matching the contribution the
+        full-model fit assumed. On ``scale='deviation'`` (pure marginal
+        effect mode) we keep the hard zero — deviation explicitly wants to
+        strip everything except the selected terms.
         """
         mask = self._subset_mask  # type: ignore[union-attr]
         preds = self._effective_predictors or []
@@ -764,9 +875,16 @@ class Gam:
         intercept_selected = self.INTERCEPT in mask
         if scale == "deviation" or not intercept_selected:
             out[:, 0] = 0.0
+        param_means = getattr(self, "_parametric_training_means", None) or {}
         for term_idx, (start, end) in enumerate(ranges):
             user_name = preds[term_idx] if term_idx < len(preds) else f"term_{term_idx}"
-            if user_name not in mask:
+            if user_name in mask:
+                continue
+            # Masked-out term. Parametric terms get a training-mean
+            # substitution on the link scale; everything else zeros.
+            if scale != "deviation" and term_idx in param_means:
+                out[:, start:end] = param_means[term_idx]
+            else:
                 out[:, start:end] = 0.0
         return out
 
@@ -1166,20 +1284,21 @@ class Gam:
             p = self.predict(X, scale="response")
             return np.column_stack([1.0 - p, p])
         if self.family == "ocat":
-            # ocat: predict returns η, the thresholds in native_state give
-            # P(Y <= k). We expose them via the native FittedGam's beta /
-            # ocat_theta — but the cleanest path is to ask the native
-            # for inv-linked μ which already encodes the per-category
-            # probabilities. gamrs's ocat predict_response returns the
-            # (n, R) matrix directly — see native python.rs.
+            # ocat: native predict_response returns η (length n), not the
+            # per-category probabilities. Compute the (n, R) probability
+            # matrix from η + the converged θ thresholds (`shape_params_`)
+            # via mgcv's `P(Y=k) = F(α_k - η) - F(α_{k-1} - η)` mapping.
             f = self._require_fitted()
             x = self._coerce_predict_X(X)
-            # The ocat native predict_response returns flat (n*R,); reshape.
             r = int(self.r)
-            mu = np.asarray(f.predict_response(x))
-            if mu.ndim == 1 and mu.size % r == 0:
-                mu = mu.reshape(-1, r)
-            return mu
+            eta = np.asarray(f.predict(x), dtype=float)
+            theta = np.asarray(f.shape_params, dtype=float)
+            if theta.size != r - 2:
+                raise RuntimeError(
+                    f"ocat shape_params length {theta.size} doesn't match "
+                    f"R-2 = {r - 2}; model may not be a fitted ocat."
+                )
+            return _ocat_prob(eta, theta, r)
         raise NotImplementedError(
             f"predict_proba() is not wired for family={self.family!r}."
         )
