@@ -503,6 +503,56 @@ impl OuterSolver for NewtonWithHalving {
                     // jump in the FD stencil that bleeds into nearby axes).
                     any_at_bound && proj < 1e-1 * (v.abs() + 1.0)
                 });
+                // Case (d): rank-deficient Hessian KKT. mgcv R's
+                // `gam.fit5` step 4 ("at convergence test fundamental
+                // rank on balanced version of penalized Hessian. Drop
+                // unidentifiable parameters") — analog at the outer
+                // Newton level. Eigendecompose H, find the working
+                // subspace (eigvals above max(|λ|) · ε^0.7), and check
+                // the gradient projected onto that subspace. If small,
+                // the gradient mass is entirely along the null
+                // direction(s) — which means the score is flat there
+                // (a coordinated-shift ridge, the canonical ocat
+                // failure mode). The optimiser literally can't make
+                // progress in those directions; treat as converged.
+                let rank_def_proj_small = {
+                    let dim = g.len();
+                    // Build the (symmetric) Hessian we're testing. Don't
+                    // bother symmetrising — the FD asymmetry is small
+                    // enough that eigh on the lower triangle is fine.
+                    let eig_result = h.eigh(UPLO::Lower);
+                    match eig_result {
+                        Ok((eigs, vecs)) => {
+                            let max_abs =
+                                eigs.iter().fold(0.0_f64, |a, &b| a.max(b.abs()));
+                            let null_thresh =
+                                max_abs * f64::EPSILON.powf(0.7); // ~1.5e-11 of max
+                            // Project g onto the working subspace
+                            // (eigenvectors with |λ| > null_thresh).
+                            // |proj_g|_∞ = max_k |u_k^T g| where the max
+                            // runs only over working-subspace eigvecs.
+                            let mut proj_max = 0.0_f64;
+                            for k in 0..dim {
+                                if eigs[k].abs() <= null_thresh {
+                                    continue;
+                                }
+                                let uk = vecs.column(k);
+                                let utg: f64 =
+                                    uk.iter().zip(g.iter()).map(|(a, b)| a * b).sum();
+                                if utg.abs() > proj_max {
+                                    proj_max = utg.abs();
+                                }
+                            }
+                            // Only fire when the Hessian is ACTUALLY
+                            // rank-deficient (otherwise case (a) covers it).
+                            // Use the same tier-looser threshold as case (c).
+                            let has_null =
+                                eigs.iter().any(|&e| e.abs() <= null_thresh);
+                            has_null && proj_max < 1e-1 * (v.abs() + 1.0)
+                        }
+                        Err(_) => false,
+                    }
+                };
                 return Ok(OuterFit {
                     theta,
                     value: v,
@@ -510,6 +560,7 @@ impl OuterSolver for NewtonWithHalving {
                     iterations: iter + 1,
                     converged: kkt_at_boundary
                         || proj_grad_small
+                        || rank_def_proj_small
                         || grad_norm < 1e-3 * (v.abs() + 1.0),
                 });
             }
