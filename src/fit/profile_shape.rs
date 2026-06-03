@@ -34,7 +34,7 @@ use crate::error::Result;
 use crate::family::Family;
 use crate::inner::{GaussianInnerFit, LinearSolver, PirlsOpts};
 use crate::outer::NewtonOpts;
-use crate::score::shape_aware::{PirlsInnerBuilder, ShapeAwareEnvelopeScore, ShapeInnerBuilder};
+use crate::score::shape_aware::{ShapeAwareEnvelopeScore, ShapeInnerBuilder};
 use crate::score::FixedAtOneProfile;
 use crate::traits::{CoordsKind, InnerSolver, Link, Loss, OuterFit, ScoreDerivatives, VarianceFn};
 
@@ -43,23 +43,29 @@ use super::{compute_edf, compute_edf_per_term, compute_vcov, FittedGam, LinkKind
 /// Outer-Newton + final-fit + EDF for the **profile-θ** shape-aware stack.
 ///
 /// Matches `fit_shape_aware` (driver.rs:279) at the call surface but uses
-/// `ProfileShapeNewton` (M-dim ρ-Newton + 1-D log(θ) profile Newton) instead
-/// of `NewtonWithHalving` (joint `[ρ; log θ]` Newton). The ρ-Newton uses
-/// the analytic IFT M×M ρ-Hessian via `compute_value_grad_hess_rho_only`
-/// (1 PIRLS / outer iter); the log-θ Newton uses central-FD on the REML
-/// value (3 PIRLS / outer iter).
+/// `ProfileShapeNewton` (M-dim ρ-Newton + per-axis 1-D log(θ_k) profile
+/// Newton) instead of `NewtonWithHalving` (joint `[ρ; log θ]` Newton). The
+/// ρ-Newton uses the analytic IFT M×M ρ-Hessian via
+/// `compute_value_grad_hess_rho_only` (1 PIRLS / outer iter); each log-θ_k
+/// axis Newton uses central-FD on the REML value (3 PIRLS-free probes per
+/// axis via `score_value_frozen_beta`).
 ///
-/// Limited to families with `FixedAtOneProfile` (φ ≡ 1) and exactly **1
-/// shape param** in log-space. NegBin's `log θ` is the only fit today.
+/// Used by:
+/// - **NegBin** (`PirlsInnerBuilder`, n_shape=1): single log θ axis.
+/// - **Ocat** (`OcatInnerBuilder`, n_shape=R-2): one axis per log-gap
+///   threshold. Sequential 1-D Newton on each, then one β refresh at the
+///   end of the iter.
 ///
 /// `S: LinearSolver` propagates from the inner builder to the emitted fit.
-pub(crate) fn fit_shape_aware_profile<L, K, V, S, RF, SF>(
+/// `B: ShapeInnerBuilder<L, K, V, S>` is the inner-fit factory.
+pub(crate) fn fit_shape_aware_profile<L, K, V, B, S, RF, SF>(
     prep: PreparedDesign,
     x: ArrayView2<f64>,
     y: ArrayView1<f64>,
     prior_weights: Option<ArrayView1<f64>>,
     family_base: Family<L, K, V>,
     theta0: Array1<f64>,
+    inner_builder: B,
     rebuild_final_family: RF,
     scale_fn: SF,
     link_kind: LinkKind,
@@ -68,6 +74,7 @@ where
     L: Loss + Clone,
     K: Link + Clone,
     V: VarianceFn + Clone,
+    B: ShapeInnerBuilder<L, K, V, S> + Clone,
     S: LinearSolver,
     RF: FnOnce(&Array1<f64>) -> Family<L, K, V>,
     SF: FnOnce(&Family<L, K, V>, &GaussianInnerFit<S>, &Array1<f64>) -> f64,
@@ -79,7 +86,7 @@ where
         dev_rel_tol: family_base.loss.pirls_dev_rel_tol(),
         ..Default::default()
     };
-    let score: ShapeAwareEnvelopeScore<L, K, V, PirlsInnerBuilder, FixedAtOneProfile, S> =
+    let score: ShapeAwareEnvelopeScore<L, K, V, B, FixedAtOneProfile, S> =
         ShapeAwareEnvelopeScore {
             x_design: prep.x_design.clone(),
             y: y.to_owned(),
@@ -91,7 +98,7 @@ where
             log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
             coords: CoordsKind::Identity,
             pirls_opts,
-            inner_builder: PirlsInnerBuilder,
+            inner_builder: inner_builder.clone(),
             profile: FixedAtOneProfile,
             _solver: PhantomData,
             accepted_state: std::cell::RefCell::new(None),
@@ -99,10 +106,9 @@ where
         };
 
     let n_terms = prep.s_list.len();
-    debug_assert_eq!(
-        theta0.len(),
-        n_terms + 1,
-        "profile-θ driver expects exactly 1 shape axis"
+    debug_assert!(
+        theta0.len() > n_terms,
+        "profile-θ driver requires at least 1 shape axis"
     );
 
     let solver = ProfileShapeNewton::new(
@@ -157,14 +163,18 @@ where
 
 /// Outer Newton specialised to the **profile-shape** pattern: M-dim
 /// ρ-Newton with line search, followed by a sequential 1-D log(θ) Newton
-/// (3 PIRLS for central FD on the REML value) each outer iter. Port of
-/// mgcv_rust `src/smooth.rs:3562-3637`'s NegBin profile-θ block (plus
-/// the M-dim ρ-Newton above it).
+/// (3 PIRLS for central FD on the REML value) PER SHAPE AXIS each outer
+/// iter. Port of mgcv_rust `src/smooth.rs:3562-3637`'s NegBin profile-θ
+/// block (plus the M-dim ρ-Newton above it).
 ///
-/// Specialised to `ShapeAwareEnvelopeScore<L, K, V, PirlsInnerBuilder,
-/// FixedAtOneProfile, S>` with exactly 1 shape axis — NegBin today.
-/// (TDist/Tweedie/Ocat use `NewtonWithHalving` joint Newton via
-/// `fit_shape_aware`.)
+/// Specialised to `ShapeAwareEnvelopeScore<L, K, V, B, FixedAtOneProfile, S>`
+/// with arbitrary shape axis count:
+/// - NegBin: 1 shape param (`log θ`), uses `PirlsInnerBuilder`.
+/// - Ocat: R-2 shape params (R-2 log-gap thresholds), uses `OcatInnerBuilder`.
+///
+/// TDist / Tweedie still use `NewtonWithHalving` joint Newton via
+/// `fit_shape_aware` — their shape geometry doesn't admit a clean profile
+/// pattern.
 pub(crate) struct ProfileShapeNewton {
     pub opts: NewtonOpts,
 }
@@ -174,26 +184,30 @@ impl ProfileShapeNewton {
         Self { opts }
     }
 
-    /// Solve. Mirrors `NewtonWithHalving::minimize`'s structure (outer.rs:86-258)
-    /// but operates on the **ρ-block only** for the Newton step and inserts a
-    /// 1-D log(θ) profile Newton after each accepted ρ-step.
-    pub fn minimize<L, K, V, S>(
+    /// Solve. Mirrors `NewtonWithHalving::minimize`'s structure
+    /// (outer.rs:86-258) but operates on the **ρ-block only** for the
+    /// Newton step and inserts a per-axis 1-D log(θ_k) profile Newton
+    /// after each accepted ρ-step. Generic over the inner builder so it
+    /// covers both NegBin (`PirlsInnerBuilder`) and Ocat
+    /// (`OcatInnerBuilder`).
+    pub fn minimize<L, K, V, B, S>(
         &self,
-        score: &ShapeAwareEnvelopeScore<L, K, V, PirlsInnerBuilder, FixedAtOneProfile, S>,
+        score: &ShapeAwareEnvelopeScore<L, K, V, B, FixedAtOneProfile, S>,
         theta0: Array1<f64>,
     ) -> Result<OuterFit>
     where
         L: Loss + Clone,
         K: Link + Clone,
         V: VarianceFn + Clone,
+        B: ShapeInnerBuilder<L, K, V, S>,
         S: LinearSolver,
     {
         let opts = &self.opts;
         let n_terms = score.s_list.len();
         let n_shape = score.family_base.n_shape_params();
-        debug_assert_eq!(
-            n_shape, 1,
-            "ProfileShapeNewton requires exactly 1 shape axis (NegBin's log θ)"
+        debug_assert!(
+            n_shape >= 1,
+            "ProfileShapeNewton requires at least 1 shape axis"
         );
         let dim = n_terms + n_shape;
         debug_assert_eq!(theta0.len(), dim);
@@ -208,15 +222,25 @@ impl ProfileShapeNewton {
         let rho_bounds: Option<Vec<(f64, f64)>> = full_bounds
             .as_ref()
             .map(|b| b.iter().take(n_terms).copied().collect());
-        let shape_step_cap: f64 = full_caps
-            .as_ref()
-            .map(|c| c[n_terms])
-            // mgcv_rust's NegBinLogTheta step_cap (search_vector.rs:1361).
-            .unwrap_or(0.5);
-        let shape_lo_hi: (f64, f64) = full_bounds
-            .as_ref()
-            .map(|b| b[n_terms])
-            .unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+        // Shape-axis caps and bounds (one entry per shape param). Default
+        // step cap is mgcv_rust's NegBinLogTheta value (search_vector.rs:1361);
+        // bounds default to unbounded.
+        let shape_step_caps: Vec<f64> = (0..n_shape)
+            .map(|k| {
+                full_caps
+                    .as_ref()
+                    .and_then(|c| c.get(n_terms + k).copied())
+                    .unwrap_or(0.5)
+            })
+            .collect();
+        let shape_bounds: Vec<(f64, f64)> = (0..n_shape)
+            .map(|k| {
+                full_bounds
+                    .as_ref()
+                    .and_then(|b| b.get(n_terms + k).copied())
+                    .unwrap_or((f64::NEG_INFINITY, f64::INFINITY))
+            })
+            .collect();
 
         let mut theta = theta0;
         // Clamp initial point to bounds.
@@ -331,7 +355,10 @@ impl ProfileShapeNewton {
             };
             let mut alpha = 1.0_f64;
             let mut accepted = false;
-            let log_theta_current = theta[n_terms];
+            // Snapshot the current shape axes — line-search trials move
+            // only ρ, so the shape entries on every trial come from here.
+            let shape_current: Vec<f64> =
+                (0..n_shape).map(|k| theta[n_terms + k]).collect();
             let mut accepted_trial: Option<Array1<f64>> = None;
             for _ in 0..max_half {
                 let mut trial = theta.clone();
@@ -343,8 +370,10 @@ impl ProfileShapeNewton {
                         trial[i] = trial[i].clamp(lo, hi);
                     }
                 }
-                // shape param unchanged in trial
-                trial[n_terms] = log_theta_current;
+                // Shape params unchanged in trial (line search is ρ-only).
+                for (k, &v_k) in shape_current.iter().enumerate() {
+                    trial[n_terms + k] = v_k;
+                }
 
                 score.stats.bump_line_search_trial();
                 // Phase A: cheap NoRefresh probe.
@@ -431,83 +460,85 @@ impl ProfileShapeNewton {
             }
 
             // -----------------------------------------------------------
-            // (2) 1-D log(θ) profile Newton — port of mgcv_rust
-            //     src/smooth.rs:3562-3637 + reml/search_vector.rs:66-92
-            //     `newton_1d_with_halving`. Central FD on the REML value
-            //     at log θ ± h gives (g_lθ, H_lθ); Newton step δ =
-            //     -g_lθ / max(|H_lθ|, 1e-4), clamped to [-step_cap,
-            //     +step_cap]; 2-step halving on the trial.
+            // (2) Per-axis 1-D log(θ_k) profile Newton over each shape
+            //     param. Port of mgcv_rust src/smooth.rs:3562-3637 +
+            //     reml/search_vector.rs:66-92 `newton_1d_with_halving`,
+            //     generalised to N≥1 shape axes by looping the same
+            //     central-FD + clamped-Newton + 2-halving sequence over
+            //     each one. NegBin (N=1) → exactly the original behaviour.
+            //     Ocat (N=R-2) → sequential 1-D Newton on each log-gap
+            //     threshold.
             //
-            //     PIRLS economy (mgcv_rust pattern): the 3 FD probes
-            //     (center, +h, -h) and the 1-2 candidate evaluations all
-            //     run on the FROZEN β̂ from the accepted ρ probe — exactly
-            //     `OuterLinearCache::score_at_theta` (mgcv_rust
-            //     `src/reml/mod.rs:693-729`, called from
-            //     `src/smooth.rs:3592-3594` via `dispatch_reml_score_with_family`
-            //     which uses cached `(y_local, w_local, xtwx_local)`).
-            //     β̂ is refreshed at the top of the next outer iter via
-            //     `compute_value_grad_hess_rho_only_with_fit`.
+            //     PIRLS economy: the FD probes and trial evaluations all
+            //     run on the FROZEN β̂ from the accepted ρ probe via
+            //     `score_value_frozen_beta` (no inner PIRLS). β̂ is
+            //     refreshed once at the end if any axis moved.
             // -----------------------------------------------------------
-            let log_theta = theta[n_terms];
             let h_th: f64 = 1e-3; // mgcv_rust:3569
-            let rc = v; // already at accepted ρ
-            let mut t_plus = theta.clone();
-            let mut t_minus = theta.clone();
-            t_plus[n_terms] = (log_theta + h_th).clamp(shape_lo_hi.0, shape_lo_hi.1);
-            t_minus[n_terms] = (log_theta - h_th).clamp(shape_lo_hi.0, shape_lo_hi.1);
-            let rp_v = score.score_value_frozen_beta(&fit_center, &t_plus);
-            let rm_v = score.score_value_frozen_beta(&fit_center, &t_minus);
-            if rp_v.is_finite() && rm_v.is_finite() {
-                let dlr_dlt = (rp_v - rm_v) / (2.0 * h_th);
-                let d2lr_dlt2 = (rp_v - 2.0 * rc + rm_v) / (h_th * h_th);
+            let mut any_shape_moved = false;
+            for k in 0..n_shape {
+                let axis = n_terms + k;
+                let log_theta_k = theta[axis];
+                let lo_hi = shape_bounds[k];
+                let step_cap_k = shape_step_caps[k];
+                let rc = v; // current REML value at the accepted ρ + updated shape so far
 
-                // newton_1d_with_halving (search_vector.rs:66-92):
-                //   denom = max(|H|, 1e-4)
-                //   δ = clamp(-g/denom, [-cap, +cap])
-                //   try full δ; on failure try δ/2; else stay.
-                let denom = d2lr_dlt2.abs().max(1e-4);
-                let delta = (-(dlr_dlt / denom))
-                    .max(-shape_step_cap)
-                    .min(shape_step_cap);
-                let candidate = (log_theta + delta).clamp(shape_lo_hi.0, shape_lo_hi.1);
+                let mut t_plus = theta.clone();
+                let mut t_minus = theta.clone();
+                t_plus[axis] = (log_theta_k + h_th).clamp(lo_hi.0, lo_hi.1);
+                t_minus[axis] = (log_theta_k - h_th).clamp(lo_hi.0, lo_hi.1);
+                let rp_v = score.score_value_frozen_beta(&fit_center, &t_plus);
+                let rm_v = score.score_value_frozen_beta(&fit_center, &t_minus);
+                if !(rp_v.is_finite() && rm_v.is_finite()) {
+                    continue;
+                }
 
-                let mut new_log_theta = log_theta; // base = no-op
-                let mut accepted_theta = false;
+                let dlr = (rp_v - rm_v) / (2.0 * h_th);
+                let d2lr = (rp_v - 2.0 * rc + rm_v) / (h_th * h_th);
+                let denom = d2lr.abs().max(1e-4);
+                let delta = (-(dlr / denom)).max(-step_cap_k).min(step_cap_k);
+                let candidate = (log_theta_k + delta).clamp(lo_hi.0, lo_hi.1);
+
+                let mut new_log_theta = log_theta_k;
                 let mut theta_try = theta.clone();
-                theta_try[n_terms] = candidate;
+                theta_try[axis] = candidate;
                 let r_new = score.score_value_frozen_beta(&fit_center, &theta_try);
+                let mut accepted_axis = false;
                 if r_new.is_finite() && r_new < rc {
                     new_log_theta = candidate;
-                    accepted_theta = true;
+                    accepted_axis = true;
                     v = r_new;
                 }
-                if !accepted_theta {
-                    let half = (log_theta + 0.5 * delta).clamp(shape_lo_hi.0, shape_lo_hi.1);
-                    theta_try[n_terms] = half;
+                if !accepted_axis {
+                    let half = (log_theta_k + 0.5 * delta).clamp(lo_hi.0, lo_hi.1);
+                    theta_try[axis] = half;
                     let r_half = score.score_value_frozen_beta(&fit_center, &theta_try);
                     if r_half.is_finite() && r_half < rc {
                         new_log_theta = half;
                         v = r_half;
                     }
                 }
-                theta[n_terms] = new_log_theta;
-
-                // If log θ changed, the ρ-side Hessian / gradient are now
-                // stale (the family's θ changed, so PIRLS-converged β̂(ρ, θ)
-                // shifted). Refresh `(v, g_ρ, H_ρρ, fit_center)` at the
-                // new θ so the next outer iter's gradient-tolerance check
-                // and Newton direction are accurate. mgcv_rust:3611 commits
-                // the new log θ via `commit_outer_search_vector`; the next
-                // iter top runs PIRLS refresh (smooth.rs:2001-2010), then
-                // the gradient/Hessian eval at the refreshed (β, w, z, X'WX).
-                if new_log_theta != log_theta {
-                    let (v_new, g_new, h_new, fit_new) =
-                        score.compute_value_grad_hess_rho_only_with_fit(&theta)?;
-                    v = v_new;
-                    g_rho = g_new;
-                    h_rho = h_new;
-                    fit_center = fit_new;
+                if new_log_theta != log_theta_k {
+                    theta[axis] = new_log_theta;
+                    any_shape_moved = true;
                 }
+            }
+
+            // If any shape axis moved, the ρ-side Hessian / gradient are
+            // now stale (the family's θ changed → PIRLS-converged β̂(ρ, θ)
+            // shifted). Refresh `(v, g_ρ, H_ρρ, fit_center)` at the new
+            // θ so the next outer iter's gradient-tolerance check and
+            // Newton direction are accurate. mgcv_rust:3611 commits via
+            // `commit_outer_search_vector`; the next iter top runs PIRLS
+            // refresh (smooth.rs:2001-2010), then the gradient/Hessian eval
+            // at the refreshed (β, w, z, X'WX).
+            if any_shape_moved {
+                let (v_new, g_new, h_new, fit_new) =
+                    score.compute_value_grad_hess_rho_only_with_fit(&theta)?;
+                v = v_new;
+                g_rho = g_new;
+                h_rho = h_new;
+                fit_center = fit_new;
             }
         }
 

@@ -268,6 +268,27 @@ pub trait Loss {
         1.0e-9
     }
 
+    /// Force the joint-Newton outer to use full FD on the REML score
+    /// VALUE (instead of the analytic-IFT/FD-on-grad path) when computing
+    /// the joint Hessian. Default `false` — families with reliable
+    /// analytic shape derivatives stay on the cheaper IFT path.
+    ///
+    /// **Ocat returns `true`**: the ordered-thresholds + η surface has a
+    /// near-flat coordinated-shift ridge that the partial-analytic Hessian
+    /// captures poorly (FD-on-analytic-grad along the shape axes leaves
+    /// the ρ-θ off-diagonal information sparse). mgcv_rust uses full FD
+    /// on the score value for ocat exactly for this reason — see
+    /// `~/vibe_coding/nn_exploring/src/smooth.rs:622` (`reml_joint_ocat_finite_diff`).
+    ///
+    /// Cost: `1 + 2·d²` PIRLS solves per outer iter (d = n_terms +
+    /// n_shape) vs `1 + 2·n_shape` for the IFT path. For ocat at multi-
+    /// smooth with R=4 and 2 smooths, d=4 → 33 PIRLS/iter vs 5. Slower
+    /// per iter, but the joint Hessian captures cross-coupling that
+    /// stabilises the outer Newton on the scale-indeterminacy ridge.
+    fn prefers_full_fd_hessian(&self) -> bool {
+        false
+    }
+
     /// Analytic contribution to the score's gradient w.r.t. THIS loss's
     /// shape parameters, evaluated at the current shape values.
     ///

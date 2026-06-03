@@ -311,13 +311,14 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, NegBinVariance, S> for NegBin
         // outer iter. PIRLS economy matches mgcv_rust's (~4 PIRLS/iter vs
         // the joint Newton's ~9), closing the 11× perf gap vs mgcv_rust
         // on `1d_nb_log_n300`.
-        fit_shape_aware_profile::<_, _, _, S, _, _>(
+        fit_shape_aware_profile::<_, _, _, _, S, _, _>(
             prep,
             x,
             y,
             prior_weights,
             negbin_log(init_theta),
             theta0,
+            PirlsInnerBuilder,
             move |theta| {
                 let mut f = negbin_log(init_theta);
                 f.set_shape_params(&[theta[n_terms]]);
@@ -528,6 +529,20 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         for (i, &t) in theta0_shape.iter().enumerate() {
             theta0[n_terms + i] = t;
         }
+        // Ocat sticks with the joint (ρ, θ) Newton via `NewtonWithHalving`.
+        // The R-2 ordered thresholds are tightly coupled (α_1 < α_2 < …),
+        // and splitting them across the per-axis 1-D Newton loop in
+        // `ProfileShapeNewton` loses critical off-diagonal Hessian
+        // information — empirically that turns single-smooth ocat from a
+        // 12-iter convergence into a 200-iter non-convergence. NegBin's
+        // single bounded log θ is the right shape for the profile pattern;
+        // ocat is not.
+        //
+        // Convergence flag caveat at multi-smooth: the joint Newton walks
+        // a near-flat coordinated-shift ridge until step-halving exhausts,
+        // so `converged_=False` is common. Probabilities (via predict_proba)
+        // are scale-invariant under the ridge, so the model is still
+        // usable. See README.
         let outer_solver = NewtonWithHalving::new(
             crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts(),
         );
@@ -558,7 +573,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             beta: final_fit.beta,
             rho: rho_hat,
             lambda: lambda_vec,
-            scale: 1.0, // ocat has no dispersion
+            scale: 1.0,
             edf_total: edf,
             edf_per_term,
             n,

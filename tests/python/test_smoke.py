@@ -448,6 +448,58 @@ def test_auto_k_works_with_parametric_terms(rng):
     assert abs(g.coef_[-1] - 1.7) < 0.05
 
 
+def test_ocat_single_smooth_usable(rng):
+    """Single-smooth ocat: regression guard on `predict_proba` quality
+    and well-formedness. The joint (ρ, θ) Newton may report
+    converged_=False because the ordered-thresholds + η joint surface
+    has a near-flat scale-indeterminacy ridge (mgcv_rust hits the same
+    200-iter non-convergence on the same kind of fixture); what matters
+    for users is that predictions stay sharp on the inverted-link
+    response scale. Pin THAT, not the optimizer flag."""
+    n = 1200
+    x = rng.uniform(0, 10, n)
+    eta_true = np.sin(x)
+    qs = np.quantile(eta_true, [0.25, 0.5, 0.75])
+    y = (np.digitize(eta_true, qs) + 1).astype(float)
+    g = gamrs.Gam(family="ocat", r=4).fit(x, y)
+    # Probabilities are well-formed regardless of optimiser convergence.
+    proba = g.predict_proba(x)
+    assert proba.shape == (n, 4)
+    np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-10)
+    # On this synthetic fixture (clean cumulative-logit cut points),
+    # accuracy is near-perfect. Catch a regression that breaks the
+    # fit quality even if the optimizer still reports a number of iters.
+    acc = float((np.argmax(proba, axis=1) + 1 == y).mean())
+    assert acc > 0.95
+
+
+def test_ocat_multi_smooth_predict_proba_usable(rng):
+    """Multi-smooth ocat: the joint Newton may report converged_=False
+    (the joint (ρ, θ) outer walks a near-flat ridge), but `predict_proba`
+    is scale-invariant under the ridge and stays accurate. Pin both
+    properties so a future convergence fix doesn't accidentally regress
+    predict_proba quality."""
+    n = 1500
+    X = np.column_stack([rng.uniform(0, 10, n), rng.uniform(0, 10, n)])
+    eta = np.sin(X[:, 0]) + 0.5 * np.sin(X[:, 1] * 0.5)
+    qs = np.quantile(eta, [0.25, 0.5, 0.75])
+    y = (np.digitize(eta, qs) + 1).astype(float)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        g = gamrs.Gam(
+            family="ocat", r=4,
+            terms=[gamrs.CrTerm(0, k=8), gamrs.CrTerm(1, k=8)],
+        ).fit(X, y)
+    # Probabilities must be well-formed regardless of convergence flag.
+    proba = g.predict_proba(X)
+    assert proba.shape == (n, 4)
+    np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-10)
+    # Classification accuracy ≥ 95% — captures "the fit is usable" even
+    # if the optimisation didn't formally converge.
+    acc = float((np.argmax(proba, axis=1) + 1 == y).mean())
+    assert acc > 0.95
+
+
 def test_ocat_predict_proba_shape_and_row_sums(rng):
     """predict_proba for ocat should return (n, R) with rows summing
     to 1 (probabilities). Both single-smooth and multi-smooth ocat fits

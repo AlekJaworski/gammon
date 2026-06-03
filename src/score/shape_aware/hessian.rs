@@ -106,11 +106,19 @@ where
                 )
                 .is_some();
 
-        let mut hess = if has_analytic_shape_grad {
+        // Per-family opt-in: families with `prefers_full_fd_hessian = true`
+        // skip the analytic / partial-FD paths and use full FD on the REML
+        // score value. Ocat takes this route (matching mgcv_rust's
+        // `reml_joint_ocat_finite_diff`) because its ordered-threshold
+        // surface has a near-flat coordinated-shift ridge that the IFT
+        // path's sparse off-diagonal Hessian doesn't stabilise.
+        let mut hess = if family.loss.prefers_full_fd_hessian() {
+            self.hess_via_fd_on_value(theta)?
+        } else if has_analytic_shape_grad {
             // Tweedie path: 2·M PIRLS + 0 shape solves.
             self.hess_via_fd_frozen_beta(theta, &fit, &ctx)?
         } else if has_ift_shape_grad {
-            // NegBin / scat / Ocat path: analytic IFT for the M×M ρ block
+            // NegBin / scat path: analytic IFT for the M×M ρ block
             // (0 PIRLS solves — port of mgcv_rust
             // `reml_hessian_mgcv_exact_ift` at `src/reml/mod.rs:2511-2813`)
             // plus FD-on-grad along shape axes only (2·n_shape PIRLS solves).
@@ -119,8 +127,7 @@ where
             // PIRLS economy (`src/smooth.rs:2383` + `3562-3637`).
             self.hess_via_ift_analytic(theta, &fit, &family, n_shape)?
         } else {
-            // Safety-net path: direct FD on REML value. No gamrs family
-            // hits this today (NB/scat/Ocat all supply level-1 derivs).
+            // Safety-net path: direct FD on REML value.
             self.hess_via_fd_on_value(theta)?
         };
 
