@@ -1034,23 +1034,27 @@ where
                 // ── Build RHS for b2[i,k] solve ──────────────────────
                 // mgcv: rhs_w starts as -det3 · η1[i] · η1[k] (n-vector).
                 // Then μ-cross-θ corrections: -Dmuth[k]·η1[i] (if k shape)
-                // and -Dmuth[i]·η1[k] (if i shape). The η-coord chain
-                // collapses to μ-coord here because identity link.
-                let mut rhs_w = Array1::<f64>::zeros(n);
-                for r in 0..n {
-                    rhs_w[r] = -dmu3[r] * eta1[[r, i]] * eta1[[r, k]];
-                }
+                // and -Dmuth[i]·η1[k] (if i shape).
+                //
+                // **Broadcast-expression form** instead of indexed for-loops.
+                // ndarray's `&a * &b * &c` compiles to SIMD-friendly
+                // element-wise iteration without bounds-check overhead per
+                // step. The mgcv_rust port uses this exact pattern at
+                // `nn_exploring/src/reml/mod.rs:1443`.
+                let eta1_i = eta1.column(i);
+                let eta1_k = eta1.column(k);
+                // dmu3 is `&Array1<f64>`; -& doesn't apply to a reference,
+                // so use `-1.0 * &dmu3` to negate inline.
+                let mut rhs_w: Array1<f64> = (-1.0 * dmu3) * &eta1_i * &eta1_k;
                 if k >= n_terms {
                     let kk = k - n_terms;
-                    for r in 0..n {
-                        rhs_w[r] -= lv1.dmuth[[r, kk]] * eta1[[r, i]];
-                    }
+                    let dmuth_k = lv1.dmuth.column(kk);
+                    rhs_w = rhs_w - &dmuth_k * &eta1_i;
                 }
                 if i >= n_terms {
                     let ii = i - n_terms;
-                    for r in 0..n {
-                        rhs_w[r] -= lv1.dmuth[[r, ii]] * eta1[[r, k]];
-                    }
+                    let dmuth_i = lv1.dmuth.column(ii);
+                    rhs_w = rhs_w - &dmuth_i * &eta1_k;
                 }
                 // rhs (length p) = X' · rhs_w
                 let mut rhs: Array1<f64> = xt.dot(&rhs_w);
