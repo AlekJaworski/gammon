@@ -609,7 +609,20 @@ where
     })
 }
 
-fn make_psd(h: &Array2<f64>, floor: f64) -> Array2<f64> {
+/// Project the symmetric Hessian to a positive-definite form by
+/// flooring each eigenvalue at `floor`. Conservative "floor-only"
+/// behaviour: negative eigenvalues get clamped to `floor` (small
+/// positive), which produces tiny Newton steps in those directions
+/// rather than full-magnitude flipped descent steps.
+///
+/// For the proper Gill-Murray-Wright recipe (ABS + relative floor),
+/// see [`make_psd_gmw`]. GMW requires diagonal preconditioning to be
+/// stable across families (without preconditioning, the ABS produces
+/// over-large steps that destabilise scat / TDist fits).
+///
+/// `pub(crate)` so `fit::profile_shape` can share this canonical
+/// implementation rather than maintain a duplicate.
+pub(crate) fn make_psd(h: &Array2<f64>, floor: f64) -> Array2<f64> {
     let d = h.nrows();
     if d == 0 {
         return h.clone();
@@ -648,7 +661,76 @@ fn make_psd(h: &Array2<f64>, floor: f64) -> Array2<f64> {
     for k in 0..d {
         let lam = eigs[k].max(floor);
         let v = vecs.column(k);
-        // floored += lam · v vᵀ
+        for i in 0..d {
+            for j in 0..d {
+                floored[[i, j]] += lam * v[i] * v[j];
+            }
+        }
+    }
+    floored
+}
+
+/// Gill-Murray-Wright modified Hessian — Practical Optimization (1981)
+/// p.107-8, mgcv R `gam.fit3.r:1397-1417`, mgcv_rust `smooth.rs:2686-2712`.
+///
+/// ```text
+///   H = U diag(λ_i) U'                       (eigendecomposition)
+///   d_i ← |λ_i|                              (ABS for indefinite spectra)
+///   d_i ← max(d_i, max(|λ|) · ε^0.7)         (relative floor for tiny)
+///   H_psd = U diag(d_i) U'
+/// ```
+///
+/// The ABS step is what unsticks Newton on indefinite spectra: instead
+/// of flooring `−λ_i` to a tiny positive (giving a tiny step), GMW
+/// preserves `|λ_i|` magnitude (giving a descent step of the right size).
+///
+/// **Stability caveat**: GMW takes larger steps in formerly-indefinite
+/// directions, which only makes sense AFTER the Hessian has been
+/// diagonally preconditioned (so the eigenvalue spectrum is uniform
+/// across coordinates). Calling GMW on a raw Hessian with wildly
+/// different coordinate scales (e.g. ρ and θ axes for scat) over-steps
+/// in the high-curvature directions and breaks convergence. Pair with
+/// the preconditioning step in the Newton driver.
+///
+/// Used by the joint Newton in `outer.rs` (preconditioned) and the
+/// ρ-only Newton in `profile_shape.rs` (1-D, so preconditioning is
+/// trivial / vacuous).
+#[allow(dead_code)]
+pub(crate) fn make_psd_gmw(h: &Array2<f64>, floor: f64) -> Array2<f64> {
+    let d = h.nrows();
+    if d == 0 {
+        return h.clone();
+    }
+    if d == 1 {
+        let mut out = h.clone();
+        out[[0, 0]] = out[[0, 0]].abs().max(floor);
+        return out;
+    }
+    let mut sym = h.clone();
+    for i in 0..d {
+        for j in i + 1..d {
+            let avg = 0.5 * (sym[[i, j]] + sym[[j, i]]);
+            sym[[i, j]] = avg;
+            sym[[j, i]] = avg;
+        }
+    }
+    let (eigs, vecs) = match sym.eigh(UPLO::Lower) {
+        Ok(p) => p,
+        Err(_) => {
+            let mut out = sym;
+            for i in 0..d {
+                out[[i, i]] = out[[i, i]].abs().max(floor);
+            }
+            return out;
+        }
+    };
+    let abs_eigs: Vec<f64> = eigs.iter().map(|e| e.abs()).collect();
+    let max_abs = abs_eigs.iter().cloned().fold(0.0_f64, f64::max);
+    let low_d = (max_abs * f64::EPSILON.powf(0.7)).max(floor);
+    let mut floored = Array2::<f64>::zeros((d, d));
+    for k in 0..d {
+        let lam = abs_eigs[k].max(low_d);
+        let v = vecs.column(k);
         for i in 0..d {
             for j in 0..d {
                 floored[[i, j]] += lam * v[i] * v[j];

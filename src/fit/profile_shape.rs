@@ -26,14 +26,14 @@
 
 use std::marker::PhantomData;
 
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
-use ndarray_linalg::{Eigh, Solve, UPLO};
+use ndarray::{Array1, ArrayView1, ArrayView2};
+use ndarray_linalg::Solve;
 
 use crate::design::PreparedDesign;
 use crate::error::Result;
 use crate::family::Family;
 use crate::inner::{GaussianInnerFit, LinearSolver, PirlsOpts};
-use crate::outer::NewtonOpts;
+use crate::outer::{make_psd, NewtonOpts};
 use crate::score::shape_aware::{ShapeAwareEnvelopeScore, ShapeInnerBuilder};
 use crate::score::FixedAtOneProfile;
 use crate::traits::{CoordsKind, InnerSolver, Link, Loss, OuterFit, ScoreDerivatives, VarianceFn};
@@ -551,49 +551,4 @@ impl ProfileShapeNewton {
 
 fn inf_norm_view(v: &Array1<f64>) -> f64 {
     v.iter().fold(0.0_f64, |a, &b| a.max(b.abs()))
-}
-
-fn make_psd(h: &Array2<f64>, floor: f64) -> Array2<f64> {
-    let d = h.nrows();
-    if d == 0 {
-        return h.clone();
-    }
-    if d == 1 {
-        let mut out = h.clone();
-        if out[[0, 0]] < floor {
-            out[[0, 0]] = floor;
-        }
-        return out;
-    }
-    let mut sym = h.clone();
-    for i in 0..d {
-        for j in i + 1..d {
-            let avg = 0.5 * (sym[[i, j]] + sym[[j, i]]);
-            sym[[i, j]] = avg;
-            sym[[j, i]] = avg;
-        }
-    }
-    let (eigs, vecs) = match sym.eigh(UPLO::Lower) {
-        Ok(p) => p,
-        Err(_) => {
-            let mut out = sym;
-            for i in 0..d {
-                if out[[i, i]] < floor {
-                    out[[i, i]] = floor;
-                }
-            }
-            return out;
-        }
-    };
-    let mut floored = Array2::<f64>::zeros((d, d));
-    for k in 0..d {
-        let lam = eigs[k].max(floor);
-        let vk = vecs.column(k);
-        for i in 0..d {
-            for j in 0..d {
-                floored[[i, j]] += lam * vk[i] * vk[j];
-            }
-        }
-    }
-    floored
 }
