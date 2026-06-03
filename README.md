@@ -5,7 +5,7 @@ six composable trait layers (`Basis`, `BasisTransform`, `Loss`/`Link`/`VarianceF
 `InnerSolver`, `ScoreDerivatives`, `OuterSolver`). Designed for parity with
 R's `mgcv`.
 
-**Status: beta (v0.9).** Faster than `mgcv_rust` 0.23 at every tested
+**Status: beta (v0.10).** Faster than `mgcv_rust` 0.23 at every tested
 fixture and scale (see [Performance](#performance)), and `mgcv` R-parity
 on µ across all ten families. Multi-smooth additive (`y ~ s(x0) + s(x1)`),
 n-margin tensor products (`te(x0, x1, …)` / `ti(…)`) and thin-plate splines
@@ -67,15 +67,21 @@ InvGauss / NegBin / Tweedie. scat / TDist multi-smooth fits run and
 converge; reference parity tests are pending. Quantile/ELF is
 single-smooth-only.
 
-Multi-smooth Ocat fits run and produce well-defined `predict_proba`
-(probabilities are scale-invariant under the joint-Newton ridge that
-otherwise leaves η magnitude under-determined). On synthetic data with
-two smooths gamrs reaches 99%+ classification accuracy. The convergence
-*flag* (`converged_`) is currently over-conservative for multi-smooth
-ocat — the joint Newton walks a near-flat (ρ, θ) ridge until
-step-halving exhausts, so `converged_=False` is common even when the
-predictions are correct. A `ProfileShapeNewton`-style split outer (à la
-NegBin) would resolve the flag; tracked for a future release.
+Multi-smooth Ocat fits run, produce well-defined `predict_proba`, and
+reach 99%+ classification accuracy on synthetic fixtures.
+
+v0.10 ports the full mgcv R outer-Newton stabilisation stack (smart
+θ-init from category frequencies, diagonal Hessian preconditioning,
+Gill-Murray-Wright eigen-fix, subset Newton, rank-deficient KKT
+convergence check). After the ports, **single-smooth ocat converges
+cleanly on every tested seed**. Multi-smooth still hits a flat
+coordinated-shift ridge on the most pathological synthetic fixtures
+(both θ axes against the bound) where `converged_=False` lingers
+despite correct predictions — same regime mgcv R itself bails out
+of with a "did not converge after 200 iterations" warning. See
+`~/ObsidianVault/Projects/gamrs/gamrs - mgcv outer-Newton
+stabilisation techniques (port catalogue) 2026-06-03.md` for the
+full port story.
 
 ## Smooths
 
@@ -166,7 +172,7 @@ so adding a family is a `Loss` impl, not a fork of the optimiser.
 
 ## Versioning
 
-Beta (`0.9.x`). The API is stabilising; minor bumps may carry breaking
+Beta (`0.10.x`). The API is stabilising; minor bumps may carry breaking
 changes until the remaining shape-aware families (scat/Ocat/ELF) gain
 multi-smooth support and the 1.0 surface is locked.
 
