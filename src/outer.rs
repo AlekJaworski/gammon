@@ -257,48 +257,67 @@ impl OuterSolver for NewtonWithHalving {
                 }
             }
 
-            // Newton step with the mgcv R `gam.fit3.r:~1380-1417` stack:
-            //   1. Diagonal preconditioning: `D_ii = sqrt(|H_ii|)` so the
-            //      preconditioned Hessian has unit-magnitude diagonal
-            //      regardless of how wildly the raw coordinate scales differ
-            //      (e.g. ρ axes vs θ shape axes for scat / ocat).
-            //   2. Gill-Murray-Wright eigen-fix on the preconditioned Hess
+            // Newton step with mgcv R's `gam.fit3.r:~1380-1643` stack:
+            //   1. Subset Newton: filter axes where either |g_i| or |H_ii|
+            //      is meaningfully above the score-relative tolerance. Run
+            //      the rest of the Newton machinery on the subset only;
+            //      frozen axes get a zero step. Saves work AND keeps an
+            //      effectively-dead axis from polluting the active axes'
+            //      step direction through the joint inverse.
+            //   2. Diagonal preconditioning: D_ii = sqrt(|H_ii|) on the
+            //      active sub-Hessian, normalises the eigenvalue spectrum.
+            //   3. Gill-Murray-Wright eigen-fix on the preconditioned Hess
             //      (`make_psd_gmw`): ABS negative eigvals + relative floor
-            //      at `max(|λ|) · ε^0.7`. Safe in preconditioned coords
-            //      because the magnitudes are already normalised; the
-            //      raw-Hessian variant would over-step in high-curvature
-            //      coordinates (verified on scat parity fixture).
-            //   3. Solve in preconditioned coords, then back-transform.
-            // Falls back to `make_psd` floor-only path when D is degenerate.
+            //      at max(|λ|) · ε^0.7. Safe in preconditioned coords.
+            //   4. Solve in preconditioned coords, back-transform, pad
+            //      frozen dims with zero.
             let dim = g.len();
-            let mut diag_precond = Array1::<f64>::zeros(dim);
-            for i in 0..dim {
-                let hii = h[[i, i]].abs();
-                // mgcv uses `sqrt(|H_ii|)`; tiny floor avoids division blowup
-                // when a row of H is effectively zero (e.g. fully frozen axis).
-                diag_precond[i] = hii.sqrt().max(opts.hess_floor.sqrt());
+            // Subset filter — mgcv's `uconv.ind` at gam.fit3.r:1643:
+            //   active_i ⇔ |g_i| > dim_tol  OR  |H_ii| > dim_tol
+            // where dim_tol = score_scale · 1e-7 (a tier looser than the
+            // top-of-loop convergence threshold). The H_ii OR clause keeps
+            // axes active when curvature is meaningful even if the gradient
+            // is small (saddle-point case).
+            let dim_tol = score_scale * 1.0e-7;
+            let active: Vec<usize> = (0..dim)
+                .filter(|&i| g[i].abs() > dim_tol || h[[i, i]].abs() > dim_tol)
+                .collect();
+            // Safeguard (mgcv gam.fit3.r:1432): at least one active axis.
+            let active = if active.is_empty() {
+                let argmax = (0..dim)
+                    .max_by(|&a, &b| g[a].abs().total_cmp(&g[b].abs()))
+                    .unwrap_or(0);
+                vec![argmax]
+            } else {
+                active
+            };
+            let n_active = active.len();
+            // Build the active sub-Hessian + sub-gradient.
+            let mut diag_precond = Array1::<f64>::zeros(n_active);
+            for (ki, &ai) in active.iter().enumerate() {
+                diag_precond[ki] = h[[ai, ai]].abs().sqrt().max(opts.hess_floor.sqrt());
             }
             let step = {
-                // Precondition: H_p = D^-1 H D^-1, g_p = D^-1 g.
-                let mut h_pre = Array2::<f64>::zeros((dim, dim));
-                for i in 0..dim {
-                    for j in 0..dim {
-                        h_pre[[i, j]] = h[[i, j]] / (diag_precond[i] * diag_precond[j]);
+                let mut h_sub_pre = Array2::<f64>::zeros((n_active, n_active));
+                for (ri, &ai) in active.iter().enumerate() {
+                    for (ci, &aj) in active.iter().enumerate() {
+                        h_sub_pre[[ri, ci]] =
+                            h[[ai, aj]] / (diag_precond[ri] * diag_precond[ci]);
                     }
                 }
-                let mut g_pre = Array1::<f64>::zeros(dim);
-                for i in 0..dim {
-                    g_pre[i] = g[i] / diag_precond[i];
+                let mut g_sub_pre = Array1::<f64>::zeros(n_active);
+                for (ki, &ai) in active.iter().enumerate() {
+                    g_sub_pre[ki] = g[ai] / diag_precond[ki];
                 }
-                let h_psd = make_psd_gmw(&h_pre, opts.hess_floor);
-                let step_pre = match h_psd.solve(&(-&g_pre)) {
+                let h_psd = make_psd_gmw(&h_sub_pre, opts.hess_floor);
+                let step_sub_pre = match h_psd.solve(&(-&g_sub_pre)) {
                     Ok(s) => s,
-                    Err(_) => -&g_pre / opts.hess_floor.max(1.0),
+                    Err(_) => -&g_sub_pre / opts.hess_floor.max(1.0),
                 };
-                // Back-transform: step = D^-1 step_pre.
+                // Back-transform AND pad frozen dims with zero.
                 let mut step = Array1::<f64>::zeros(dim);
-                for i in 0..dim {
-                    step[i] = step_pre[i] / diag_precond[i];
+                for (ki, &ai) in active.iter().enumerate() {
+                    step[ai] = step_sub_pre[ki] / diag_precond[ki];
                 }
                 step
             };
