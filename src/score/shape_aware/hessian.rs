@@ -1181,37 +1181,20 @@ where
                     w2 = w2 + &lv2.dmu2_th2.column(pair);
                 }
                 // a2[i,k] = X' · diag(0.5·w2) · X  (+ λ_i·S_i if diagonal ρ).
-                // wx2 = X scaled per-row by 0.5·w2: use ndarray's broadcast
-                // (each row gets multiplied by the scalar 0.5·w2[r]).
+                // wx2 built via broadcast (n,1)·(n,p) — same pattern as
+                // the a1_loop above.
                 let half_w2 = &w2 * 0.5;
-                let mut wx2 = self.x_design.clone();
-                for r in 0..n {
-                    let wi = half_w2[r];
-                    let mut row = wx2.row_mut(r);
-                    row.mapv_inplace(|x| x * wi);
-                }
+                let wx2: Array2<f64> = &self.x_design * &half_w2.view().insert_axis(ndarray::Axis(1));
                 let mut a2_ik = xt.dot(&wx2);
                 if i == k && i < n_terms {
                     let lam = lambda[i];
-                    for r in 0..p {
-                        for c in 0..p {
-                            a2_ik[[r, c]] += lam * self.s_list[i][[r, c]];
-                        }
-                    }
+                    a2_ik = a2_ik + lam * &self.s_list[i];
                 }
                 // tr(A_inv · a2[i,k])
                 let ai_a2 = a_inv.dot(&a2_ik);
-                let mut tr_term1 = 0.0_f64;
-                for r in 0..p {
-                    tr_term1 += ai_a2[[r, r]];
-                }
-                // tr((A_inv·a1[i])·(A_inv·a1[k]))
-                let mut tr_term2 = 0.0_f64;
-                for r in 0..p {
-                    for c in 0..p {
-                        tr_term2 += ai_a1[i][[r, c]] * ai_a1[k][[c, r]];
-                    }
-                }
+                let tr_term1: f64 = ai_a2.diag().sum();
+                // tr((A_inv·a1[i])·(A_inv·a1[k])) — symmetric matrix prod.
+                let tr_term2: f64 = (&ai_a1[i] * &ai_a1[k].t()).sum();
                 let ldet2_ik = tr_term1 - tr_term2;
 
                 // ── Assemble Hessian entry ────────────────────────────
