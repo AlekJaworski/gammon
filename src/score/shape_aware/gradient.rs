@@ -681,40 +681,29 @@ where
         }
 
         // Per-row Deta3[i] = Dmu3·ig1³ − 3·Dmu2·g2g·ig1² + Dmu·(3·g2g² − g3g)·ig1.
-        let mut deta3 = Array1::<f64>::zeros(n);
-        for i in 0..n {
-            let ig1_i = ig1[i];
-            let ig1_2 = ig1_i * ig1_i;
-            let ig1_3 = ig1_2 * ig1_i;
-            let g2g_i = g2g[i];
-            let g3g_i = g3g[i];
-            deta3[i] = level1.dmu3[i] * ig1_3 - 3.0 * dmu2_arr[i] * g2g_i * ig1_2
-                + dmu_arr[i] * (3.0 * g2g_i * g2g_i - g3g_i) * ig1_i;
-        }
+        // Broadcast-expression form — autovectorises; indexed loops don't
+        // (mgcv_rust pattern at `reml/mod.rs:1443`).
+        let ig1_2: Array1<f64> = &ig1 * &ig1;
+        let ig1_3: Array1<f64> = &ig1_2 * &ig1;
+        let g2g_2: Array1<f64> = &g2g * &g2g;
+        let deta3: Array1<f64> = &level1.dmu3 * &ig1_3
+            - 3.0 * (&dmu2_arr * &g2g) * &ig1_2
+            + &dmu_arr * (3.0 * &g2g_2 - &g3g) * &ig1;
 
         // dβ/dθ_k = −H⁻¹ · X' · Detath[:, k] / 2 (η-coord IFT).
-        // When `newton_a_inv` is available, use it directly — matches the
-        // Newton-A `log|H|` the score formula uses. Otherwise fall back to
-        // the Fisher-A factor stored on the fit (ocat's case).
+        // Broadcast for Detath build; matvec for X' · Detath.
         let mut dbeta_dtheta = Array2::<f64>::zeros((p, n_theta));
         for k in 0..n_theta {
-            let mut detath_k = Array1::<f64>::zeros(n);
-            for i in 0..n {
-                detath_k[i] = level1.dmuth[[i, k]] * ig1[i];
-            }
+            let detath_k: Array1<f64> = &level1.dmuth.column(k) * &ig1;
             let rhs: Array1<f64> = self.x_design.t().dot(&detath_k) * 0.5;
-            if let Some(a_inv) = newton_a_inv {
-                // dβ/dθ = -A_newton⁻¹ · X' · Detath / 2.
-                let v: Array1<f64> = a_inv.dot(&rhs);
-                for r in 0..p {
-                    dbeta_dtheta[[r, k]] = -v[r];
-                }
+            let v: Array1<f64> = if let Some(a_inv) = newton_a_inv {
+                a_inv.dot(&rhs)
             } else {
-                let v = S::solve(&fit.a_factor, rhs.view());
-                for r in 0..p {
-                    dbeta_dtheta[[r, k]] = -v[r];
-                }
-            }
+                S::solve(&fit.a_factor, rhs.view())
+            };
+            let mut col = dbeta_dtheta.column_mut(k);
+            col.assign(&v);
+            col.mapv_inplace(|x| -x);
         }
 
         // h_diag[i] = X_i' H⁻¹ X_i. With Newton-A, this is the precomputed
@@ -724,22 +713,21 @@ where
         let h_diag: Array1<f64> = if let Some(tk) = lazy_tk_kkt.as_ref() {
             tk.lev_uw.clone()
         } else {
-            // Fisher path: solve A_inv·X' column-wise and reduce.
+            // Fisher path: h_diag[i] = X_i' · A⁻¹ · X_i. Solve A_inv·X'
+            // column-wise; reduce per row via dot. The per-row sum reduces
+            // to `(X_i * a_inv_xt_col_i).sum()` which is a broadcast.
             let mut a_inv_xt = Array2::<f64>::zeros((p, n));
             for i in 0..n {
                 let xi = self.x_design.row(i).to_owned();
                 let col = S::solve(&fit.a_factor, xi.view());
-                for r in 0..p {
-                    a_inv_xt[[r, i]] = col[r];
-                }
+                let mut out_col = a_inv_xt.column_mut(i);
+                out_col.assign(&col);
             }
             let mut h_diag_local = Array1::<f64>::zeros(n);
             for i in 0..n {
-                let mut s = 0.0_f64;
-                for r in 0..p {
-                    s += self.x_design[[i, r]] * a_inv_xt[[r, i]];
-                }
-                h_diag_local[i] = s;
+                // (X_i · A⁻¹X')_diag — small p=10 dot product.
+                h_diag_local[i] =
+                    (&self.x_design.row(i) * &a_inv_xt.column(i)).sum();
             }
             h_diag_local
         };
@@ -769,33 +757,19 @@ where
 
         let mut grad = Array1::<f64>::zeros(n_theta);
         for k in 0..n_theta {
-            // Envelope: Σᵢ Dth[i, k] = ∂(D + P)/∂θ_k (no β-chain at converged β).
-            let mut sum_dth_k = 0.0_f64;
-            for i in 0..n {
-                sum_dth_k += level1.dth[[i, k]];
-            }
-
+            // Envelope: Σᵢ Dth[i, k] = ∂(D + P)/∂θ_k.
+            let sum_dth_k: f64 = level1.dth.column(k).sum();
             // tr(H⁻¹ ∂H/∂θ_k) = Σᵢ ½·(Deta2th[i,k] + Deta3[i]·x_db_i)·h_diag[i]
-            // where (mgcv R `gam.fit4.r:51`):
-            //   Deta2th[i,k] = Dmu2th[i,k]·ig1²[i] − Dmuth[i,k]·g2g[i]·ig1[i]
-            // and Deta3 is precomputed above. For identity link this
-            // collapses to ½·(Dmu2th + Dmu3·x_db) — preserving ocat exactly.
-            let mut trace_term = 0.0_f64;
-            for i in 0..n {
-                let mut x_db_i = 0.0_f64;
-                for j in 0..p {
-                    x_db_i += self.x_design[[i, j]] * dbeta_dtheta[[j, k]];
-                }
-                let ig1_i = ig1[i];
-                let deta2th_ki =
-                    level1.dmu2th[[i, k]] * ig1_i * ig1_i - level1.dmuth[[i, k]] * g2g[i] * ig1_i;
-                let s_ki = 0.5 * (deta2th_ki + deta3[i] * x_db_i);
-                trace_term += s_ki * h_diag[i];
-            }
-            // Subtract Σ ∂ls/∂θ_k — closes the `-ls$d1` gap missing on the
-            // ocat-only original derivation (ocat: ls≡0, so the term was
-            // never tested). Without this, the NegBin IFT shape gradient
-            // ships the wrong sign on the log θ axis.
+            // x_db = X · dbeta_dtheta[:,k] hoisted as a single matvec.
+            let x_db: Array1<f64> = self.x_design.dot(&dbeta_dtheta.column(k));
+            let dmu2th_k = level1.dmu2th.column(k);
+            let dmuth_k = level1.dmuth.column(k);
+            // Deta2th_k = Dmu2th·ig1² − Dmuth·g2g·ig1 (broadcast).
+            let deta2th_k: Array1<f64> =
+                &dmu2th_k * &ig1_2 - &dmuth_k * &g2g * &ig1;
+            // s_arr = ½·(Deta2th_k + Deta3·x_db);  trace = Σ s_arr·h_diag
+            let s_arr: Array1<f64> = (&deta2th_k + &deta3 * &x_db) * 0.5;
+            let trace_term: f64 = (&s_arr * &h_diag).sum();
             grad[k] = 0.5 * sum_dth_k + 0.5 * trace_term - sum_dls_dtheta[k];
         }
         Ok(grad)
