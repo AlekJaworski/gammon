@@ -110,15 +110,10 @@ where
             fit.eta.view(),
             self.prior_weights.as_ref().map(|w| w.view()),
         ) {
-            // h_diag[i] = (X · A⁻¹ · X')_ii. Build a_inv_xt column-wise
-            // (assign per column instead of element-wise; broadcast for
-            // the per-row sum).
-            let mut a_inv_xt = Array2::<f64>::zeros((p, n));
-            for i in 0..n {
-                let xi = self.x_design.row(i).to_owned();
-                let col = S::solve(&fit.a_factor, xi.view());
-                a_inv_xt.column_mut(i).assign(&col);
-            }
+            // h_diag[i] = (X · A⁻¹ · X')_ii. Materialise A_inv once then
+            // A_inv·X' as one matmul (instead of n per-row solves).
+            let a_inv: Array2<f64> = fit.a_inv();
+            let a_inv_xt: Array2<f64> = a_inv.dot(&self.x_design.t());
             let mut h_diag = Array1::<f64>::zeros(n);
             for i in 0..n {
                 h_diag[i] = (&self.x_design.row(i) * &a_inv_xt.column(i)).sum();
@@ -699,19 +694,18 @@ where
         let h_diag: Array1<f64> = if let Some(tk) = lazy_tk_kkt.as_ref() {
             tk.lev_uw.clone()
         } else {
-            // Fisher path: h_diag[i] = X_i' · A⁻¹ · X_i. Solve A_inv·X'
-            // column-wise; reduce per row via dot. The per-row sum reduces
-            // to `(X_i * a_inv_xt_col_i).sum()` which is a broadcast.
-            let mut a_inv_xt = Array2::<f64>::zeros((p, n));
-            for i in 0..n {
-                let xi = self.x_design.row(i).to_owned();
-                let col = S::solve(&fit.a_factor, xi.view());
-                let mut out_col = a_inv_xt.column_mut(i);
-                out_col.assign(&col);
-            }
+            // Fisher path: h_diag[i] = X_i' · A⁻¹ · X_i.
+            // Materialise A_inv ONCE (p × p, via p column-wise solves)
+            // then compute A⁻¹ · X' as a single (p×p) · (p×n) matmul,
+            // not n separate solves. At n=2000, p=10 this is the
+            // difference between 2000 forward-back-substitution calls
+            // and one BLAS dgemm — the matmul wins by removing the
+            // per-row Rust-function-call overhead.
+            let a_inv: Array2<f64> = fit.a_inv();
+            let a_inv_xt: Array2<f64> = a_inv.dot(&self.x_design.t());
+            // h_diag[i] = Σ_r X[i,r] · a_inv_xt[r,i]  — broadcast sum.
             let mut h_diag_local = Array1::<f64>::zeros(n);
             for i in 0..n {
-                // (X_i · A⁻¹X')_diag — small p=10 dot product.
                 h_diag_local[i] =
                     (&self.x_design.row(i) * &a_inv_xt.column(i)).sum();
             }
