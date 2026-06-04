@@ -856,29 +856,34 @@ where
         // factors collapse to identity. We mirror `analytic_shape_grad_via_ift`
         // verbatim so the same A and the same Level-1 transformations are
         // shared between grad and Hessian.
-        let mut ig1 = Array1::<f64>::zeros(n);
-        let mut g2g = Array1::<f64>::zeros(n);
-        let mut g3g = Array1::<f64>::zeros(n);
-        let mut dmu_arr = Array1::<f64>::zeros(n);
-        let mut dmu2_arr = Array1::<f64>::zeros(n);
-        for i in 0..n {
-            let mu_i = fit.mu[i];
+        // mapv-style construction (one trait-method call per row, no
+        // index-into-Array1 bounds-check chain). Compiler specialises
+        // for identity link → constants → autovectorisation friendly.
+        let ig1: Array1<f64> = fit.mu.mapv(|mu_i| {
             let gp = self.family_base.link.d_link_dmu(mu_i);
-            let gpp = self.family_base.link.d2_link_dmu(mu_i);
-            let gppp = self.family_base.link.d3_link_dmu(mu_i);
-            if gp.abs() < 1e-300 {
-                ig1[i] = 0.0;
-                g2g[i] = 0.0;
-                g3g[i] = 0.0;
-            } else {
-                ig1[i] = 1.0 / gp;
-                g2g[i] = gpp / (gp * gp);
-                g3g[i] = gppp / (gp * gp * gp);
+            if gp.abs() < 1e-300 { 0.0 } else { 1.0 / gp }
+        });
+        let g2g: Array1<f64> = fit.mu.mapv(|mu_i| {
+            let gp = self.family_base.link.d_link_dmu(mu_i);
+            if gp.abs() < 1e-300 { 0.0 } else {
+                self.family_base.link.d2_link_dmu(mu_i) / (gp * gp)
             }
-            let wt_i = self.prior_weights.as_ref().map(|w| w[i]).unwrap_or(1.0);
-            dmu_arr[i] = wt_i * self.family_base.loss.d_loss_dmu(self.y[i], mu_i);
-            dmu2_arr[i] = wt_i * self.family_base.loss.d2_loss_dmu(self.y[i], mu_i);
-        }
+        });
+        let g3g: Array1<f64> = fit.mu.mapv(|mu_i| {
+            let gp = self.family_base.link.d_link_dmu(mu_i);
+            if gp.abs() < 1e-300 { 0.0 } else {
+                self.family_base.link.d3_link_dmu(mu_i) / (gp * gp * gp)
+            }
+        });
+        let prior_w_view = self.prior_weights.as_ref().map(|w| w.view());
+        let dmu_arr: Array1<f64> = Array1::from_shape_fn(n, |i| {
+            let wt_i = prior_w_view.as_ref().map(|w| w[i]).unwrap_or(1.0);
+            wt_i * self.family_base.loss.d_loss_dmu(self.y[i], fit.mu[i])
+        });
+        let dmu2_arr: Array1<f64> = Array1::from_shape_fn(n, |i| {
+            let wt_i = prior_w_view.as_ref().map(|w| w[i]).unwrap_or(1.0);
+            wt_i * self.family_base.loss.d2_loss_dmu(self.y[i], fit.mu[i])
+        });
 
         // Identity-link short-circuits — the full η-coord chain reduces to
         // μ-coord here. Non-identity links would need the `Detath` /

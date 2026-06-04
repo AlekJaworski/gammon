@@ -631,35 +631,32 @@ where
         // the IFT formula directly (no `dDeta` conversion) and its parity
         // tests only check μ predictions, so the bug was never exposed
         // there. gamrs diverges from mgcv_rust here and follows mgcv R.
-        let mut ig1 = Array1::<f64>::zeros(n);
-        let mut g2g = Array1::<f64>::zeros(n);
-        let mut g3g = Array1::<f64>::zeros(n);
-        let mut dmu_arr = Array1::<f64>::zeros(n);
-        let mut dmu2_arr = Array1::<f64>::zeros(n);
-        for i in 0..n {
-            let mu_i = fit.mu[i];
+        // mapv-style — see hess_via_ift_level2 for the rationale.
+        let ig1: Array1<f64> = fit.mu.mapv(|mu_i| {
             let gp = self.family_base.link.d_link_dmu(mu_i);
-            let gpp = self.family_base.link.d2_link_dmu(mu_i);
-            let gppp = self.family_base.link.d3_link_dmu(mu_i);
-            if gp.abs() < 1e-300 {
-                // Defensive — link Jacobian shouldn't vanish at converged μ.
-                ig1[i] = 0.0;
-                g2g[i] = 0.0;
-                g3g[i] = 0.0;
-            } else {
-                ig1[i] = 1.0 / gp;
-                g2g[i] = gpp / (gp * gp);
-                g3g[i] = gppp / (gp * gp * gp);
+            if gp.abs() < 1e-300 { 0.0 } else { 1.0 / gp }
+        });
+        let g2g: Array1<f64> = fit.mu.mapv(|mu_i| {
+            let gp = self.family_base.link.d_link_dmu(mu_i);
+            if gp.abs() < 1e-300 { 0.0 } else {
+                self.family_base.link.d2_link_dmu(mu_i) / (gp * gp)
             }
-            // Dmu / Dmu2 are not in Level1ShapeDerivs (yet); compute from
-            // the Loss directly. Prior weights are NOT applied here — the
-            // η-coord derivative formulas use the unweighted base values
-            // and the prior_w is already baked into Dmuth/Dmu2th/Dmu3 per
-            // the existing ocat convention.
-            let wt_i = self.prior_weights.as_ref().map(|w| w[i]).unwrap_or(1.0);
-            dmu_arr[i] = wt_i * self.family_base.loss.d_loss_dmu(self.y[i], mu_i);
-            dmu2_arr[i] = wt_i * self.family_base.loss.d2_loss_dmu(self.y[i], mu_i);
-        }
+        });
+        let g3g: Array1<f64> = fit.mu.mapv(|mu_i| {
+            let gp = self.family_base.link.d_link_dmu(mu_i);
+            if gp.abs() < 1e-300 { 0.0 } else {
+                self.family_base.link.d3_link_dmu(mu_i) / (gp * gp * gp)
+            }
+        });
+        let prior_w_view = self.prior_weights.as_ref().map(|w| w.view());
+        let dmu_arr: Array1<f64> = Array1::from_shape_fn(n, |i| {
+            let wt_i = prior_w_view.as_ref().map(|w| w[i]).unwrap_or(1.0);
+            wt_i * self.family_base.loss.d_loss_dmu(self.y[i], fit.mu[i])
+        });
+        let dmu2_arr: Array1<f64> = Array1::from_shape_fn(n, |i| {
+            let wt_i = prior_w_view.as_ref().map(|w| w[i]).unwrap_or(1.0);
+            wt_i * self.family_base.loss.d2_loss_dmu(self.y[i], fit.mu[i])
+        });
 
         // Per-row Deta3[i] = Dmu3·ig1³ − 3·Dmu2·g2g·ig1² + Dmu·(3·g2g² − g3g)·ig1.
         // Broadcast-expression form — autovectorises; indexed loops don't
