@@ -98,9 +98,9 @@ full port story.
 
 ## Performance
 
-`gamrs` vs `mgcv_rust` 0.23.2, single-smooth, best-of-8 wall time after
-warm-up. Numbers >1× mean `gamrs` is faster. Measured on a single 12th-gen
-Intel core. See `scripts/bench_matters.py`.
+`gamrs` vs `mgcv_rust` 0.23.2, single-smooth, best-of-20 wall time
+after long warm-up. Numbers >1× mean `gamrs` is faster. Measured on a
+single 12th-gen Intel core. See `scripts/bench_matters.py`.
 
 Single-smooth at gamrs-default `k=10`, n=2K:
 
@@ -111,21 +111,20 @@ Single-smooth at gamrs-default `k=10`, n=2K:
 | Bernoulli | 2.1×                 |
 | Tweedie   | 2.6×                 |
 | NegBin    | 1.0×                 |
-| scat      | 0.5×                 |
+| scat      | 0.77×                |
 | ocat      | 14× *(†)*            |
 
 *(†)* ocat speedup is fixture-dependent; mgcv_rust's ocat path is
 slow on multi-category outputs by construction.
 
-scat is the remaining gap: per-outer-iter overhead from v0.10's outer
-Newton stabilisation stack (GMW-modified Hessian, subset Newton, RD-KKT
-step-halving) costs more than the simpler Newton mgcv_rust uses. The
-**analytic-Hessian** plumbing scat exercises is now complete in v0.11
-(Level-2 derivatives + observed-W PIRLS + warm-start across outer iters),
-moving scat from v0.10's 0.07× to v0.11's 0.5×; closing the remaining
-2× gap is per-iter constants work (caching θ-state across score/grad/hess,
-dropping the per-PIRLS `x_design.clone()`, lightening the outer Newton
-guards on benign fits).
+scat closed substantially in v0.11.1 — from v0.10.0's 0.07× to 0.77× of
+mgcv_rust. Two structural wins drove it: (a) analytic gradient + Level-2
+analytic Hessian + observed-W PIRLS + warm-start (v0.11.0), and (b)
+broadcast-expression conversion + batched-h_diag matmul across the IFT
+chain (v0.11.1). The remaining ~25 % gap is per-pair work in the
+Hessian assembly that's already broadcast-friendly — closing it would
+need either algorithmic shortcuts or fundamentally different BLAS
+dispatch at small p.
 
 For GLM families at large n, set `method="fREML"` (mgcv R's `bam()`
 equivalent — Wood & Fasiolo 2017 Fellner-Schall multiplicative updates
