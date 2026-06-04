@@ -70,16 +70,12 @@ where
         let n = fit.n;
         let p = fit.p;
 
-        // Rebuild A_diag = X'WX_diag + Σ λ_j S_j_diag to find i* (the
-        // argmax row used by the post-penalty ridge formula).
+        // Rebuild A_diag = X'WX_diag + Σ λ_j S_j_diag to find i*.
+        // Broadcast: A_diag[c] = Σ_i X[i,c]² · W[i] = (X² · W).col_sum.
         let mut a_diag = Array1::<f64>::zeros(p);
         for c in 0..p {
-            let mut xtwx_c = 0.0_f64;
-            for i in 0..n {
-                let xic = self.x_design[[i, c]];
-                xtwx_c += xic * xic * fit.working_weights[i];
-            }
-            a_diag[c] = xtwx_c;
+            let xc = self.x_design.column(c);
+            a_diag[c] = (&xc * &xc * &fit.working_weights).sum();
         }
         for j in 0..n_terms {
             let lambda_j = rho_slice[j].exp();
@@ -114,39 +110,29 @@ where
             fit.eta.view(),
             self.prior_weights.as_ref().map(|w| w.view()),
         ) {
-            // h_diag[i] = (X · H⁻¹ · X')_ii. Use the fit factor to solve
-            // column-wise: A⁻¹ · X' = column-by-column solve(A, X_i).
+            // h_diag[i] = (X · A⁻¹ · X')_ii. Build a_inv_xt column-wise
+            // (assign per column instead of element-wise; broadcast for
+            // the per-row sum).
             let mut a_inv_xt = Array2::<f64>::zeros((p, n));
             for i in 0..n {
                 let xi = self.x_design.row(i).to_owned();
                 let col = S::solve(&fit.a_factor, xi.view());
-                for r in 0..p {
-                    a_inv_xt[[r, i]] = col[r];
-                }
+                a_inv_xt.column_mut(i).assign(&col);
             }
             let mut h_diag = Array1::<f64>::zeros(n);
             for i in 0..n {
-                let mut s = 0.0_f64;
-                for r in 0..p {
-                    s += self.x_design[[i, r]] * a_inv_xt[[r, i]];
-                }
-                h_diag[i] = s;
+                h_diag[i] = (&self.x_design.row(i) * &a_inv_xt.column(i)).sum();
             }
-            // For each j: dβ/dρ_j = -λ_j · H⁻¹ · S_j · β. Then η₁_j = X·dβ/dρ_j.
+            // tk_kkt[j] = Σ ½·dmu3[i]·η1[i,j]·h_diag[i]  (broadcast sum).
             let mut tk_kkt = vec![0.0_f64; n_terms];
             for j in 0..n_terms {
                 let lambda_j = rho_slice[j].exp();
                 let s_beta = self.s_list[j].dot(&fit.beta);
-                let dbeta_drho_j: Array1<f64> = {
-                    let rhs = s_beta.mapv(|v| -lambda_j * v);
-                    S::solve(&fit.a_factor, rhs.view())
-                };
+                let rhs = s_beta.mapv(|v| -lambda_j * v);
+                let dbeta_drho_j: Array1<f64> = S::solve(&fit.a_factor, rhs.view());
                 let eta1_j = self.x_design.dot(&dbeta_drho_j);
-                let mut s = 0.0_f64;
-                for i in 0..n {
-                    s += 0.5 * level1.dmu3[i] * eta1_j[i] * h_diag[i];
-                }
-                tk_kkt[j] = s;
+                // 0.5 · Σ dmu3 · η1_j · h_diag  — fused broadcast sum.
+                tk_kkt[j] = 0.5 * (&level1.dmu3 * &eta1_j * &h_diag).sum();
             }
             tk_kkt
         } else {

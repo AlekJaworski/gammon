@@ -666,10 +666,11 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
                 eta.view(),
                 prior_w.view(),
             ) {
-                for i in 0..n {
-                    working_weights[i] = w_obs[i];
-                    working_response[i] = z_obs[i];
-                }
+                // Use assign (a memcpy, SIMD-vectorised) instead of indexed
+                // for-loop (which bounds-checks every element and may not
+                // autovectorise).
+                working_weights.assign(&w_obs);
+                working_response.assign(&z_obs);
             } else {
                 for i in 0..n {
                     let mu_i = mu[i];
@@ -818,10 +819,8 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             eta.view(),
             prior_w.view(),
         ) {
-            for i in 0..n {
-                working_weights[i] = w_obs[i];
-                working_response[i] = z_obs[i];
-            }
+            working_weights.assign(&w_obs);
+            working_response.assign(&z_obs);
         } else {
             for i in 0..n {
                 let mu_i = mu[i];
