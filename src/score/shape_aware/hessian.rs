@@ -919,17 +919,14 @@ where
                 b1[[r, col]] = -0.5 * ainv_v[r];
             }
         }
-        // η1[k] = X · b1[k] (n × ntot).
+        // η1[k] = X · b1[k] (n × ntot). One matvec per axis instead of
+        // a per-row dot product — ndarray's .dot() uses contiguous BLAS-
+        // friendly iteration even at small p.
         let mut eta1 = Array2::<f64>::zeros((n, ntot));
         for k in 0..ntot {
-            let b1k = b1.column(k);
-            for i in 0..n {
-                let mut s_i = 0.0_f64;
-                for r in 0..p {
-                    s_i += self.x_design[[i, r]] * b1k[r];
-                }
-                eta1[[i, k]] = s_i;
-            }
+            let b1k = b1.column(k).to_owned();
+            let eta1_k = self.x_design.dot(&b1k);
+            eta1.column_mut(k).assign(&eta1_k);
         }
 
         // ---- s_beta_total = (Σ λ_j S_j) · β — reused throughout p1, p2.
@@ -953,9 +950,9 @@ where
         let dmu3 = &lv1.dmu3;
         let mut w1 = Array2::<f64>::zeros((n, ntot)); // per-axis diag-weights
         for k in 0..n_terms {
-            for i in 0..n {
-                w1[[i, k]] = 0.5 * dmu3[i] * eta1[[i, k]];
-            }
+            // w1[:, k] = 0.5 · dmu3 · eta1[:, k]  (broadcast).
+            let col = 0.5 * dmu3 * &eta1.column(k);
+            w1.column_mut(k).assign(&col);
         }
         for kk in 0..n_shape {
             let col = n_terms + kk;
@@ -980,22 +977,14 @@ where
         let mut ai_a1: Vec<Array2<f64>> = Vec::with_capacity(ntot);
         for k in 0..ntot {
             // A_1[k] = X' diag(w1[:, k]) X + (λ_k·S_k if k < M)
-            let mut wx = self.x_design.clone();
-            for i in 0..n {
-                let wi = w1[[i, k]];
-                for j in 0..p {
-                    wx[[i, j]] *= wi;
-                }
-            }
+            // Build wx = w · X via broadcast (`w.insert_axis(1)` is
+            // (n, 1) broadcasting against X's (n, p) shape).
+            let w_col = w1.column(k);
+            let wx: Array2<f64> = &self.x_design * &w_col.insert_axis(ndarray::Axis(1));
             let mut a1_k = xt.dot(&wx);
             if k < n_terms {
                 let lam = lambda[k];
-                // Add λ_k · S_k.
-                for r in 0..p {
-                    for c in 0..p {
-                        a1_k[[r, c]] += lam * self.s_list[k][[r, c]];
-                    }
-                }
+                a1_k = a1_k + lam * &self.s_list[k];
             }
             ai_a1.push(a_inv.dot(&a1_k));
         }
