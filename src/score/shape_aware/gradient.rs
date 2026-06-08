@@ -634,17 +634,25 @@ where
         // mapv-style — see hess_via_ift_level2 for the rationale.
         let ig1: Array1<f64> = fit.mu.mapv(|mu_i| {
             let gp = self.family_base.link.d_link_dmu(mu_i);
-            if gp.abs() < 1e-300 { 0.0 } else { 1.0 / gp }
+            if gp.abs() < 1e-300 {
+                0.0
+            } else {
+                1.0 / gp
+            }
         });
         let g2g: Array1<f64> = fit.mu.mapv(|mu_i| {
             let gp = self.family_base.link.d_link_dmu(mu_i);
-            if gp.abs() < 1e-300 { 0.0 } else {
+            if gp.abs() < 1e-300 {
+                0.0
+            } else {
                 self.family_base.link.d2_link_dmu(mu_i) / (gp * gp)
             }
         });
         let g3g: Array1<f64> = fit.mu.mapv(|mu_i| {
             let gp = self.family_base.link.d_link_dmu(mu_i);
-            if gp.abs() < 1e-300 { 0.0 } else {
+            if gp.abs() < 1e-300 {
+                0.0
+            } else {
                 self.family_base.link.d3_link_dmu(mu_i) / (gp * gp * gp)
             }
         });
@@ -664,8 +672,7 @@ where
         let ig1_2: Array1<f64> = &ig1 * &ig1;
         let ig1_3: Array1<f64> = &ig1_2 * &ig1;
         let g2g_2: Array1<f64> = &g2g * &g2g;
-        let deta3: Array1<f64> = &level1.dmu3 * &ig1_3
-            - 3.0 * (&dmu2_arr * &g2g) * &ig1_2
+        let deta3: Array1<f64> = &level1.dmu3 * &ig1_3 - 3.0 * (&dmu2_arr * &g2g) * &ig1_2
             + &dmu_arr * (3.0 * &g2g_2 - &g3g) * &ig1;
 
         // dβ/dθ_k = −H⁻¹ · X' · Detath[:, k] / 2 (η-coord IFT).
@@ -703,8 +710,7 @@ where
             // h_diag[i] = Σ_r X[i,r] · a_inv_xt[r,i]  — broadcast sum.
             let mut h_diag_local = Array1::<f64>::zeros(n);
             for i in 0..n {
-                h_diag_local[i] =
-                    (&self.x_design.row(i) * &a_inv_xt.column(i)).sum();
+                h_diag_local[i] = (&self.x_design.row(i) * &a_inv_xt.column(i)).sum();
             }
             h_diag_local
         };
@@ -876,8 +882,8 @@ where
                     },
                 };
                 if let Some(level1) = level1_ref {
-                    let shape_grad = self
-                        .analytic_shape_grad_via_ift(fit, family, level1, n_terms, &rho_slice)?;
+                    let shape_grad =
+                        self.analytic_shape_grad_via_ift(fit, family, level1, n_terms, &rho_slice)?;
                     debug_assert_eq!(shape_grad.len(), n_shape);
                     for k in 0..n_shape {
                         g[n_terms + k] = shape_grad[k];
@@ -999,9 +1005,8 @@ where
                 // frozen `fit`. This is the structural twin of
                 // `compute_value_grad`'s IFT path but without re-running
                 // PIRLS at θ ± h.
-                let shape_grad = self.analytic_shape_grad_via_ift(
-                    fit, &family, &level1, n_terms, &rho_slice,
-                )?;
+                let shape_grad =
+                    self.analytic_shape_grad_via_ift(fit, &family, &level1, n_terms, &rho_slice)?;
                 debug_assert_eq!(shape_grad.len(), n_shape);
                 for k in 0..n_shape {
                     g[n_terms + k] = shape_grad[k];

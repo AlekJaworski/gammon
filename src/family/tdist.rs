@@ -242,7 +242,6 @@ impl Loss for TDist {
         Some((w, z))
     }
 
-
     /// EXPERIMENTAL — diagnostic toggle for the mgcv-style rank heuristic
     /// (centered CR(k) treated as rank k−2 by mgcv vs gamrs's k−1). Empirical
     /// check for scat parallel to ocat (commit `d91b710`).
@@ -401,7 +400,7 @@ impl Loss for TDist {
         let nu_p3 = nu + 3.0;
         let q = nu * sigma2; // νσ²
         let qs_theta1 = sigma2 * nu_minus_df; // ∂q/∂θ_1
-        // Expected weight W_exp = ½·EDmu2 and its θ-derivatives.
+                                              // Expected weight W_exp = ½·EDmu2 and its θ-derivatives.
         let w_exp = nu_p1 / (nu_p3 * sigma2);
         let dwexp_dlog_sigma2 = -w_exp;
         let dwexp_dlog_nu_m2 = 2.0 * nu_minus_df / (nu_p3 * nu_p3 * sigma2);
@@ -504,18 +503,16 @@ impl Loss for TDist {
             let ymsig2a = r / sig2a; // ν r / s
             let fymf1ym = fym * f1ym; // (ν+1) r⁴ / s²
             let f1ymf1 = f1ym * f1; // r³ / s²  (mgcv R `f1ymf1`)
-            // NB: mgcv R `efam.r:1373-1375`'s Dmu2th2[,2]/[,3] uses `f1ymf1`
-            // (= f1ym·f1 = r³/s²), NOT `fymf1` (= fym·f1 = (ν+1)·r³/s²).
-            // mgcv_rust's `tdist_dd_arrays` mis-copies the symbol from
-            // `Dmuth2` (which DOES use `fymf1`) into Dmu2th2 — verified
-            // by FD at the gamrs Level-2 boundary tests. We use the R
-            // formula directly here.
+                                    // NB: mgcv R `efam.r:1373-1375`'s Dmu2th2[,2]/[,3] uses `f1ymf1`
+                                    // (= f1ym·f1 = r³/s²), NOT `fymf1` (= fym·f1 = (ν+1)·r³/s²).
+                                    // mgcv_rust's `tdist_dd_arrays` mis-copies the symbol from
+                                    // `Dmuth2` (which DOES use `fymf1`) into Dmu2th2 — verified
+                                    // by FD at the gamrs Level-2 boundary tests. We use the R
+                                    // formula directly here.
 
             // ── ∂⁴D / ∂μ⁴  (mgcv `det4`, line 1270) ─────────────────────
-            dmu4[i] = wt
-                * 12.0
-                * (-nu1nusig2a / nusig2a + 8.0 * ff1 / nusig2a
-                    - 8.0 * ff1 * f1 * f1);
+            dmu4[i] =
+                wt * 12.0 * (-nu1nusig2a / nusig2a + 8.0 * ff1 / nusig2a - 8.0 * ff1 * f1 * f1);
 
             // ── ∂⁴D / (∂μ³ ∂θ_k)  in NATIVE order [log(ν−2), log σ] ────
             //   mgcv `det3_th[0]` = ∂(∂³D/∂μ³)/∂(log(ν−2)),
@@ -538,7 +535,9 @@ impl Loss for TDist {
             //   mgcv native packing: (0,0)=νν, (0,1)=νσ, (1,1)=σσ.
             let dth2_nu_nu = wt
                 * (nu_minus_df * a.ln()
-                    + nu2nu * r * r
+                    + nu2nu
+                        * r
+                        * r
                         * (-2.0 * nu_minus_df - nu_p1 + 2.0 * nu_p1 * nu2nu
                             - nu_p1 * nu2nu * f1ym)
                         / nusig2a);
@@ -640,10 +639,11 @@ impl Loss for TDist {
         };
         // ∂²ls/∂(log(ν−2))² (derived above; matches mgcv_rust line 1428-1432
         // with the substitution `nu2 = ν − 2`, `nu2nu = (ν − 2)/ν`).
-        let d2ls_dnu2 = nu_minus_df * nu_minus_df * 0.25 * (trigamma(half_nu_p1) - trigamma(half_nu))
-            + nu_minus_df * 0.5 * (digamma(half_nu_p1) - digamma(half_nu))
-            + 0.5 * nu2nu * nu2nu
-            - 0.5 * nu2nu;
+        let d2ls_dnu2 =
+            nu_minus_df * nu_minus_df * 0.25 * (trigamma(half_nu_p1) - trigamma(half_nu))
+                + nu_minus_df * 0.5 * (digamma(half_nu_p1) - digamma(half_nu))
+                + 0.5 * nu2nu * nu2nu
+                - 0.5 * nu2nu;
         vec![0.0, 0.0, sum_w * d2ls_dnu2]
     }
 }

@@ -20,6 +20,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+# `gamrs._shash` imports scipy at module load, but scipy is an *optional*
+# dependency (pyproject `[project.optional-dependencies] quantile`) — absent on
+# platforms without a scipy wheel and not installed in the base CI env. Skip
+# the whole module cleanly when scipy is unavailable rather than erroring at
+# collection time (which aborts the entire pytest run).
+pytest.importorskip("scipy")
+
 import gamrs
 from gamrs._shash import compute_err_param, fit_shash
 

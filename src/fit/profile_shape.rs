@@ -358,8 +358,7 @@ impl ProfileShapeNewton {
             let mut accepted = false;
             // Snapshot the current shape axes — line-search trials move
             // only ρ, so the shape entries on every trial come from here.
-            let shape_current: Vec<f64> =
-                (0..n_shape).map(|k| theta[n_terms + k]).collect();
+            let shape_current: Vec<f64> = (0..n_shape).map(|k| theta[n_terms + k]).collect();
             let mut accepted_trial: Option<Array1<f64>> = None;
             for _ in 0..max_half {
                 let mut trial = theta.clone();

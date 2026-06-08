@@ -861,17 +861,25 @@ where
         // for identity link → constants → autovectorisation friendly.
         let ig1: Array1<f64> = fit.mu.mapv(|mu_i| {
             let gp = self.family_base.link.d_link_dmu(mu_i);
-            if gp.abs() < 1e-300 { 0.0 } else { 1.0 / gp }
+            if gp.abs() < 1e-300 {
+                0.0
+            } else {
+                1.0 / gp
+            }
         });
         let g2g: Array1<f64> = fit.mu.mapv(|mu_i| {
             let gp = self.family_base.link.d_link_dmu(mu_i);
-            if gp.abs() < 1e-300 { 0.0 } else {
+            if gp.abs() < 1e-300 {
+                0.0
+            } else {
                 self.family_base.link.d2_link_dmu(mu_i) / (gp * gp)
             }
         });
         let g3g: Array1<f64> = fit.mu.mapv(|mu_i| {
             let gp = self.family_base.link.d_link_dmu(mu_i);
-            if gp.abs() < 1e-300 { 0.0 } else {
+            if gp.abs() < 1e-300 {
+                0.0
+            } else {
                 self.family_base.link.d3_link_dmu(mu_i) / (gp * gp * gp)
             }
         });
@@ -1057,16 +1065,14 @@ where
                 //   if i is ρ: -2 λ_i · S_i · b1[k]
                 //   if i == k AND ρ: extra -2 λ_i · S_i · β
                 if k < n_terms {
-                    let s_k_b1_i: Array1<f64> =
-                        self.s_list[k].dot(&b1.column(i).to_owned());
+                    let s_k_b1_i: Array1<f64> = self.s_list[k].dot(&b1.column(i).to_owned());
                     let lam = lambda[k];
                     for r in 0..p {
                         rhs[r] -= 2.0 * lam * s_k_b1_i[r];
                     }
                 }
                 if i < n_terms {
-                    let s_i_b1_k: Array1<f64> =
-                        self.s_list[i].dot(&b1.column(k).to_owned());
+                    let s_i_b1_k: Array1<f64> = self.s_list[i].dot(&b1.column(k).to_owned());
                     let lam = lambda[i];
                     for r in 0..p {
                         rhs[r] -= 2.0 * lam * s_i_b1_k[r];
@@ -1103,8 +1109,7 @@ where
                 // ── d2[i,k]: second deriv of D ────────────────────────
                 // Broadcast-expr form — see rhs_w build comment above for
                 // why this beats indexed for-loops.
-                let mut d2_ik = (&dmu2_arr * &eta1_i * &eta1_k).sum()
-                    + (&dmu_arr * &eta2_ik).sum();
+                let mut d2_ik = (&dmu2_arr * &eta1_i * &eta1_k).sum() + (&dmu_arr * &eta2_ik).sum();
                 if i >= n_terms && k >= n_terms {
                     let ii = i - n_terms;
                     let kk = k - n_terms;
@@ -1130,8 +1135,7 @@ where
                 // 2 · b1[i]' · (Σ λ_m S_m · b1[k])
                 let mut s_b1_k = Array1::<f64>::zeros(p);
                 for m in 0..n_terms {
-                    let s_m_b1_k: Array1<f64> =
-                        self.s_list[m].dot(&b1.column(k).to_owned());
+                    let s_m_b1_k: Array1<f64> = self.s_list[m].dot(&b1.column(k).to_owned());
                     for r in 0..p {
                         s_b1_k[r] += lambda[m] * s_m_b1_k[r];
                     }
@@ -1189,7 +1193,8 @@ where
                 // wx2 built via broadcast (n,1)·(n,p) — same pattern as
                 // the a1_loop above.
                 let half_w2 = &w2 * 0.5;
-                let wx2: Array2<f64> = &self.x_design * &half_w2.view().insert_axis(ndarray::Axis(1));
+                let wx2: Array2<f64> =
+                    &self.x_design * &half_w2.view().insert_axis(ndarray::Axis(1));
                 let mut a2_ik = xt.dot(&wx2);
                 if i == k && i < n_terms {
                     let lam = lambda[i];

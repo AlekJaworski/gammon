@@ -125,7 +125,11 @@ fn tdist_analytic_shape_grad_matches_fd() {
         // Deterministic pseudo-noise with occasional large spikes (heavy tail).
         let r = ((i as f64) * 12.9898 + 78.233).sin() * 43758.5453;
         let frac = r - r.floor(); // in [0,1)
-        let noise = if frac > 0.9 { 6.0 * (frac - 0.5) } else { 0.3 * (frac - 0.5) };
+        let noise = if frac > 0.9 {
+            6.0 * (frac - 0.5)
+        } else {
+            0.3 * (frac - 0.5)
+        };
         ys.push(base + noise);
     }
     let y = Array1::from_vec(ys);
@@ -161,10 +165,10 @@ fn tdist_analytic_shape_grad_matches_fd() {
     // low-ν / small-σ² corner the real-data fit collapsed into.
     let ln = |nu: f64| (nu - 2.0_f64).ln();
     let probes: &[[f64; 3]] = &[
-        [0.0, 0.0, ln(5.0)],   // σ²=1,   ν=5
-        [2.0, -1.0, ln(3.0)],  // σ²=0.37, ν=3
-        [1.0, 1.0, ln(10.0)],  // σ²=2.7,  ν=10
-        [3.0, -2.0, ln(2.1)],  // σ²=0.135, ν=2.1  (corner)
+        [0.0, 0.0, ln(5.0)],  // σ²=1,   ν=5
+        [2.0, -1.0, ln(3.0)], // σ²=0.37, ν=3
+        [1.0, 1.0, ln(10.0)], // σ²=2.7,  ν=10
+        [3.0, -2.0, ln(2.1)], // σ²=0.135, ν=2.1  (corner)
     ];
 
     let fd_at = |theta: &Array1<f64>, i: usize, h: f64| -> f64 {
@@ -254,7 +258,7 @@ fn tweedie_analytic_shape_grad_matches_fd() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            last_eta: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -336,7 +340,7 @@ fn tweedie_analytic_hess_matches_fd_on_grad() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            last_eta: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -446,7 +450,7 @@ fn debug_tweedie_real_data_grad_walk() {
         profile: OwnedByLossProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            last_eta: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -586,7 +590,7 @@ fn negbin_multismooth_analytic_grad_matches_fd() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            last_eta: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -706,7 +710,7 @@ fn nb_hess_microbench() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            last_eta: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
     let theta = Array1::from_vec(vec![1.0, 1.0, 1.0]);
@@ -779,7 +783,7 @@ fn nb_hess_microbench() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            last_eta: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
     let theta1 = Array1::from_vec(vec![1.0, 1.0]);
@@ -853,7 +857,7 @@ fn negbin_multismooth_analytic_hess_matches_fd_on_grad() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            last_eta: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 
@@ -965,7 +969,7 @@ fn tdist_analytic_hess_matches_fd_on_grad() {
         profile: FixedAtOneProfile,
         _solver: std::marker::PhantomData,
         accepted_state: std::cell::RefCell::new(None),
-            last_eta: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
         stats: gamrs::stats::FitStats::new(),
     };
 

@@ -253,8 +253,8 @@ fn tdist_d2_is_negative_for_outliers() {
 // regression surfaces at the architectural component boundary, not
 // downstream as a "scat outer didn't converge" failure.
 
-use ndarray::{Array1, Array2, ArrayView1};
 use gamrs::traits::{shape_pair_index, Level1ShapeDerivs, Level2ShapeDerivs};
+use ndarray::{Array1, Array2, ArrayView1};
 
 fn tdist_level1_at(nu: f64, sigma2: f64, ys: &[f64], mus: &[f64]) -> Level1ShapeDerivs {
     let t = TDist { nu, sigma2 };
@@ -309,21 +309,45 @@ fn tdist_level1_dth_matches_fd() {
             for (i, &y) in ys.iter().enumerate() {
                 let sig_plus = (sigma2.ln() + h).exp();
                 let sig_minus = (sigma2.ln() - h).exp();
-                let d_plus = TDist { nu, sigma2: sig_plus }.deviance_per_obs(y, mus[i]);
-                let d_minus = TDist { nu, sigma2: sig_minus }.deviance_per_obs(y, mus[i]);
+                let d_plus = TDist {
+                    nu,
+                    sigma2: sig_plus,
+                }
+                .deviance_per_obs(y, mus[i]);
+                let d_minus = TDist {
+                    nu,
+                    sigma2: sig_minus,
+                }
+                .deviance_per_obs(y, mus[i]);
                 let fd = (d_plus - d_minus) / (2.0 * h);
                 let rel = (lv1.dth[[i, 0]] - fd).abs() / (fd.abs() + 1.0);
-                assert!(rel < 1e-5, "dth[σ²][{i}]: analytic={} fd={fd}", lv1.dth[[i, 0]]);
+                assert!(
+                    rel < 1e-5,
+                    "dth[σ²][{i}]: analytic={} fd={fd}",
+                    lv1.dth[[i, 0]]
+                );
             }
             // ν axis: θ = log(ν - min.df)
             for (i, &y) in ys.iter().enumerate() {
                 let nu_plus = ((nu - 3.0).ln() + h).exp() + 3.0;
                 let nu_minus = ((nu - 3.0).ln() - h).exp() + 3.0;
-                let d_plus = TDist { nu: nu_plus, sigma2 }.deviance_per_obs(y, mus[i]);
-                let d_minus = TDist { nu: nu_minus, sigma2 }.deviance_per_obs(y, mus[i]);
+                let d_plus = TDist {
+                    nu: nu_plus,
+                    sigma2,
+                }
+                .deviance_per_obs(y, mus[i]);
+                let d_minus = TDist {
+                    nu: nu_minus,
+                    sigma2,
+                }
+                .deviance_per_obs(y, mus[i]);
                 let fd = (d_plus - d_minus) / (2.0 * h);
                 let rel = (lv1.dth[[i, 1]] - fd).abs() / (fd.abs() + 1.0);
-                assert!(rel < 1e-5, "dth[ν][{i}]: analytic={} fd={fd}", lv1.dth[[i, 1]]);
+                assert!(
+                    rel < 1e-5,
+                    "dth[ν][{i}]: analytic={} fd={fd}",
+                    lv1.dth[[i, 1]]
+                );
             }
         }
     }
@@ -345,7 +369,11 @@ fn tdist_level2_dmu4_matches_fd_of_dmu3() {
                 let lv1_m = tdist_level1_at(nu, sigma2, &[y], &mu_minus_vec);
                 let fd = (lv1_p.dmu3[0] - lv1_m.dmu3[0]) / (2.0 * h);
                 let rel = (lv2.dmu4[i] - fd).abs() / (fd.abs() + 1.0);
-                assert!(rel < 1e-4, "dmu4[{i}] (ν={nu}, σ²={sigma2}, y={y}): analytic={} fd={fd}", lv2.dmu4[i]);
+                assert!(
+                    rel < 1e-4,
+                    "dmu4[{i}] (ν={nu}, σ²={sigma2}, y={y}): analytic={} fd={fd}",
+                    lv2.dmu4[i]
+                );
             }
         }
     }
@@ -368,7 +396,11 @@ fn tdist_level2_dmu3_th_matches_fd_of_dmu3() {
                 let lv1_m = tdist_level1_at(nu, sig_minus, &[y], &[mus[i]]);
                 let fd = (lv1_p.dmu3[0] - lv1_m.dmu3[0]) / (2.0 * h);
                 let rel = (lv2.dmu3_th[[i, 0]] - fd).abs() / (fd.abs() + 1.0);
-                assert!(rel < 1e-5, "dmu3_th[σ²][{i}]: analytic={} fd={fd}", lv2.dmu3_th[[i, 0]]);
+                assert!(
+                    rel < 1e-5,
+                    "dmu3_th[σ²][{i}]: analytic={} fd={fd}",
+                    lv2.dmu3_th[[i, 0]]
+                );
             }
             // ν axis
             for (i, &y) in ys.iter().enumerate() {
@@ -378,7 +410,11 @@ fn tdist_level2_dmu3_th_matches_fd_of_dmu3() {
                 let lv1_m = tdist_level1_at(nu_minus, sigma2, &[y], &[mus[i]]);
                 let fd = (lv1_p.dmu3[0] - lv1_m.dmu3[0]) / (2.0 * h);
                 let rel = (lv2.dmu3_th[[i, 1]] - fd).abs() / (fd.abs() + 1.0);
-                assert!(rel < 1e-5, "dmu3_th[ν][{i}]: analytic={} fd={fd}", lv2.dmu3_th[[i, 1]]);
+                assert!(
+                    rel < 1e-5,
+                    "dmu3_th[ν][{i}]: analytic={} fd={fd}",
+                    lv2.dmu3_th[[i, 1]]
+                );
             }
         }
     }
@@ -407,10 +443,10 @@ fn tdist_level2_shape_cross_derivs_match_fd_of_level1() {
                     let fd_dmuth2 = (lv1_p.dmuth[[0, a]] - lv1_m.dmuth[[0, a]]) / (2.0 * h);
                     let fd_dmu2th2 = (lv1_p.dmu2th[[0, a]] - lv1_m.dmu2th[[0, a]]) / (2.0 * h);
                     let rel_dth = (lv2.dth2[[i, pair]] - fd_dth2).abs() / (fd_dth2.abs() + 1.0);
-                    let rel_dmuth = (lv2.dmu_th2[[i, pair]] - fd_dmuth2).abs()
-                        / (fd_dmuth2.abs() + 1.0);
-                    let rel_dmu2th = (lv2.dmu2_th2[[i, pair]] - fd_dmu2th2).abs()
-                        / (fd_dmu2th2.abs() + 1.0);
+                    let rel_dmuth =
+                        (lv2.dmu_th2[[i, pair]] - fd_dmuth2).abs() / (fd_dmuth2.abs() + 1.0);
+                    let rel_dmu2th =
+                        (lv2.dmu2_th2[[i, pair]] - fd_dmu2th2).abs() / (fd_dmu2th2.abs() + 1.0);
                     assert!(
                         rel_dth < 5e-5,
                         "dth2 pair=({a},{b}) row={i}: analytic={} fd={fd_dth2}",
@@ -434,7 +470,7 @@ fn tdist_level2_shape_cross_derivs_match_fd_of_level1() {
 
 fn perturb_tdist(nu: f64, sigma2: f64, axis: usize, h: f64) -> (f64, f64) {
     match axis {
-        0 => (nu, (sigma2.ln() + h).exp()), // log σ²
+        0 => (nu, (sigma2.ln() + h).exp()),               // log σ²
         1 => (((nu - 3.0).ln() + h).exp() + 3.0, sigma2), // log(ν - min.df)
         _ => unreachable!("TDist has 2 shape axes"),
     }
@@ -451,23 +487,43 @@ fn tdist_sum_dls_dtheta_matches_fd() {
             let analytic = t.sum_saturated_log_lik_dtheta(y_view.view(), 1.0, None);
             let h = 1e-6;
             // σ² axis
-            let t_plus = TDist { nu, sigma2: (sigma2.ln() + h).exp() };
-            let t_minus = TDist { nu, sigma2: (sigma2.ln() - h).exp() };
+            let t_plus = TDist {
+                nu,
+                sigma2: (sigma2.ln() + h).exp(),
+            };
+            let t_minus = TDist {
+                nu,
+                sigma2: (sigma2.ln() - h).exp(),
+            };
             let ls_plus: f64 = ys.iter().map(|&y| t_plus.saturated_log_lik(y, 1.0)).sum();
             let ls_minus: f64 = ys.iter().map(|&y| t_minus.saturated_log_lik(y, 1.0)).sum();
             let fd = (ls_plus - ls_minus) / (2.0 * h);
             let rel = (analytic[0] - fd).abs() / (fd.abs() + 1.0);
-            assert!(rel < 1e-5, "dls/d(log σ²) ν={nu} σ²={sigma2}: analytic={} fd={fd}", analytic[0]);
+            assert!(
+                rel < 1e-5,
+                "dls/d(log σ²) ν={nu} σ²={sigma2}: analytic={} fd={fd}",
+                analytic[0]
+            );
             // ν axis
             let nu_plus = ((nu - 3.0).ln() + h).exp() + 3.0;
             let nu_minus = ((nu - 3.0).ln() - h).exp() + 3.0;
-            let t_plus = TDist { nu: nu_plus, sigma2 };
-            let t_minus = TDist { nu: nu_minus, sigma2 };
+            let t_plus = TDist {
+                nu: nu_plus,
+                sigma2,
+            };
+            let t_minus = TDist {
+                nu: nu_minus,
+                sigma2,
+            };
             let ls_plus: f64 = ys.iter().map(|&y| t_plus.saturated_log_lik(y, 1.0)).sum();
             let ls_minus: f64 = ys.iter().map(|&y| t_minus.saturated_log_lik(y, 1.0)).sum();
             let fd = (ls_plus - ls_minus) / (2.0 * h);
             let rel = (analytic[1] - fd).abs() / (fd.abs() + 1.0);
-            assert!(rel < 1e-5, "dls/d(log(ν-2)) ν={nu} σ²={sigma2}: analytic={} fd={fd}", analytic[1]);
+            assert!(
+                rel < 1e-5,
+                "dls/d(log(ν-2)) ν={nu} σ²={sigma2}: analytic={} fd={fd}",
+                analytic[1]
+            );
         }
     }
 }
@@ -487,12 +543,26 @@ fn tdist_sum_d2ls_d2theta_matches_fd() {
             // ~1e-5 absolute. h=1e-4 puts the truncation error well below
             // the (also-small) value while keeping enough digits.
             let h = 1e-4;
-            assert!(analytic[0].abs() < 1e-10, "σ²σ² block should be 0 (got {})", analytic[0]);
-            assert!(analytic[1].abs() < 1e-10, "σ²ν block should be 0 (got {})", analytic[1]);
+            assert!(
+                analytic[0].abs() < 1e-10,
+                "σ²σ² block should be 0 (got {})",
+                analytic[0]
+            );
+            assert!(
+                analytic[1].abs() < 1e-10,
+                "σ²ν block should be 0 (got {})",
+                analytic[1]
+            );
             let nu_plus = ((nu - 3.0).ln() + h).exp() + 3.0;
             let nu_minus = ((nu - 3.0).ln() - h).exp() + 3.0;
-            let t_plus = TDist { nu: nu_plus, sigma2 };
-            let t_minus = TDist { nu: nu_minus, sigma2 };
+            let t_plus = TDist {
+                nu: nu_plus,
+                sigma2,
+            };
+            let t_minus = TDist {
+                nu: nu_minus,
+                sigma2,
+            };
             let g_plus = t_plus.sum_saturated_log_lik_dtheta(y_view.view(), 1.0, None)[1];
             let g_minus = t_minus.sum_saturated_log_lik_dtheta(y_view.view(), 1.0, None)[1];
             let fd = (g_plus - g_minus) / (2.0 * h);

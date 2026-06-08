@@ -61,20 +61,26 @@ mod enabled {
         let bs = BUCKETS.lock().unwrap();
         let mut sorted: Vec<_> = bs
             .iter()
-            .map(|(n, c, ns)| {
-                (
-                    *n,
-                    c.load(Ordering::Relaxed),
-                    ns.load(Ordering::Relaxed),
-                )
-            })
+            .map(|(n, c, ns)| (*n, c.load(Ordering::Relaxed), ns.load(Ordering::Relaxed)))
             .collect();
         sorted.sort_by_key(|(_, _, ns)| std::cmp::Reverse(*ns));
-        writeln!(w, "{:<40}  {:>10}  {:>14}  {:>10}", "phase", "count", "total_ms", "avg_us")?;
+        writeln!(
+            w,
+            "{:<40}  {:>10}  {:>14}  {:>10}",
+            "phase", "count", "total_ms", "avg_us"
+        )?;
         for (name, count, ns) in sorted {
             let ms = ns as f64 / 1.0e6;
-            let avg_us = if count == 0 { 0.0 } else { ns as f64 / count as f64 / 1000.0 };
-            writeln!(w, "{:<40}  {:>10}  {:>14.2}  {:>10.2}", name, count, ms, avg_us)?;
+            let avg_us = if count == 0 {
+                0.0
+            } else {
+                ns as f64 / count as f64 / 1000.0
+            };
+            writeln!(
+                w,
+                "{:<40}  {:>10}  {:>14.2}  {:>10.2}",
+                name, count, ms, avg_us
+            )?;
         }
         Ok(())
     }

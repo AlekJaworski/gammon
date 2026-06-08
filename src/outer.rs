@@ -301,8 +301,7 @@ impl OuterSolver for NewtonWithHalving {
                 let mut h_sub_pre = Array2::<f64>::zeros((n_active, n_active));
                 for (ri, &ai) in active.iter().enumerate() {
                     for (ci, &aj) in active.iter().enumerate() {
-                        h_sub_pre[[ri, ci]] =
-                            h[[ai, aj]] / (diag_precond[ri] * diag_precond[ci]);
+                        h_sub_pre[[ri, ci]] = h[[ai, aj]] / (diag_precond[ri] * diag_precond[ci]);
                     }
                 }
                 let mut g_sub_pre = Array1::<f64>::zeros(n_active);
@@ -479,10 +478,10 @@ impl OuterSolver for NewtonWithHalving {
                     let mut any_at_bound = false;
                     let mut proj = 0.0_f64;
                     for (i, &gi) in g.iter().enumerate() {
-                        let (lo, hi) = bnds.get(i).copied().unwrap_or((
-                            f64::NEG_INFINITY,
-                            f64::INFINITY,
-                        ));
+                        let (lo, hi) = bnds
+                            .get(i)
+                            .copied()
+                            .unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
                         let eps_at_bound = 1e-9 * (theta[i].abs().max(1.0));
                         let at_lo = (theta[i] - lo).abs() <= eps_at_bound;
                         let at_hi = (hi - theta[i]).abs() <= eps_at_bound;
@@ -523,22 +522,19 @@ impl OuterSolver for NewtonWithHalving {
                     let eig_result = h.eigh(UPLO::Lower);
                     match eig_result {
                         Ok((eigs, vecs)) => {
-                            let max_abs =
-                                eigs.iter().fold(0.0_f64, |a, &b| a.max(b.abs()));
-                            let null_thresh =
-                                max_abs * f64::EPSILON.powf(0.7); // ~1.5e-11 of max
-                            // Project g onto the working subspace
-                            // (eigenvectors with |λ| > null_thresh).
-                            // |proj_g|_∞ = max_k |u_k^T g| where the max
-                            // runs only over working-subspace eigvecs.
+                            let max_abs = eigs.iter().fold(0.0_f64, |a, &b| a.max(b.abs()));
+                            let null_thresh = max_abs * f64::EPSILON.powf(0.7); // ~1.5e-11 of max
+                                                                                // Project g onto the working subspace
+                                                                                // (eigenvectors with |λ| > null_thresh).
+                                                                                // |proj_g|_∞ = max_k |u_k^T g| where the max
+                                                                                // runs only over working-subspace eigvecs.
                             let mut proj_max = 0.0_f64;
                             for k in 0..dim {
                                 if eigs[k].abs() <= null_thresh {
                                     continue;
                                 }
                                 let uk = vecs.column(k);
-                                let utg: f64 =
-                                    uk.iter().zip(g.iter()).map(|(a, b)| a * b).sum();
+                                let utg: f64 = uk.iter().zip(g.iter()).map(|(a, b)| a * b).sum();
                                 if utg.abs() > proj_max {
                                     proj_max = utg.abs();
                                 }
@@ -546,8 +542,7 @@ impl OuterSolver for NewtonWithHalving {
                             // Only fire when the Hessian is ACTUALLY
                             // rank-deficient (otherwise case (a) covers it).
                             // Use the same tier-looser threshold as case (c).
-                            let has_null =
-                                eigs.iter().any(|&e| e.abs() <= null_thresh);
+                            let has_null = eigs.iter().any(|&e| e.abs() <= null_thresh);
                             has_null && proj_max < 1e-1 * (v.abs() + 1.0)
                         }
                         Err(_) => false,
