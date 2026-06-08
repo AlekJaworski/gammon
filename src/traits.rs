@@ -251,6 +251,36 @@ pub trait Loss {
         None
     }
 
+    /// Per-row ingredients for the IFT trace term `tr(H⁻¹ ∂H/∂θ_k)` when
+    /// the family's `irls_observed_pair` uses a per-row observed → expected
+    /// (Fisher) weight switch. The score's `log|H|` factorises
+    /// `A = X' diag(W) X + λS` with `W` the **actual** working weight: the
+    /// observed curvature `½·d²D/dμ²` on core rows and the *expected*
+    /// curvature `½·E[d²D/dμ²]` on outlier rows. The generic trace term
+    /// differentiates `½·d²D/dμ²` everywhere, which is wrong on the outlier
+    /// rows (where `W` is the expected curvature — a different function of
+    /// `θ`, μ-independent). For scat this stalled the outer Newton in the
+    /// ν → 2 corner (`data/SCAT_PARITY_BUG.md`).
+    ///
+    /// Returns, in the family's outer-θ convention, the **actual** A-weight
+    /// derivatives so the trace term differentiates the same `A` the score
+    /// factorises:
+    ///   - `dw_dtheta[i, k] = ∂W_i/∂θ_k` at fixed μ,
+    ///   - `dw_dmu[i]       = ∂W_i/∂μ_i` (the μ-chain coefficient; the
+    ///     caller forms `dw_dmu[i] · (X·dβ/dθ_k)_i`).
+    /// Both already include the per-row prior weight (same convention as
+    /// [`Level1ShapeDerivs`]) and are in working-weight coordinates
+    /// (identity-link assumed, as for scat). `None` ⇒ the generic
+    /// `½·(Deta2th + Deta3·x_db)` path applies (NegBin/IG/Tweedie).
+    fn ift_trace_weight_derivs(
+        &self,
+        _y: ndarray::ArrayView1<f64>,
+        _eta: ndarray::ArrayView1<f64>,
+        _prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<(ndarray::Array2<f64>, ndarray::Array1<f64>)> {
+        None
+    }
+
     /// Per-observation Level-2 shape derivatives feeding the **full
     /// analytic** REML/LAML Hessian path (port of mgcv_rust
     /// `src/reml/mod.rs::tdist_gdi2_native`'s `gdi2`-style assembly,

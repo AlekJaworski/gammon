@@ -732,20 +732,38 @@ where
             "sum_saturated_log_lik_dtheta must return n_shape_params entries"
         );
 
+        // Trace-term weights consistent with the family's observed/expected
+        // IRLS weight switch (scat). The override returns ∂W/∂θ and ∂W/∂μ of
+        // the SAME W the score's `log|H|` factorises, so the trace term
+        // differentiates the right A on the outlier (expected-weight) rows —
+        // the generic ½·(Deta2th + Deta3·x_db) path is wrong there. `None` ⇒
+        // generic path (NegBin/IG/Tweedie). See `Loss::ift_trace_weight_derivs`.
+        let trace_override = family.loss.ift_trace_weight_derivs(
+            self.y.view(),
+            fit.eta.view(),
+            self.prior_weights.as_ref().map(|w| w.view()),
+        );
+
         let mut grad = Array1::<f64>::zeros(n_theta);
         for k in 0..n_theta {
             // Envelope: Σᵢ Dth[i, k] = ∂(D + P)/∂θ_k.
             let sum_dth_k: f64 = level1.dth.column(k).sum();
-            // tr(H⁻¹ ∂H/∂θ_k) = Σᵢ ½·(Deta2th[i,k] + Deta3[i]·x_db_i)·h_diag[i]
-            // x_db = X · dbeta_dtheta[:,k] hoisted as a single matvec.
+            // tr(H⁻¹ ∂H/∂θ_k) = Σᵢ ∂W_i/∂θ_k|_total · h_diag[i], where the
+            // total weight derivative folds in the μ-chain via
+            // x_db = X · dbeta_dtheta[:,k] (hoisted as a single matvec).
             let x_db: Array1<f64> = self.x_design.dot(&dbeta_dtheta.column(k));
-            let dmu2th_k = level1.dmu2th.column(k);
-            let dmuth_k = level1.dmuth.column(k);
-            // Deta2th_k = Dmu2th·ig1² − Dmuth·g2g·ig1 (broadcast).
-            let deta2th_k: Array1<f64> =
-                &dmu2th_k * &ig1_2 - &dmuth_k * &g2g * &ig1;
-            // s_arr = ½·(Deta2th_k + Deta3·x_db);  trace = Σ s_arr·h_diag
-            let s_arr: Array1<f64> = (&deta2th_k + &deta3 * &x_db) * 0.5;
+            let s_arr: Array1<f64> = if let Some((dw_dtheta, dw_dmu)) = trace_override.as_ref() {
+                // ∂W_i/∂θ_k + ∂W_i/∂μ_i · x_db_i (working-weight coords;
+                // identity link, so no ig1/g2g conversion needed).
+                &dw_dtheta.column(k) + &(dw_dmu * &x_db)
+            } else {
+                let dmu2th_k = level1.dmu2th.column(k);
+                let dmuth_k = level1.dmuth.column(k);
+                // Deta2th_k = Dmu2th·ig1² − Dmuth·g2g·ig1 (broadcast).
+                let deta2th_k: Array1<f64> = &dmu2th_k * &ig1_2 - &dmuth_k * &g2g * &ig1;
+                // s_arr = ½·(Deta2th_k + Deta3·x_db).
+                (&deta2th_k + &deta3 * &x_db) * 0.5
+            };
             let trace_term: f64 = (&s_arr * &h_diag).sum();
             grad[k] = 0.5 * sum_dth_k + 0.5 * trace_term - sum_dls_dtheta[k];
         }

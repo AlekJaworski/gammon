@@ -8,7 +8,7 @@ use gamrs::family::{negbin_log, tdist_identity, tweedie_log};
 use gamrs::inner::PirlsOpts;
 use gamrs::score::{
     FixedAtOneProfile, GaussianClosedFormScore, OwnedByLossProfile, PirlsInnerBuilder,
-    ShapeAwareEnvelopeScore,
+    ShapeAwareEnvelopeScore, ShapeAwarePirlsScore,
 };
 use gamrs::traits::{Basis, CoordsKind, ScoreDerivatives};
 use ndarray::{array, Array1, Array2};
@@ -100,6 +100,117 @@ fn envelope_gradient_matches_fixed_sigma2_fd() {
     let v_minus = score_value_at_fixed_sigma2(&score, rho - h, sigma2_score);
     let g_fd = (v_plus - v_minus) / (2.0 * h);
     assert_relative_eq!(g[0], g_fd, epsilon = 1e-5, max_relative = 1e-3);
+}
+
+/// Component-4 TDD (scat parity bug, `data/SCAT_PARITY_BUG.md`): scat's
+/// analytic shape gradient (`analytic_shape_grad_via_ift`, assembled from
+/// the FD-verified Level-1 pieces + the IFT trace term) must match a
+/// central FD of the REML score value at the same θ on BOTH shape axes
+/// `θ = [ρ, log σ², log(ν − 2)]`. The Level-1/Level-2 pieces each have FD
+/// tests (`tdist_level1_*`, `tdist_level2_*`), but the *assembled* shape
+/// gradient was previously untested for scat — the prime suspect for the
+/// fit collapsing to ν → 2. Probes span the moderate regime AND the
+/// low-ν / small-σ² corner the real-data fit fell into.
+#[test]
+fn tdist_analytic_shape_grad_matches_fd() {
+    use gamrs::basis::CrSpline;
+
+    // Synthetic heavy-tailed data: smooth signal + a few large outliers,
+    // so the scat shape geometry is non-degenerate.
+    let n = 90;
+    let xs: Vec<f64> = (0..n).map(|i| (i as f64) / (n as f64)).collect();
+    let mut ys = Vec::with_capacity(n);
+    for (i, &xi) in xs.iter().enumerate() {
+        let base = (2.0 * std::f64::consts::PI * xi).sin();
+        // Deterministic pseudo-noise with occasional large spikes (heavy tail).
+        let r = ((i as f64) * 12.9898 + 78.233).sin() * 43758.5453;
+        let frac = r - r.floor(); // in [0,1)
+        let noise = if frac > 0.9 { 6.0 * (frac - 0.5) } else { 0.3 * (frac - 0.5) };
+        ys.push(base + noise);
+    }
+    let y = Array1::from_vec(ys);
+    let x = Array1::from_vec(xs);
+
+    let cr = CrSpline::with_quantile_knots(x.view(), 8).unwrap();
+    let x2d = x.view().insert_axis(ndarray::Axis(1));
+    let x_design = cr.evaluate(x2d.view());
+    let penalties = cr.penalties();
+    let s = penalties[0].clone();
+
+    let family_base = tdist_identity(5.0, 1.0);
+    let score: ShapeAwarePirlsScore<_, _, _> = ShapeAwareEnvelopeScore {
+        x_design: x_design.clone(),
+        y: y.clone(),
+        prior_weights: None,
+        s_list: vec![s.clone()],
+        family_base,
+        rank_s_list: vec![x_design.ncols() - 2],
+        mp: 2,
+        log_pseudo_det_s_list: vec![0.0],
+        coords: CoordsKind::Identity,
+        pirls_opts: PirlsOpts::default(),
+        inner_builder: PirlsInnerBuilder,
+        profile: FixedAtOneProfile,
+        _solver: std::marker::PhantomData,
+        accepted_state: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
+        stats: gamrs::stats::FitStats::new(),
+    };
+
+    // θ = [ρ, log σ², log(ν − 2)]. Cover moderate ν, large ν, and the
+    // low-ν / small-σ² corner the real-data fit collapsed into.
+    let ln = |nu: f64| (nu - 2.0_f64).ln();
+    let probes: &[[f64; 3]] = &[
+        [0.0, 0.0, ln(5.0)],   // σ²=1,   ν=5
+        [2.0, -1.0, ln(3.0)],  // σ²=0.37, ν=3
+        [1.0, 1.0, ln(10.0)],  // σ²=2.7,  ν=10
+        [3.0, -2.0, ln(2.1)],  // σ²=0.135, ν=2.1  (corner)
+    ];
+
+    let fd_at = |theta: &Array1<f64>, i: usize, h: f64| -> f64 {
+        let mut t_plus = theta.clone();
+        let mut t_minus = theta.clone();
+        t_plus[i] += h;
+        t_minus[i] -= h;
+        let v_plus = score.value(&t_plus).unwrap();
+        let v_minus = score.value(&t_minus).unwrap();
+        (v_plus - v_minus) / (2.0 * h)
+    };
+
+    for theta_init in probes {
+        let theta = Array1::from_vec(theta_init.to_vec());
+        let (_v, g) = score.value_and_grad(&theta).unwrap();
+        // Shape axes only (i ∈ {1,2}); g[0] is the λ-envelope gradient
+        // (verified separately). Richardson D(h) = (4·FD(h) − FD(2h))/3
+        // cancels the O(h²) truncation term for a ~O(h⁴) estimate of the
+        // true derivative. With the mgcv-faithful IRLS — observed Newton
+        // weight on core rows, **expected**-curvature weight with the
+        // Fisher-consistent response `z = η − Dmu/EDmu2` on outlier rows —
+        // the analytic IFT gradient (with the matching
+        // `ift_trace_weight_derivs` override) tracks FD on both shape axes to
+        // <1e-3, including the low-ν / small-σ² corner the PRIOR expected
+        // fallback (which used `z = η + r`) got ~99% wrong — silently
+        // stalling the outer Newton in the ν → 2 trap
+        // (`data/SCAT_PARITY_BUG.md`). The residual (~1e-4) is the kink where
+        // rows cross the observed↔expected boundary `r² = νσ²` (`log|H|` is
+        // only piecewise-smooth there, as in mgcv); the analytic gradient is
+        // exact within each branch.
+        for i in 1..3 {
+            let h = 1e-4;
+            let fd_h = fd_at(&theta, i, h);
+            let fd_2h = fd_at(&theta, i, 2.0 * h);
+            let fd_rich = (4.0 * fd_h - fd_2h) / 3.0;
+            let rel = (g[i] - fd_rich).abs() / (fd_rich.abs() + 1.0);
+            assert!(
+                rel < 1e-3,
+                "θ={:?} g[{i}] analytic={:+.8e} fd_rich={:+.8e} rel={:.2e}",
+                theta_init,
+                g[i],
+                fd_rich,
+                rel
+            );
+        }
+    }
 }
 
 /// Phase-1 port verification: Tweedie's analytic shape gradient must

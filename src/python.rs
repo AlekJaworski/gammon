@@ -897,6 +897,29 @@ impl PyFittedGam {
 // Internal helpers — design-strategy dispatch and a per-family fit macro.
 // =============================================================================
 
+/// Initial scat / TDist scale σ² when the caller doesn't supply one.
+///
+/// mgcv `scat()$preinitialize` (R `efam.r:1416-1424`) uses `sig = 0.8·sd(y)`
+/// (σ² = 0.64·var(y)) with the rationale *"low df and low variance promotes
+/// indefiniteness — better to start with moderate df and fairly high
+/// variance."* mgcv can afford that high-variance start because its IRLS
+/// works in the `wz = Wη − ½·Dmu` form (`gam.fit4.r:369`), which stays
+/// well-conditioned even when the per-row weights `W ~ 1/σ²` underflow.
+/// gamrs's PIRLS forms `X'WX` directly, so a `0.64·var(y)`-scale init makes
+/// `X'WX ~ 1e-12·X'X`, leaving the unpenalised directions numerically
+/// unidentified → Cholesky fails on real-scale data (`var(y) ~ 1e11`).
+///
+/// We therefore keep `σ² = 1` as the default: with the mgcv-faithful
+/// observed/expected IRLS weights (see `TDist::irls_observed_pair`) the
+/// outer Newton now climbs σ² to the data scale from below correctly (the
+/// gradient is FD-verified — `tests/score_tests.rs::
+/// tdist_analytic_shape_grad_matches_fd`), whereas the prior expected-`z=η+r`
+/// fallback made it diverge regardless of init. A data-scaled default awaits
+/// the `wz`-form inner solve (tracked in `data/SCAT_PARITY_BUG.md`).
+fn scat_sigma2_init(_y: ArrayView1<f64>, supplied: Option<f64>) -> f64 {
+    supplied.unwrap_or(1.0)
+}
+
 /// Run `gamrs::fit_with_design` for a typed family using one of the
 /// canonical design strategies, with the string `design` keyword
 /// mediated at this single boundary.
@@ -1023,7 +1046,7 @@ fn fit<'py>(
         }
         "tdist" | "scat" => {
             let nu_val = nu.unwrap_or(5.0);
-            let sigma2_val = sigma2.unwrap_or(1.0);
+            let sigma2_val = scat_sigma2_init(y_view, sigma2);
             fit_dispatch_design(
                 tdist_identity(nu_val, sigma2_val),
                 x_view,
@@ -1405,7 +1428,7 @@ fn fit_additive<'py>(
         }
         "tdist" | "scat" => {
             let nu_val = nu.unwrap_or(5.0);
-            let sigma2_val = sigma2.unwrap_or(1.0);
+            let sigma2_val = scat_sigma2_init(y_view, sigma2);
             fit_additive_dispatch(
                 tdist_identity(nu_val, sigma2_val),
                 x_view,

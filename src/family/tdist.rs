@@ -105,6 +105,29 @@ impl Loss for TDist {
     fn shape_axis_step_caps(&self) -> Vec<f64> {
         vec![1.0, 1.0]
     }
+
+    /// Per-axis (lo, hi) bounds for `θ = [log σ², log(ν − 2)]`.
+    ///
+    /// The trait default clamps **every** shape axis to `[-10, 10]`. That
+    /// is right for a dimensionless axis like ν's `log(ν − 2)` (ν ≈ 5 at
+    /// the interior optimum), but **wrong for `log σ²`**: σ² is the t-scale
+    /// in the units of `y²`, so its optimum tracks the data scale. For a
+    /// response with `Var(y) ≈ 3e11` (e.g. house prices) the REML optimum
+    /// sits near `log σ² ≈ 23`, far outside `[-10, 10]`. With the default
+    /// clamp the joint `(ρ, log σ², log(ν−2))` Newton pins `log σ²` at the
+    /// upper bound `10` (`σ² = e¹⁰ ≈ 2.2e4`), the fit never reaches the
+    /// data scale, the outer Newton reports non-convergence, and `scat`
+    /// degenerates toward the Gaussian fit instead of down-weighting the
+    /// high-price tail — the exact symptom in `data/SCAT_PARITY_BUG.md`.
+    ///
+    /// mgcv (and the reference `mgcv_rust`, `pirls/mod.rs:1535/1605`)
+    /// profile σ² freely with no bound (a sample-variance-initialised MLE
+    /// update inside PIRLS). We widen the σ² axis to the same effectively
+    /// unbounded `[-50, 50]` the ρ axes use (`σ² ∈ [2e-22, 5e21]`, covering
+    /// any realistic data scale) and keep ν on the default `[-10, 10]`.
+    fn shape_axis_bounds(&self) -> Vec<(f64, f64)> {
+        vec![(-50.0, 50.0), (-10.0, 10.0)]
+    }
     fn set_shape_params(&mut self, params: &[f64]) {
         debug_assert_eq!(params.len(), 2, "TDist expects 2 shape params");
         self.sigma2 = params[0].exp();
@@ -163,28 +186,47 @@ impl Loss for TDist {
         let nu = self.nu;
         let sigma2 = self.sigma2;
         let q = nu * sigma2;
-        // Expected curvature ½·E[D_μμ] for the Fisher fallback row branch.
-        let expected_w = (nu + 1.0) / (2.0 * (nu + 3.0) * sigma2);
+        // Expected curvature ½·E[D_μμ] (mgcv `Dd`: `EDmu2 = 2(ν+1)/((ν+3)σ²)`
+        // at `efam.r:1326`; the IRLS weight is `½·EDmu2`). The PRIOR code used
+        // `(ν+1)/(2(ν+3)σ²) = ¼·EDmu2` — a **factor-2 error** vs mgcv.
+        let w_exp = (nu + 1.0) / ((nu + 3.0) * sigma2);
         let mut w = Array1::<f64>::zeros(n);
         let mut z = Array1::<f64>::zeros(n);
         for i in 0..n {
             let r = y[i] - mu[i];
             let r2 = r * r;
             let s = q + r2;
+            // mgcv R `gam.fit4.r:368-370` (the `scat`/`Dd` IRLS):
+            //   w  = ½·Dmu2,            z = η − Dmu/Dmu2.
+            // Dmu  = −2(ν+1)·r / s,     Dmu2 = 2(ν+1)(νσ² − r²) / s².
+            // Identity link → dμ/dη = 1, d²μ/dη² = 0, so the η-coord weight
+            // collapses to ½·Dmu2.
+            let dmu = -2.0 * (nu + 1.0) * r / s;
             let dmu2 = 2.0 * (nu + 1.0) * (q - r2) / (s * s);
-            // Identity link → dμ/dη = 1, d²μ/dη² = 0. mgcv R's
-            // `w0 = dd$Dmu2·(dμ/dη)² + dd$Dmu·(d²μ/dη²)` collapses to dmu2.
             let w_obs = 0.5 * dmu2;
             if w_obs > 1e-12 && w_obs.is_finite() {
-                // Newton: z = η − D'_μ / D''_μ. Identity link.
-                let dmu = -2.0 * (nu + 1.0) * r / s;
-                let z_new = eta[i] - dmu / dmu2;
+                // Core row: observed Newton step.
                 w[i] = prior_w[i] * w_obs;
-                z[i] = z_new;
+                z[i] = eta[i] - dmu / dmu2;
             } else {
-                // Fisher fallback row: expected curvature + standard z.
-                w[i] = prior_w[i] * expected_w;
-                z[i] = eta[i] + r; // identity link: g'(μ) = 1
+                // Outlier row (`|r| ≥ √(νσ²)` ⇒ observed curvature ≤ 0).
+                //
+                // The PRIOR code paired the expected weight with the *Fisher*
+                // response `z = η + r`, giving working response
+                // `W(z − η) = w_exp·r`, whose IRLS fixed point is
+                // `λSβ = X'·w_exp·r ≠ X'·(−½·Dmu)` — it pulls outliers TOWARD
+                // y (Gaussian-like), destroying scat's robustness and
+                // inflating the fit above the Gaussian one
+                // (`data/SCAT_PARITY_BUG.md`). The correct response uses the
+                // EXPECTED-info Newton step `z = η − Dmu/EDmu2`, i.e.
+                // `z = η − ½·Dmu/w_exp`, so `W(z − η) = w_exp·(−½·Dmu/w_exp)
+                // = −½·Dmu` — the SAME penalised-deviance gradient term as the
+                // core rows. The fixed point is then the true stationary point
+                // `λSβ = X'·(−½·Dmu)` (mgcv `gam.fit4.r`: the `wz = Wη − ½·Dmu`
+                // form preserves `−½·Dmu` regardless of the weight), while the
+                // positive `w_exp` keeps `X'WX + λS` factorisable.
+                w[i] = prior_w[i] * w_exp;
+                z[i] = eta[i] - 0.5 * dmu / w_exp;
             }
         }
         Some((w, z))
@@ -321,6 +363,69 @@ impl Loss for TDist {
             dmuth,
             dmu2th,
         })
+    }
+
+    /// Trace-term weight derivatives consistent with `irls_observed_pair`'s
+    /// observed/expected weight switch (see `Loss::ift_trace_weight_derivs`).
+    ///
+    /// `A` (hence the score's `log|H|`) uses `W = ½·d²D/dμ²` on core rows and
+    /// the expected curvature `W = ½·EDmu2 = (ν+1)/((ν+3)σ²)` on outlier rows
+    /// (`|r| ≥ √(νσ²)`). We return `∂W/∂θ`, `∂W/∂μ` of that same `W`:
+    ///   - **core**: `∂W/∂θ_k = ½·dmu2th[k]`, `∂W/∂μ = ½·dmu3`.
+    ///   - **outlier**: `W = (ν+1)/((ν+3)σ²)` is μ-independent, so `∂W/∂μ = 0`
+    ///     and (matching mgcv `Dd`'s `EDmu2th`, `efam.r:1344`, with the ½):
+    ///       `∂W/∂(log σ²)     = −W`,
+    ///       `∂W/∂(log(ν − 2)) = 2(ν−2)/((ν+3)²σ²)`.
+    fn ift_trace_weight_derivs(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        eta: ndarray::ArrayView1<f64>,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<(ndarray::Array2<f64>, ndarray::Array1<f64>)> {
+        use ndarray::{Array1, Array2};
+        let n = y.len();
+        let nu = self.nu;
+        let sigma2 = self.sigma2;
+        let nu_p1 = nu + 1.0;
+        let nu_minus_2 = nu - 2.0;
+        let nu_p3 = nu + 3.0;
+        let q = nu * sigma2; // νσ²
+        let qs_theta1 = sigma2 * nu_minus_2; // ∂q/∂θ_1
+        // Expected weight W_exp = ½·EDmu2 and its θ-derivatives.
+        let w_exp = nu_p1 / (nu_p3 * sigma2);
+        let dwexp_dlog_sigma2 = -w_exp;
+        let dwexp_dlog_nu_m2 = 2.0 * nu_minus_2 / (nu_p3 * nu_p3 * sigma2);
+
+        let mut dw_dtheta = Array2::<f64>::zeros((n, 2));
+        let mut dw_dmu = Array1::<f64>::zeros(n);
+        for i in 0..n {
+            let r = y[i] - eta[i];
+            let r2 = r * r;
+            let s = q + r2;
+            let s2 = s * s;
+            let s3 = s2 * s;
+            let wt_i = prior_w.map(|w| w[i]).unwrap_or(1.0);
+
+            // Core iff observed curvature ½·Dmu2 > 1e-12 (matches
+            // `irls_observed_pair`'s branch exactly).
+            let w_obs = nu_p1 * (q - r2) / s2;
+            if w_obs > 1e-12 && w_obs.is_finite() {
+                // ∂W/∂θ_k = ½·dmu2th[k]; ∂W/∂μ = ½·dmu3 (Level-1 formulas).
+                let dmu2th_0 = 2.0 * nu_p1 * q * (3.0 * r2 - q) / s3;
+                let dmu2th_1 =
+                    2.0 * (nu_minus_2 * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q)) / s3;
+                let dmu3 = 4.0 * r * nu_p1 * (3.0 * q - r2) / s3;
+                dw_dtheta[[i, 0]] = wt_i * 0.5 * dmu2th_0;
+                dw_dtheta[[i, 1]] = wt_i * 0.5 * dmu2th_1;
+                dw_dmu[i] = wt_i * 0.5 * dmu3;
+            } else {
+                // Outlier: W = w_exp (μ-independent → ∂W/∂μ = 0).
+                dw_dtheta[[i, 0]] = wt_i * dwexp_dlog_sigma2;
+                dw_dtheta[[i, 1]] = wt_i * dwexp_dlog_nu_m2;
+                dw_dmu[i] = 0.0;
+            }
+        }
+        Some((dw_dtheta, dw_dmu))
     }
 
     /// Per-row Level-2 derivatives feeding the full analytic Hessian path
