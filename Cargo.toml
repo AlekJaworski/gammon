@@ -1,6 +1,6 @@
 [package]
 name = "gamrs"
-version = "0.11.2"
+version = "0.11.3"
 edition = "2021"
 description = "Generalised Additive Models in Rust — 10 families, multi-smooth (y ~ s(x0) + s(x1)), tensor products te(x0, x1), Python bindings via PyO3."
 license = "MIT"
@@ -31,6 +31,20 @@ version = "0.17"
 optional = true
 default-features = false
 
+# Pulled directly (alongside ndarray-linalg → lax → openblas-src) for two
+# reasons: (1) lax requests openblas-src with `default-features = false`, but
+# openblas-src 0.10.16 made its HTTPS source-fetcher require a TLS feature —
+# re-enable `rustls` here or openblas-build fails to compile; (2) 0.10.16
+# honours `OPENBLAS_DYNAMIC_ARCH=1` (set in release.yml), which builds a
+# runtime-CPU-dispatched OpenBLAS. Without it the static wheel bakes the CI
+# runner's CPU (AVX-512) and SIGILLs on AVX2-only hosts (the 0.11.x wheel
+# bug). Only relevant to the openblas backends, not MKL (Windows).
+[dependencies.openblas-src]
+version = "0.10.16"
+optional = true
+default-features = false
+features = ["rustls"]
+
 [features]
 # Default features set for dev ergonomics. `cargo check`, `cargo clippy`,
 # and `maturin develop` (all without --features) exercise every cfg path
@@ -55,9 +69,11 @@ profile = []
 # (`Cholesky::cholesky`, `Solve::solve`, etc.) and leaves plain `.dot()` on the
 # pure-Rust path. mgcv_rust's perf gap on scat at v0.10 was traceable here.
 blas = ["dep:ndarray-linalg", "ndarray/blas"]
-blas-system = ["ndarray-linalg/openblas-system"]      # Linux / dev box
-blas-static = ["ndarray-linalg/openblas-static"]      # macOS wheel
-blas-mkl-static = ["ndarray-linalg/intel-mkl-static"] # Windows wheel
+# openblas backends pull openblas-src directly too (see [dependencies.openblas-src]
+# above) to enable `rustls` + the OPENBLAS_DYNAMIC_ARCH build. MKL doesn't use it.
+blas-system = ["ndarray-linalg/openblas-system", "dep:openblas-src"]   # Linux dev box + manylinux wheel
+blas-static = ["ndarray-linalg/openblas-static", "dep:openblas-src"]   # static OpenBLAS wheel
+blas-mkl-static = ["ndarray-linalg/intel-mkl-static"]                  # Windows wheel
 
 [dev-dependencies]
 approx = "0.5"
