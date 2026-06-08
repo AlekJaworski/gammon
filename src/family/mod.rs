@@ -40,7 +40,7 @@ pub use negbin::{negbin_log, NegBin, NegBinVariance};
 pub use ocat::{ocat_identity, ocat_init_theta, OcatLoss, OcatVariance};
 pub use poisson::{poisson_log, Poisson, PoissonVariance};
 pub use quasi::{quasibinomial_logit, quasipoisson_log, QuasiBinomial, QuasiPoisson};
-pub use tdist::{tdist_identity, TDist, TVariance};
+pub use tdist::{tdist_identity, TDist, TVariance, MIN_DF as TDIST_MIN_DF};
 pub use tweedie::{tweedie_log, tweedie_log_fixed_p, Tweedie, TweedieVariance};
 
 // `elf::elf_parts` is crate-private — re-export at the family-module scope

@@ -332,13 +332,16 @@ class Gam:
             )
             self.link = canonical_link
 
-        # df validation for tdist
+        # df validation for tdist. mgcv scat() uses min.df=3 and the shape
+        # transform θ₁ = log(ν − 3), so a fixed df must exceed 3.
         if df is not None and family in ("t-dist", "scat"):
-            if df < 2.0:
-                raise ValueError(f"t-dist df must be >= 2.0, got {df}")
+            if df <= 3.0:
+                raise ValueError(
+                    f"t-dist df must be > 3.0 (mgcv min.df=3), got {df}"
+                )
             if df > 100.0:
                 raise ValueError(
-                    f"t-dist df must be <= 100.0, got {df}. Use df ∈ [2, 100]."
+                    f"t-dist df must be <= 100.0, got {df}. Use df ∈ (3, 100]."
                 )
         elif df is not None and family not in ("t-dist", "scat"):
             raise ValueError(

@@ -24,6 +24,7 @@ use crate::family::{
     Family, Gamma, GammaVariance, Gaussian, IdentityLink, InverseGaussian, InverseGaussianVariance,
     InverseLink, LogLink, LogitLink, NegBin, NegBinVariance, OcatLoss, OcatVariance, Poisson,
     PoissonVariance, QuasiBinomial, QuasiPoisson, TDist, TVariance, Tweedie, TweedieVariance,
+    TDIST_MIN_DF,
 };
 use crate::inner::{GaussianInnerFit, LinearSolver, PirlsOpts};
 use crate::outer::{NewtonOpts, NewtonWithHalving};
@@ -342,9 +343,11 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, TVariance, S> for TDist 
         let init_nu = family.loss.nu;
         let init_sigma2 = family.loss.sigma2;
         check_lengths(x, y, prior_weights)?;
-        if !(init_nu > 2.0 && init_nu.is_finite()) {
+        // ν must exceed MIN_DF: the shape transform is θ₁ = log(ν − MIN_DF),
+        // so ν ≤ MIN_DF would make the initial log(ν − MIN_DF) non-finite.
+        if !(init_nu > TDIST_MIN_DF && init_nu.is_finite()) {
             return Err(GamrsError::InvalidParameter(format!(
-                "scat/TDist degrees-of-freedom init_nu must be > 2 (finite variance); got init_nu={init_nu}"
+                "scat/TDist degrees-of-freedom init_nu must be > {TDIST_MIN_DF} (mgcv min.df); got init_nu={init_nu}"
             )));
         }
         if !(init_sigma2 > 0.0 && init_sigma2.is_finite()) {
@@ -357,7 +360,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, TVariance, S> for TDist 
         let rho_init = SmartInit.init(y, &prep.x_design, &prep.s_list);
         let mut theta0_vec: Vec<f64> = rho_init.to_vec();
         theta0_vec.push(init_sigma2.ln());
-        theta0_vec.push((init_nu - 2.0).ln());
+        theta0_vec.push((init_nu - TDIST_MIN_DF).ln());
         let theta0 = Array1::from_vec(theta0_vec);
 
         fit_shape_aware::<_, _, _, _, _, S, _, _>(

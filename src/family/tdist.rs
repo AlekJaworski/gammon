@@ -5,6 +5,16 @@ use crate::traits::{Loss, VarianceFn};
 use super::link::IdentityLink;
 use super::Family;
 
+/// Minimum degrees of freedom for the ν reparameterisation `ν = MIN_DF +
+/// exp(θ₁)`. Matches mgcv `scat(min.df = 3)` (R `efam.r:1248`). The shape
+/// transform `θ₁ = log(ν − MIN_DF)` floors ν at MIN_DF during estimation;
+/// the chain-rule factor `dν/dθ₁ = ν − MIN_DF` (mgcv's `nu2 = nu − min.df`)
+/// permeates every ν-derivative below, so this constant — NOT 2 — defines
+/// the ν-axis geometry the outer Newton sees. (mgcv's earlier default was 2;
+/// it was raised to 3 because "low df and low variance promotes
+/// indefiniteness", `efam.r:1419`.)
+pub const MIN_DF: f64 = 3.0;
+
 /// Heavy-tailed scaled-t likelihood: `y_i ~ μ_i + σ · T_ν` where `T_ν` is
 /// a standard Student-t with `ν` degrees of freedom. Used for robust
 /// regression where Gaussian noise mis-specifies the tails.
@@ -94,19 +104,19 @@ impl Loss for TDist {
         Some(1.0)
     }
 
-    /// scat owns 2 shape params: `[log σ², log(ν - ν_min)]` with
-    /// `ν_min = 2.0` to keep ν > 2 (finite variance). Transform `log(ν-2)`
-    /// is mgcv's choice (`gam.fit5.r`).
+    /// scat owns 2 shape params: `[log σ², log(ν − MIN_DF)]` with
+    /// `MIN_DF = 3` (mgcv `scat(min.df = 3)`). The `log(ν − MIN_DF)`
+    /// transform is mgcv's choice (`gam.fit5.r`) and floors ν at MIN_DF.
     fn n_shape_params(&self) -> usize {
         2
     }
     /// mgcv `build_outer_search_vector`: TDistLogSigma2 step cap 1.0,
-    /// TDistLogNu (log(ν-2)) step cap 1.0.
+    /// TDistLogNu (log(ν − MIN_DF)) step cap 1.0.
     fn shape_axis_step_caps(&self) -> Vec<f64> {
         vec![1.0, 1.0]
     }
 
-    /// Per-axis (lo, hi) bounds for `θ = [log σ², log(ν − 2)]`.
+    /// Per-axis (lo, hi) bounds for `θ = [log σ², log(ν − MIN_DF)]`.
     ///
     /// The trait default clamps **every** shape axis to `[-10, 10]`. That
     /// is right for a dimensionless axis like ν's `log(ν − 2)` (ν ≈ 5 at
@@ -131,10 +141,10 @@ impl Loss for TDist {
     fn set_shape_params(&mut self, params: &[f64]) {
         debug_assert_eq!(params.len(), 2, "TDist expects 2 shape params");
         self.sigma2 = params[0].exp();
-        self.nu = 2.0 + params[1].exp();
+        self.nu = MIN_DF + params[1].exp();
     }
     fn get_shape_params(&self) -> Vec<f64> {
-        vec![self.sigma2.ln(), (self.nu - 2.0).ln()]
+        vec![self.sigma2.ln(), (self.nu - MIN_DF).ln()]
     }
 
     /// Match v0.x `fit_pirls_tdist`'s β-tolerance. v0.x's scat diagnostic
@@ -272,17 +282,17 @@ impl Loss for TDist {
     ) -> Vec<f64> {
         use crate::special::digamma;
         let nu = self.nu;
-        let nu_minus_2 = nu - 2.0;
+        let nu_minus_df = nu - MIN_DF;
         let half_nu_p1 = (nu + 1.0) / 2.0;
         let half_nu = nu / 2.0;
-        let nu2nu = nu_minus_2 / nu;
+        let nu2nu = nu_minus_df / nu;
         let sum_w: f64 = match prior_w {
             Some(w) => w.iter().sum(),
             None => y.len() as f64,
         };
         let dls_dlog_sigma2 = -0.5;
         let dls_dlog_nu_m2 =
-            0.5 * nu_minus_2 * (digamma(half_nu_p1) - digamma(half_nu)) - 0.5 * nu2nu;
+            0.5 * nu_minus_df * (digamma(half_nu_p1) - digamma(half_nu)) - 0.5 * nu2nu;
         vec![sum_w * dls_dlog_sigma2, sum_w * dls_dlog_nu_m2]
     }
 
@@ -316,8 +326,8 @@ impl Loss for TDist {
         let nu = self.nu;
         let sigma2 = self.sigma2;
         let nu_p1 = nu + 1.0;
-        let nu_minus_2 = nu - 2.0;
-        let qs_theta1 = sigma2 * nu_minus_2; // ∂q/∂θ_1
+        let nu_minus_df = nu - MIN_DF;
+        let qs_theta1 = sigma2 * nu_minus_df; // ∂q/∂θ_1
         let q = nu * sigma2; // ν·σ² — constant across rows
 
         let mut dmu3 = Array1::<f64>::zeros(n);
@@ -348,13 +358,13 @@ impl Loss for TDist {
             // ── θ_1 = log(ν − 2) ────────────────────────────────────────
             // ∂D/∂θ_1 = (ν−2)·[log(1 + r²/q) − (ν+1)·r²/(ν·s)].
             let log_term = if q > 0.0 { (1.0 + r2 / q).ln() } else { 0.0 };
-            dth[[i, 1]] = wt_i * nu_minus_2 * (log_term - nu_p1 * r2 / (nu * s));
+            dth[[i, 1]] = wt_i * nu_minus_df * (log_term - nu_p1 * r2 / (nu * s));
             // ∂(∂D/∂μ)/∂θ_1 = −2r·[(ν−2)·s − (ν+1)·qs_theta1] / s².
-            dmuth[[i, 1]] = wt_i * (-2.0 * r * (nu_minus_2 * s - nu_p1 * qs_theta1) / s2);
+            dmuth[[i, 1]] = wt_i * (-2.0 * r * (nu_minus_df * s - nu_p1 * qs_theta1) / s2);
             // ∂(∂²D/∂μ²)/∂θ_1
             //   = 2·[(ν−2)·(q − r²)·s + (ν+1)·qs_theta1·(3r² − q)] / s³.
             dmu2th[[i, 1]] = wt_i
-                * (2.0 * (nu_minus_2 * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q)) / s3);
+                * (2.0 * (nu_minus_df * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q)) / s3);
         }
 
         Some(crate::traits::Level1ShapeDerivs {
@@ -387,14 +397,14 @@ impl Loss for TDist {
         let nu = self.nu;
         let sigma2 = self.sigma2;
         let nu_p1 = nu + 1.0;
-        let nu_minus_2 = nu - 2.0;
+        let nu_minus_df = nu - MIN_DF;
         let nu_p3 = nu + 3.0;
         let q = nu * sigma2; // νσ²
-        let qs_theta1 = sigma2 * nu_minus_2; // ∂q/∂θ_1
+        let qs_theta1 = sigma2 * nu_minus_df; // ∂q/∂θ_1
         // Expected weight W_exp = ½·EDmu2 and its θ-derivatives.
         let w_exp = nu_p1 / (nu_p3 * sigma2);
         let dwexp_dlog_sigma2 = -w_exp;
-        let dwexp_dlog_nu_m2 = 2.0 * nu_minus_2 / (nu_p3 * nu_p3 * sigma2);
+        let dwexp_dlog_nu_m2 = 2.0 * nu_minus_df / (nu_p3 * nu_p3 * sigma2);
 
         let mut dw_dtheta = Array2::<f64>::zeros((n, 2));
         let mut dw_dmu = Array1::<f64>::zeros(n);
@@ -413,7 +423,7 @@ impl Loss for TDist {
                 // ∂W/∂θ_k = ½·dmu2th[k]; ∂W/∂μ = ½·dmu3 (Level-1 formulas).
                 let dmu2th_0 = 2.0 * nu_p1 * q * (3.0 * r2 - q) / s3;
                 let dmu2th_1 =
-                    2.0 * (nu_minus_2 * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q)) / s3;
+                    2.0 * (nu_minus_df * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q)) / s3;
                 let dmu3 = 4.0 * r * nu_p1 * (3.0 * q - r2) / s3;
                 dw_dtheta[[i, 0]] = wt_i * 0.5 * dmu2th_0;
                 dw_dtheta[[i, 1]] = wt_i * 0.5 * dmu2th_1;
@@ -455,13 +465,13 @@ impl Loss for TDist {
         let nu = self.nu;
         let sigma2 = self.sigma2;
         let nu_p1 = nu + 1.0;
-        let nu_minus_2 = nu - 2.0;
+        let nu_minus_df = nu - MIN_DF;
         let q = nu * sigma2;
         // Mgcv intermediates from `tdist_dd_arrays` lines 1218-1264.
         // We re-derive locally for clarity / inlining vs calling a
         // separate helper.
         let nu1nu = nu_p1 / nu;
-        let nu2nu = nu_minus_2 / nu;
+        let nu2nu = nu_minus_df / nu;
 
         let mut dmu4 = Array1::<f64>::zeros(n);
         // (n × 2)  — outer order [log σ², log(ν − 2)]
@@ -527,9 +537,9 @@ impl Loss for TDist {
             // ── ∂²D / (∂θ_i ∂θ_j)  (mgcv `dth2`, lines 1282-1287) ──────
             //   mgcv native packing: (0,0)=νν, (0,1)=νσ, (1,1)=σσ.
             let dth2_nu_nu = wt
-                * (nu_minus_2 * a.ln()
+                * (nu_minus_df * a.ln()
                     + nu2nu * r * r
-                        * (-2.0 * nu_minus_2 - nu_p1 + 2.0 * nu_p1 * nu2nu
+                        * (-2.0 * nu_minus_df - nu_p1 + 2.0 * nu_p1 * nu2nu
                             - nu_p1 * nu2nu * f1ym)
                         / nusig2a);
             let dth2_nu_logsigma = wt * 2.0 * (fym - r * ymsig2a - fymf1ym) * nu2nu;
@@ -547,7 +557,7 @@ impl Loss for TDist {
             let det_th2_nu_nu = wt
                 * 2.0
                 * f1
-                * nu_minus_2
+                * nu_minus_df
                 * (term - 2.0 * nu2nu * f1ym + 4.0 * fym * nu2nu / nu
                     - fym / nu
                     - 2.0 * fymf1ym * nu2nu / nu);
@@ -563,7 +573,7 @@ impl Loss for TDist {
             // ── ∂⁴D / (∂μ² ∂θ_i ∂θ_j)  (mgcv `det2_th2`, lines 1307-1328)
             let det2_th2_nu_nu = wt
                 * 2.0
-                * nu_minus_2
+                * nu_minus_df
                 * (-term + 10.0 * nu2nu * f1ym - 16.0 * fym * nu2nu / nu - 2.0 * f1ym
                     + 5.0 * nu1nu * f1ym
                     - 8.0 * nu2nu * f1ym * f1ym
@@ -620,18 +630,18 @@ impl Loss for TDist {
     ) -> Vec<f64> {
         use crate::special::{digamma, trigamma};
         let nu = self.nu;
-        let nu_minus_2 = nu - 2.0;
+        let nu_minus_df = nu - MIN_DF;
         let half_nu_p1 = (nu + 1.0) / 2.0;
         let half_nu = nu / 2.0;
-        let nu2nu = nu_minus_2 / nu;
+        let nu2nu = nu_minus_df / nu;
         let sum_w: f64 = match prior_w {
             Some(w) => w.iter().sum(),
             None => y.len() as f64,
         };
         // ∂²ls/∂(log(ν−2))² (derived above; matches mgcv_rust line 1428-1432
         // with the substitution `nu2 = ν − 2`, `nu2nu = (ν − 2)/ν`).
-        let d2ls_dnu2 = nu_minus_2 * nu_minus_2 * 0.25 * (trigamma(half_nu_p1) - trigamma(half_nu))
-            + nu_minus_2 * 0.5 * (digamma(half_nu_p1) - digamma(half_nu))
+        let d2ls_dnu2 = nu_minus_df * nu_minus_df * 0.25 * (trigamma(half_nu_p1) - trigamma(half_nu))
+            + nu_minus_df * 0.5 * (digamma(half_nu_p1) - digamma(half_nu))
             + 0.5 * nu2nu * nu2nu
             - 0.5 * nu2nu;
         vec![0.0, 0.0, sum_w * d2ls_dnu2]

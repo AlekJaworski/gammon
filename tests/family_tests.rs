@@ -204,9 +204,9 @@ fn tdist_shape_params_roundtrip() {
     };
     let params = original.get_shape_params();
     assert_eq!(params.len(), 2);
-    // params = [log(0.16), log(4.5 - 2)]
+    // params = [log(0.16), log(4.5 - min.df)] = [log(0.16), log(1.5)]  (min.df=3)
     assert!((params[0] - 0.16_f64.ln()).abs() < 1e-12);
-    assert!((params[1] - 2.5_f64.ln()).abs() < 1e-12);
+    assert!((params[1] - 1.5_f64.ln()).abs() < 1e-12);
 
     let mut restored = TDist {
         nu: 99.0,
@@ -224,7 +224,7 @@ fn family_shape_params_sync_loss_and_variance() {
     // problem). Without this, PIRLS would read inconsistent σ²
     // from `variance` vs the score body reading `loss.sigma2`.
     let mut fam = tdist_identity(4.0, 1.0);
-    let new_params = vec![(0.25_f64).ln(), (3.0_f64).ln()]; // σ²=0.25, ν=5
+    let new_params = vec![(0.25_f64).ln(), (2.0_f64).ln()]; // σ²=0.25, ν=min.df+2=5
     fam.set_shape_params(&new_params);
     assert!((fam.loss.sigma2 - 0.25).abs() < 1e-12);
     assert!((fam.loss.nu - 5.0).abs() < 1e-12);
@@ -298,7 +298,7 @@ fn tdist_level1_dmu3_matches_fd() {
 /// Level-1 `dth` per-row matches FD of `deviance_per_obs` in shape.
 #[test]
 fn tdist_level1_dth_matches_fd() {
-    // θ_0 = log σ², θ_1 = log(ν - 2)
+    // θ_0 = log σ², θ_1 = log(ν - min.df)
     let ys = vec![-0.8, 0.2, 1.1];
     let mus = vec![0.0; 3];
     for &nu in &[4.0, 6.0] {
@@ -315,10 +315,10 @@ fn tdist_level1_dth_matches_fd() {
                 let rel = (lv1.dth[[i, 0]] - fd).abs() / (fd.abs() + 1.0);
                 assert!(rel < 1e-5, "dth[σ²][{i}]: analytic={} fd={fd}", lv1.dth[[i, 0]]);
             }
-            // ν axis: θ = log(ν - 2)
+            // ν axis: θ = log(ν - min.df)
             for (i, &y) in ys.iter().enumerate() {
-                let nu_plus = ((nu - 2.0).ln() + h).exp() + 2.0;
-                let nu_minus = ((nu - 2.0).ln() - h).exp() + 2.0;
+                let nu_plus = ((nu - 3.0).ln() + h).exp() + 3.0;
+                let nu_minus = ((nu - 3.0).ln() - h).exp() + 3.0;
                 let d_plus = TDist { nu: nu_plus, sigma2 }.deviance_per_obs(y, mus[i]);
                 let d_minus = TDist { nu: nu_minus, sigma2 }.deviance_per_obs(y, mus[i]);
                 let fd = (d_plus - d_minus) / (2.0 * h);
@@ -372,8 +372,8 @@ fn tdist_level2_dmu3_th_matches_fd_of_dmu3() {
             }
             // ν axis
             for (i, &y) in ys.iter().enumerate() {
-                let nu_plus = ((nu - 2.0).ln() + h).exp() + 2.0;
-                let nu_minus = ((nu - 2.0).ln() - h).exp() + 2.0;
+                let nu_plus = ((nu - 3.0).ln() + h).exp() + 3.0;
+                let nu_minus = ((nu - 3.0).ln() - h).exp() + 3.0;
                 let lv1_p = tdist_level1_at(nu_plus, sigma2, &[y], &[mus[i]]);
                 let lv1_m = tdist_level1_at(nu_minus, sigma2, &[y], &[mus[i]]);
                 let fd = (lv1_p.dmu3[0] - lv1_m.dmu3[0]) / (2.0 * h);
@@ -435,7 +435,7 @@ fn tdist_level2_shape_cross_derivs_match_fd_of_level1() {
 fn perturb_tdist(nu: f64, sigma2: f64, axis: usize, h: f64) -> (f64, f64) {
     match axis {
         0 => (nu, (sigma2.ln() + h).exp()), // log σ²
-        1 => (((nu - 2.0).ln() + h).exp() + 2.0, sigma2), // log(ν - 2)
+        1 => (((nu - 3.0).ln() + h).exp() + 3.0, sigma2), // log(ν - min.df)
         _ => unreachable!("TDist has 2 shape axes"),
     }
 }
@@ -459,8 +459,8 @@ fn tdist_sum_dls_dtheta_matches_fd() {
             let rel = (analytic[0] - fd).abs() / (fd.abs() + 1.0);
             assert!(rel < 1e-5, "dls/d(log σ²) ν={nu} σ²={sigma2}: analytic={} fd={fd}", analytic[0]);
             // ν axis
-            let nu_plus = ((nu - 2.0).ln() + h).exp() + 2.0;
-            let nu_minus = ((nu - 2.0).ln() - h).exp() + 2.0;
+            let nu_plus = ((nu - 3.0).ln() + h).exp() + 3.0;
+            let nu_minus = ((nu - 3.0).ln() - h).exp() + 3.0;
             let t_plus = TDist { nu: nu_plus, sigma2 };
             let t_minus = TDist { nu: nu_minus, sigma2 };
             let ls_plus: f64 = ys.iter().map(|&y| t_plus.saturated_log_lik(y, 1.0)).sum();
@@ -489,8 +489,8 @@ fn tdist_sum_d2ls_d2theta_matches_fd() {
             let h = 1e-4;
             assert!(analytic[0].abs() < 1e-10, "σ²σ² block should be 0 (got {})", analytic[0]);
             assert!(analytic[1].abs() < 1e-10, "σ²ν block should be 0 (got {})", analytic[1]);
-            let nu_plus = ((nu - 2.0).ln() + h).exp() + 2.0;
-            let nu_minus = ((nu - 2.0).ln() - h).exp() + 2.0;
+            let nu_plus = ((nu - 3.0).ln() + h).exp() + 3.0;
+            let nu_minus = ((nu - 3.0).ln() - h).exp() + 3.0;
             let t_plus = TDist { nu: nu_plus, sigma2 };
             let t_minus = TDist { nu: nu_minus, sigma2 };
             let g_plus = t_plus.sum_saturated_log_lik_dtheta(y_view.view(), 1.0, None)[1];

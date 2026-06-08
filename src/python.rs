@@ -897,27 +897,52 @@ impl PyFittedGam {
 // Internal helpers — design-strategy dispatch and a per-family fit macro.
 // =============================================================================
 
-/// Initial scat / TDist scale σ² when the caller doesn't supply one.
+/// Response scale for scat's internal standardization — the sample standard
+/// deviation of `y` (ddof=1), floored at 1.0 so it never shrinks the data.
 ///
-/// mgcv `scat()$preinitialize` (R `efam.r:1416-1424`) uses `sig = 0.8·sd(y)`
-/// (σ² = 0.64·var(y)) with the rationale *"low df and low variance promotes
-/// indefiniteness — better to start with moderate df and fairly high
-/// variance."* mgcv can afford that high-variance start because its IRLS
-/// works in the `wz = Wη − ½·Dmu` form (`gam.fit4.r:369`), which stays
-/// well-conditioned even when the per-row weights `W ~ 1/σ²` underflow.
-/// gamrs's PIRLS forms `X'WX` directly, so a `0.64·var(y)`-scale init makes
-/// `X'WX ~ 1e-12·X'X`, leaving the unpenalised directions numerically
-/// unidentified → Cholesky fails on real-scale data (`var(y) ~ 1e11`).
-///
-/// We therefore keep `σ² = 1` as the default: with the mgcv-faithful
-/// observed/expected IRLS weights (see `TDist::irls_observed_pair`) the
-/// outer Newton now climbs σ² to the data scale from below correctly (the
-/// gradient is FD-verified — `tests/score_tests.rs::
-/// tdist_analytic_shape_grad_matches_fd`), whereas the prior expected-`z=η+r`
-/// fallback made it diverge regardless of init. A data-scaled default awaits
-/// the `wz`-form inner solve (tracked in `data/SCAT_PARITY_BUG.md`).
-fn scat_sigma2_init(_y: ArrayView1<f64>, supplied: Option<f64>) -> f64 {
-    supplied.unwrap_or(1.0)
+/// scat's observed IRLS weights are `W ~ 1/σ²`, and gamrs forms `X'WX`
+/// directly, so a raw response with `var(y) ≫ 1` (e.g. prices, `var ~ 1e11`)
+/// drives `X'WX ~ 1e-12·X'X` — the unpenalised directions go numerically
+/// unidentified and the outer Newton stalls / Cholesky fails. mgcv stays
+/// conditioned via its `wz = Wη − ½·Dmu` solve (`gam.fit4.r:369`); until that
+/// form is ported, we fit scat on the standardized response `ỹ = y/s` (so
+/// `σ̃² ~ O(1)`) and rescale the identity-link fit back (see
+/// [`rescale_scat_fit`]). scat with identity link is location-scale
+/// equivariant, so this changes nothing but the conditioning.
+fn scat_response_scale(y: ArrayView1<f64>) -> f64 {
+    let n = y.len();
+    if n < 2 {
+        return 1.0;
+    }
+    let mean = y.sum() / n as f64;
+    let var = y.iter().map(|&yi| (yi - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0);
+    let sd = var.sqrt();
+    if sd.is_finite() && sd > 1.0 {
+        sd
+    } else {
+        1.0
+    }
+}
+
+/// Undo scat's internal standardization on a fit of `ỹ = y/s`. With the
+/// identity link `μ = Xβ`, every fitted quantity is homogeneous in `s`:
+/// `β, μ ∝ s`, `Var(β̂), σ², φ ∝ s²`. Rescaling these makes `predict`,
+/// `predict_ci`, `vcov`, `scale`, and the reported `σ²` come out in the
+/// original `y` units. `reml_value` stays on the standardized scale (it
+/// shifts by a `y`-independent constant and is only compared at fixed `s`).
+fn rescale_scat_fit(mut fit: FittedGam, s: f64) -> FittedGam {
+    if s == 1.0 {
+        return fit;
+    }
+    let s2 = s * s;
+    fit.beta.mapv_inplace(|b| b * s);
+    fit.vcov.mapv_inplace(|v| v * s2);
+    fit.scale *= s2;
+    // shape_params[0] = log σ̃²  →  log(s²·σ̃²) = log σ̃² + 2·log s.
+    if !fit.shape_params.is_empty() {
+        fit.shape_params[0] += 2.0 * s.ln();
+    }
+    fit
 }
 
 /// Run `gamrs::fit_with_design` for a typed family using one of the
@@ -1046,15 +1071,22 @@ fn fit<'py>(
         }
         "tdist" | "scat" => {
             let nu_val = nu.unwrap_or(5.0);
-            let sigma2_val = scat_sigma2_init(y_view, sigma2);
-            fit_dispatch_design(
-                tdist_identity(nu_val, sigma2_val),
+            // Internal standardization (see `scat_response_scale`): fit on
+            // ỹ = y/s where σ̃² ~ O(1), then rescale the identity-link fit
+            // back to y units. σ²_init is taken in standardized units (1.0
+            // default; a supplied σ² is in y units, so divide by s²).
+            let s = scat_response_scale(y_view);
+            let ys: Array1<f64> = y_view.mapv(|v| v / s);
+            let sigma2_std = sigma2.map(|v| v / (s * s)).unwrap_or(1.0);
+            let fit = fit_dispatch_design(
+                tdist_identity(nu_val, sigma2_std),
                 x_view,
-                y_view,
+                ys.view(),
                 w_view,
                 design,
                 k,
-            )?
+            )?;
+            rescale_scat_fit(fit, s)
         }
         "tweedie" | "tw" => {
             let phi_val = tweedie_phi.unwrap_or(1.0);
@@ -1428,14 +1460,18 @@ fn fit_additive<'py>(
         }
         "tdist" | "scat" => {
             let nu_val = nu.unwrap_or(5.0);
-            let sigma2_val = scat_sigma2_init(y_view, sigma2);
-            fit_additive_dispatch(
-                tdist_identity(nu_val, sigma2_val),
+            // Internal standardization — see the single-smooth arm above.
+            let s = scat_response_scale(y_view);
+            let ys: Array1<f64> = y_view.mapv(|v| v / s);
+            let sigma2_std = sigma2.map(|v| v / (s * s)).unwrap_or(1.0);
+            let fit = fit_additive_dispatch(
+                tdist_identity(nu_val, sigma2_std),
                 x_view,
-                y_view,
+                ys.view(),
                 w_view,
                 term_specs,
-            )?
+            )?;
+            rescale_scat_fit(fit, s)
         }
         "tweedie" | "tw" => {
             let phi_val = tweedie_phi.unwrap_or(1.0);
