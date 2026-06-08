@@ -13,7 +13,7 @@ use crate::design::PreparedDesign;
 use crate::error::Result;
 use crate::family::Family;
 use crate::inner::{CholeskySolver, GaussianInnerFit, LinearSolver, PirlsInner, PirlsOpts};
-use crate::outer::{NewtonOpts, NewtonWithHalving};
+use crate::outer::NewtonWithHalving;
 use crate::score::{EnvelopeScore, Profile, ShapeAwareEnvelopeScore, ShapeInnerBuilder};
 use crate::traits::{
     CoordsKind, InnerSolver, Link, Loss, OuterSolver, ScoreDerivatives, VarianceFn,

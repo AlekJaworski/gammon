@@ -428,7 +428,7 @@ impl ProfileShapeNewton {
                 // logic that runs the SD fallback / convergence check
                 // even when Newton stalls. For our 1-D log θ axis the
                 // profile block may still find improvement and unstick.
-                let kkt_at_boundary = rho_bounds.as_ref().map_or(false, |bnds| {
+                let kkt_at_boundary = rho_bounds.as_ref().is_some_and(|bnds| {
                     let mut any_movement = false;
                     let mut all_blocked = true;
                     for (i, &(lo, hi)) in bnds.iter().enumerate() {

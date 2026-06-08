@@ -14,9 +14,9 @@ use crate::design::PreparedDesign;
 use crate::error::Result;
 use crate::family::Gaussian;
 use crate::inner::{GaussianClosedFormInner, LinearSolver};
-use crate::outer::{NewtonOpts, NewtonWithHalving};
+use crate::outer::NewtonWithHalving;
 use crate::score::{EnvelopeScore, MgcvTwoSigmaProfile};
-use crate::traits::{InnerSolver, Loss, OuterSolver};
+use crate::traits::{InnerSolver, OuterSolver};
 
 use super::{compute_edf, compute_edf_per_term, compute_vcov, FittedGam, LinkKind};
 

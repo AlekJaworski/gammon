@@ -780,6 +780,11 @@ where
     /// `compute_value_grad`'s gradient block (no second PIRLS solve).
     /// Returns the gradient plus a `FrozenBetaCtx` that the FD probes
     /// reuse to skip the per-probe inner solve.
+    ///
+    /// Thin `None`-cache wrapper kept for API symmetry with
+    /// `eval_grad_with_fit_cached` (the variant the FD-Hessian path calls);
+    /// currently no in-crate caller, hence `allow(dead_code)`.
+    #[allow(dead_code)]
     pub(super) fn eval_grad_with_fit(
         &self,
         theta: &Array1<f64>,

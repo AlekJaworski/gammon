@@ -12,9 +12,9 @@ use crate::design::PreparedDesign;
 use crate::error::{GamrsError, Result};
 use crate::family::{elf_identity, ElfLoss};
 use crate::inner::{ArmijoElfInner, ArmijoElfOpts, GaussianInnerFit, LinearSolver};
-use crate::outer::{NewtonOpts, NewtonWithHalving};
+use crate::outer::NewtonWithHalving;
 use crate::score::{EnvelopeScore, FixedAtOneProfile};
-use crate::traits::{InnerSolver, Loss, OuterSolver};
+use crate::traits::{InnerSolver, OuterSolver};
 
 use super::{compute_edf, compute_edf_per_term, compute_vcov, FittedGam, LinkKind};
 

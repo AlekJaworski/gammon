@@ -964,7 +964,7 @@ where
         let mut w1 = Array2::<f64>::zeros((n, ntot)); // per-axis diag-weights
         for k in 0..n_terms {
             // w1[:, k] = 0.5 · dmu3 · eta1[:, k]  (broadcast).
-            let col = 0.5 * dmu3 * &eta1.column(k);
+            let col = 0.5 * dmu3 * eta1.column(k);
             w1.column_mut(k).assign(&col);
         }
         for kk in 0..n_shape {
@@ -1047,7 +1047,7 @@ where
                 let eta1_k = eta1.column(k);
                 // dmu3 is `&Array1<f64>`; -& doesn't apply to a reference,
                 // so use `-1.0 * &dmu3` to negate inline.
-                let mut rhs_w: Array1<f64> = (-1.0 * dmu3) * &eta1_i * &eta1_k;
+                let mut rhs_w: Array1<f64> = (-1.0 * dmu3) * eta1_i * eta1_k;
                 if k >= n_terms {
                     let kk = k - n_terms;
                     let dmuth_k = lv1.dmuth.column(kk);
@@ -1109,7 +1109,7 @@ where
                 // ── d2[i,k]: second deriv of D ────────────────────────
                 // Broadcast-expr form — see rhs_w build comment above for
                 // why this beats indexed for-loops.
-                let mut d2_ik = (&dmu2_arr * &eta1_i * &eta1_k).sum() + (&dmu_arr * &eta2_ik).sum();
+                let mut d2_ik = (&dmu2_arr * &eta1_i * eta1_k).sum() + (&dmu_arr * &eta2_ik).sum();
                 if i >= n_terms && k >= n_terms {
                     let ii = i - n_terms;
                     let kk = k - n_terms;
@@ -1174,7 +1174,7 @@ where
                 // ── ldet2[i,k]: ½ ∂² log|A| via trace identity.
                 //   ldet2 = tr(A_inv · a2[i,k]) - tr((A_inv·a1[i])·(A_inv·a1[k]))
                 // Build w2[r] = ∂²(W's diag)/(∂θ_i ∂θ_k) — broadcast-expr form.
-                let mut w2: Array1<f64> = &lv2.dmu4 * &eta1_i * &eta1_k + dmu3 * &eta2_ik;
+                let mut w2: Array1<f64> = &lv2.dmu4 * &eta1_i * eta1_k + dmu3 * &eta2_ik;
                 if i >= n_terms {
                     let ii = i - n_terms;
                     w2 = w2 + &lv2.dmu3_th.column(ii) * &eta1_k;
@@ -1187,7 +1187,7 @@ where
                     let ii = i - n_terms;
                     let kk = k - n_terms;
                     let pair = shape_pair_index(ii.min(kk), ii.max(kk), n_shape);
-                    w2 = w2 + &lv2.dmu2_th2.column(pair);
+                    w2 = w2 + lv2.dmu2_th2.column(pair);
                 }
                 // a2[i,k] = X' · diag(0.5·w2) · X  (+ λ_i·S_i if diagonal ρ).
                 // wx2 built via broadcast (n,1)·(n,p) — same pattern as

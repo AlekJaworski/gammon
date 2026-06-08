@@ -41,7 +41,7 @@ fn synth_scat(n: usize, seed: u64) -> (Array2<f64>, Array1<f64>) {
 
 fn main() {
     let n = 2000;
-    let (x, y) = synth_scat(n, 0xdead_beef_2026_06_03);
+    let (x, y) = synth_scat(n, 0xdead_beef_2026_0603);
 
     // Warm-up.
     for _ in 0..3 {

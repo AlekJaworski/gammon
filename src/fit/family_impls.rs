@@ -27,7 +27,7 @@ use crate::family::{
     TDIST_MIN_DF,
 };
 use crate::inner::{GaussianInnerFit, LinearSolver, PirlsOpts};
-use crate::outer::{NewtonOpts, NewtonWithHalving};
+use crate::outer::NewtonWithHalving;
 use crate::score::{
     FixedAtOneProfile, MgcvTwoSigmaProfile, OcatInnerBuilder, OwnedByLossProfile,
     PirlsInnerBuilder, ShapeAwareEnvelopeScore, ShapeInnerBuilder,

@@ -485,7 +485,7 @@ impl Loss for TDist {
             let r2 = r * r;
             let s = q + r2;
             let s2 = s * s;
-            let s3 = s2 * s;
+            let _s3 = s2 * s;
             let wt = prior_w.map(|w| w[i]).unwrap_or(1.0);
 
             // Mgcv's per-row intermediates (lines 1253-1264). All scoped

@@ -254,7 +254,7 @@ fn tdist_d2_is_negative_for_outliers() {
 // downstream as a "scat outer didn't converge" failure.
 
 use gamrs::traits::{shape_pair_index, Level1ShapeDerivs, Level2ShapeDerivs};
-use ndarray::{Array1, Array2, ArrayView1};
+use ndarray::Array1;
 
 fn tdist_level1_at(nu: f64, sigma2: f64, ys: &[f64], mus: &[f64]) -> Level1ShapeDerivs {
     let t = TDist { nu, sigma2 };

@@ -1144,9 +1144,11 @@ mod fd_match_tests {
         // the analytic-vs-FD Hessian comparison sees a near-zero gradient
         // at the optimum. Without this the residual ‖g‖ leaks O(g·h) into
         // the FD Hessian and widens the analytic vs FD gap to ~3e-3.
-        let mut opts = NewtonOpts::default();
-        opts.grad_tol = 1e-9;
-        opts.reml_tol = 1e-10;
+        let opts = NewtonOpts {
+            grad_tol: 1e-9,
+            reml_tol: 1e-10,
+            ..NewtonOpts::default()
+        };
         let outer = NewtonWithHalving::new(opts);
         let fit = outer.minimize(&score, Array1::zeros(1)).unwrap();
         // ELF Armijo inner: the `∂W/∂η` term is a central FD of the ELF

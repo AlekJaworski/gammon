@@ -443,7 +443,7 @@ impl OuterSolver for NewtonWithHalving {
                 //       saturating-θ ridge where one or more shape axes
                 //       sit against the bound but the ρ axes still need
                 //       to satisfy a (relaxed) gradient tolerance.
-                let kkt_at_boundary = axis_bounds.as_ref().map_or(false, |bnds| {
+                let kkt_at_boundary = axis_bounds.as_ref().is_some_and(|bnds| {
                     // For each axis with any unconstrained Newton movement,
                     // require that movement to point outside the active
                     // bound. Vacuously true if the raw step is ~0 everywhere
