@@ -4,7 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "gamrs"
-version = "0.11.3"
+# Version is the single source of truth in Cargo.toml; maturin reads it from
+# there via `dynamic`. Do NOT hardcode `version` here — a stale static value
+# silently builds mis-versioned wheels that `--skip-existing` then drops on
+# publish (the 0.11.4 release that shipped nothing).
+dynamic = ["version"]
 description = "GAM core (Rust) with sklearn-style Python bindings — beta"
 readme = "README.md"
 requires-python = ">=3.8"
