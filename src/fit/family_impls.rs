@@ -331,6 +331,55 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, NegBinVariance, S> for NegBin
     }
 }
 
+/// Response scale for scat's internal standardization — the sample standard
+/// deviation of `y` (ddof=1), floored at 1.0 so it never shrinks the data.
+///
+/// scat's observed IRLS weight is `W = ½·Dμμ ~ 1/σ²`, and the inner solve
+/// forms `X'WX + λS` and Cholesky-factorizes it. A raw response with
+/// `var(y) ≫ 1` (e.g. prices, `var ~ 1e11`) drives `X'WX ~ 1e-12·X'X` — far
+/// below `λS` — so the unpenalised directions go numerically unidentified and
+/// the outer Newton stalls (`NotConverged`). scat with identity link is
+/// location-scale equivariant, so we fit the standardized response `ỹ = y/s`
+/// (giving `σ̃² ~ O(1)`) and rescale the fit back via [`rescale_scat_fit`].
+/// This is the same conditioning fix mgcv gets from its data-scale dispersion
+/// init (`efam.r` preinitialize, `σ = 0.8·sd(y)`).
+fn scat_response_scale(y: ArrayView1<f64>) -> f64 {
+    let n = y.len();
+    if n < 2 {
+        return 1.0;
+    }
+    let mean = y.sum() / n as f64;
+    let var = y.iter().map(|&yi| (yi - mean).powi(2)).sum::<f64>() / (n as f64 - 1.0);
+    let sd = var.sqrt();
+    if sd.is_finite() && sd > 1.0 {
+        sd
+    } else {
+        1.0
+    }
+}
+
+/// Undo scat's internal standardization on a fit of `ỹ = y/s`. With the
+/// identity link `μ = Xβ`, every fitted quantity is homogeneous in `s`:
+/// `β, μ ∝ s`, `Var(β̂), σ² ∝ s²`. Rescaling these makes `predict`, `vcov`,
+/// `scale`, and the reported `σ²` come out in the original `y` units (predict
+/// goes through `β` so beta rescaling suffices). `reml_value` stays on the
+/// standardized scale — it shifts by a `y`-independent constant and is only
+/// ever compared at fixed `s`. No-op when `s == 1.0`.
+fn rescale_scat_fit(mut fit: FittedGam, s: f64) -> FittedGam {
+    if s == 1.0 {
+        return fit;
+    }
+    let s2 = s * s;
+    fit.beta.mapv_inplace(|b| b * s);
+    fit.vcov.mapv_inplace(|v| v * s2);
+    fit.scale *= s2;
+    // shape_params[0] = log σ̃²  →  log(s²·σ̃²) = log σ̃² + 2·log s.
+    if !fit.shape_params.is_empty() {
+        fit.shape_params[0] += 2.0 * s.ln();
+    }
+    fit
+}
+
 // --- TDist (scat): identity link + T variance, shape-managed σ², ν ---
 impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, TVariance, S> for TDist {
     fn fit_from_prep_canonical(
@@ -356,30 +405,45 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, TVariance, S> for TDist 
             )));
         }
 
+        // scat is location-scale equivariant: fit the standardized response
+        // `ỹ = y/s` and rescale the result back (EXACT). This keeps the inner
+        // solve's normal-equations Cholesky `X'WX + λS` conditioned at any data
+        // magnitude — see [`scat_response_scale`]. Previously applied only in
+        // the Python wrapper; doing it in-core makes the Rust API robust on
+        // raw-scale data too. `s == 1.0` (already ~unit scale) → exact no-op.
+        let s = scat_response_scale(y);
+        let ys: Array1<f64> = if s == 1.0 {
+            y.to_owned()
+        } else {
+            y.mapv(|v| v / s)
+        };
+        let init_sigma2_std = init_sigma2 / (s * s);
+
         let n_terms = prep.s_list.len();
-        let rho_init = SmartInit.init(y, &prep.x_design, &prep.s_list);
+        let rho_init = SmartInit.init(ys.view(), &prep.x_design, &prep.s_list);
         let mut theta0_vec: Vec<f64> = rho_init.to_vec();
-        theta0_vec.push(init_sigma2.ln());
+        theta0_vec.push(init_sigma2_std.ln());
         theta0_vec.push((init_nu - TDIST_MIN_DF).ln());
         let theta0 = Array1::from_vec(theta0_vec);
 
-        fit_shape_aware::<_, _, _, _, _, S, _, _>(
+        let fit = fit_shape_aware::<_, _, _, _, _, S, _, _>(
             prep,
             x,
-            y,
+            ys.view(),
             prior_weights,
-            tdist_identity(init_nu, init_sigma2),
+            tdist_identity(init_nu, init_sigma2_std),
             theta0,
             PirlsInnerBuilder,
             FixedAtOneProfile,
             move |theta| {
-                let mut f = tdist_identity(init_nu, init_sigma2);
+                let mut f = tdist_identity(init_nu, init_sigma2_std);
                 f.set_shape_params(&[theta[n_terms], theta[n_terms + 1]]);
                 f
             },
             move |_family, _fit, theta| theta[n_terms].exp(),
             LinkKind::Identity,
-        )
+        )?;
+        Ok(rescale_scat_fit(fit, s))
     }
 }
 
