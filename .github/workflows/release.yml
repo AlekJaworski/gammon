@@ -21,11 +21,18 @@ jobs:
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
           OPENBLAS_STATIC: "1"
-          # Build a runtime-CPU-dispatched OpenBLAS (openblas-src 0.10.16
-          # honours this) so the static wheel runs on any x86-64 — without it
-          # OpenBLAS bakes the CI runner's ISA (AVX-512) and SIGILLs on
-          # AVX2-only hosts (the 0.11.0–0.11.2 wheel bug).
+          # Portable static OpenBLAS needs TWO independent knobs:
+          #  - DYNAMIC_ARCH=1 builds every CPU KERNEL and dispatches at runtime.
+          #  - TARGET pins the COMMON/driver code (the GEMM packing helpers that
+          #    `ndarray/blas` routes our matmuls through) to a baseline ISA.
+          # Without TARGET, OpenBLAS compiles the common code for the build
+          # RUNNER's CPU; an AVX-512 runner bakes AVX-512 into code that runs on
+          # EVERY host, SIGILLing AVX2-only CPUs (the 0.11.4 wheel bug — and why
+          # DYNAMIC_ARCH alone, added in 0.11.3, wasn't enough: it only fixed
+          # the kernels). PRESCOTT is the x86-64 baseline (SSE2/SSE3) so common
+          # code runs anywhere; dispatched kernels still hit AVX2/AVX-512.
           OPENBLAS_DYNAMIC_ARCH: "1"
+          OPENBLAS_TARGET: "PRESCOTT"
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static
@@ -43,28 +50,28 @@ jobs:
           python -m pip install --upgrade pip numpy pytest
           python -m pip install --no-index --find-links dist/ gamrs
           python -c "import gamrs; print('linux wheel imported OK')"
-      - name: Portability guard (runtime-dispatched OpenBLAS)
-        # Fails the release CLOSED if the static OpenBLAS is not runtime-CPU-
-        # dispatched. The 0.11.0–0.11.2 wheels SIGILLed on AVX2-only hosts
-        # because the build baked the runner's AVX-512 kernels (DYNAMIC_ARCH
-        # off). `OPENBLAS_CORETYPE=HASWELL` forces an AVX2-only kernel: a
-        # DYNAMIC_ARCH build honors it (OpenBLAS init prints `Core: Haswell`);
-        # a single-arch AVX-512 build ignores it and prints its baked core
-        # (e.g. `SkylakeX`) — which we reject. A real fit forces the BLAS call
-        # that triggers the init log, and would itself SIGILL if the forced
-        # kernel were unrunnable.
+      - name: Set up Intel SDE
+        uses: petarpetrovt/setup-sde@v5.0
+        with:
+          environmentVariableName: SDE_PATH
+      - name: Portability guard (AVX2 emulation via Intel SDE)
+        # Run a real fit under Intel SDE emulating a Haswell (AVX2-only) CPU.
+        # SDE chip-check aborts on ANY instruction outside the Haswell ISA —
+        # KERNEL *or* COMMON/driver code — so an AVX-512 leak (the 0.11.4 bug:
+        # AVX-512 baked into OpenBLAS common code from an AVX-512 build runner)
+        # fails the release here, before publish.
+        #
+        # The previous OPENBLAS_CORETYPE + verbose-grep guard could NOT catch
+        # this: it ran on the AVX-512 build runner (where stray AVX-512 executes
+        # fine) and only verified kernel DISPATCH, not the common code. The bug
+        # only manifests when AVX-512-built code runs on a non-AVX-512 CPU, so
+        # emulating one is the only verification — and it must run in CI because
+        # the build host (where the leak originates) is itself AVX-512.
         run: |
           set -euo pipefail
-          OPENBLAS_VERBOSE=2 OPENBLAS_CORETYPE=HASWELL \
-            python tools/portability_check.py 2> openblas.log || { cat openblas.log; exit 1; }
-          echo "--- OpenBLAS runtime init log ---"; cat openblas.log
-          if ! grep -iq 'core *: *haswell' openblas.log; then
-            echo "::error::OpenBLAS did not honor OPENBLAS_CORETYPE=HASWELL — the static"
-            echo "::error::build is NOT runtime-CPU-dispatched (DYNAMIC_ARCH lost). This"
-            echo "::error::wheel would SIGILL on non-AVX-512 hosts. Refusing to ship."
-            exit 1
-          fi
-          echo "Portability guard OK: runtime CPU dispatch confirmed (Haswell kernel honored)."
+          echo "SDE at: $SDE_PATH"
+          "$SDE_PATH/sde64" -hsw -- python tools/portability_check.py
+          echo "Portability guard OK: fit runs clean under emulated AVX2 (Haswell)."
       - uses: actions/upload-artifact@v7
         with:
           name: wheels-linux-${{ matrix.target }}
@@ -89,11 +96,13 @@ jobs:
         env:
           PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
           OPENBLAS_STATIC: "1"
-          # Build a runtime-CPU-dispatched OpenBLAS (openblas-src 0.10.16
-          # honours this) so the static wheel runs on any x86-64 — without it
-          # OpenBLAS bakes the CI runner's ISA (AVX-512) and SIGILLs on
-          # AVX2-only hosts (the 0.11.0–0.11.2 wheel bug).
+          # Same two-knob portability as the linux job (see its comment):
+          # DYNAMIC_ARCH dispatches kernels; TARGET pins the common/driver code
+          # to a baseline ISA so an Apple-Silicon build runner can't bake a
+          # newer-uarch instruction into code that must run on older Apple chips.
+          # ARMV8 is the aarch64 baseline (all Apple Silicon is ARMv8.x+).
           OPENBLAS_DYNAMIC_ARCH: "1"
+          OPENBLAS_TARGET: "ARMV8"
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static

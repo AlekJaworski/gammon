@@ -6,13 +6,14 @@ being runtime-CPU-dispatched. `OPENBLAS_DYNAMIC_ARCH=1` (set in release.yml)
 fixes that by compiling every x86 kernel and selecting one at runtime via
 cpuid.
 
-This script does NOT decide pass/fail on its own — release.yml runs it under
-`OPENBLAS_VERBOSE=2 OPENBLAS_CORETYPE=HASWELL` and greps the OpenBLAS init line
-on stderr. A real GAM fit forces a BLAS call, so OpenBLAS prints which kernel it
-selected. Forcing a non-native (AVX2-only Haswell) kernel only takes effect in a
-DYNAMIC_ARCH build; a single-arch AVX-512 build ignores `OPENBLAS_CORETYPE` and
-keeps reporting its baked core, which the workflow rejects. If the wheel cannot
-run the forced kernel at all, the SIGILL surfaces here as a nonzero exit.
+release.yml runs this under Intel SDE emulating a Haswell (AVX2-only) CPU
+(`sde64 -hsw -- python tools/portability_check.py`). A real GAM fit routes its
+matmuls through OpenBLAS GEMM (via `ndarray/blas`), so if any executed code —
+kernel or OpenBLAS common/driver code — uses an instruction outside the Haswell
+ISA (e.g. an AVX-512 `vbroadcastsd …%zmm` baked in by an AVX-512 build runner),
+SDE's chip-check aborts with a nonzero exit and fails the release. Pass = the
+fit completes and prints the line below. See the guard step's comment for why
+emulation (not a forced OPENBLAS_CORETYPE on the AVX-512 runner) is required.
 """
 
 import numpy as np
