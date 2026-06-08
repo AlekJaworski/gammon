@@ -43,6 +43,12 @@ use crate::error::{GamrsError, Result};
 pub mod canonical;
 pub mod driver;
 mod family_impls;
+// scat response-standardization scale, shared with the Python wrapper's
+// scat/tdist dispatch arms so the default σ² seed matches the in-core fit.
+// Only the Python bindings consume the re-export; family_impls uses the fn
+// directly, so gate the re-export to avoid an unused-import warning otherwise.
+#[cfg(feature = "python")]
+pub(crate) use family_impls::scat_response_scale;
 pub mod gaussian;
 #[cfg(feature = "persistence")]
 mod persistence;

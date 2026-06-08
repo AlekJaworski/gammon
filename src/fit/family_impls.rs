@@ -343,7 +343,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<LogLink, NegBinVariance, S> for NegBin
 /// (giving `σ̃² ~ O(1)`) and rescale the fit back via [`rescale_scat_fit`].
 /// This is the same conditioning fix mgcv gets from its data-scale dispersion
 /// init (`efam.r` preinitialize, `σ = 0.8·sd(y)`).
-fn scat_response_scale(y: ArrayView1<f64>) -> f64 {
+pub(crate) fn scat_response_scale(y: ArrayView1<f64>) -> f64 {
     let n = y.len();
     if n < 2 {
         return 1.0;
