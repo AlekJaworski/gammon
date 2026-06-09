@@ -72,19 +72,24 @@ matching mgcv to ~0.1% (`tests/parity_additive_scat.rs`,
 `scripts/r/gen_scat_multismooth_fixtures.R`). Quantile/ELF is
 single-smooth-only.
 
-Multi-smooth Ocat fits run, produce well-defined `predict_proba`, and
-reach 99%+ classification accuracy on synthetic fixtures.
+Multi-smooth Ocat now has an mgcv reference parity test
+(`tests/parity_additive_scat.rs`'s ocat sibling in
+`test_parity_multismooth.py::test_additive_ocat_parity`,
+`scripts/r/gen_ocat_multismooth_fixtures.R`): on a well-posed
+noisy-latent DGP gamrs and `mgcv` `ocat(R=4)` both converge cleanly and
+agree on `predict_proba` to ~1.8e-3 mean abs / 98% class agreement.
 
 v0.10 ports the full mgcv R outer-Newton stabilisation stack (smart
 θ-init from category frequencies, diagonal Hessian preconditioning,
 Gill-Murray-Wright eigen-fix, subset Newton, rank-deficient KKT
-convergence check). After the ports, **single-smooth ocat converges
-cleanly on every tested seed**. Multi-smooth still hits a flat
-coordinated-shift ridge on the most pathological synthetic fixtures
-(both θ axes against the bound) where `converged_=False` lingers
-despite correct predictions — same regime mgcv R itself bails out
-of with a "did not converge after 200 iterations" warning. See
-`~/ObsidianVault/Projects/gamrs/gamrs - mgcv outer-Newton
+convergence check). After the ports, **single- and (well-posed)
+multi-smooth ocat converge cleanly**. The residual `converged_=False`
+appears only on **near-separable** fixtures (noiseless quantile-cut
+categories) where the latent scale wants to blow up — the exact regime
+`mgcv` itself either converges to a degenerate θ≈181 solution or aborts
+with "inner loop 1; can't correct step size". There gamrs's θ∈(−3,3)
+bound keeps it stable (99% accuracy) and the conservative flag is
+correct. See `~/ObsidianVault/Projects/gamrs/gamrs - mgcv outer-Newton
 stabilisation techniques (port catalogue) 2026-06-03.md` for the
 full port story.
 

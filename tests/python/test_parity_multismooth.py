@@ -59,6 +59,42 @@ def test_additive_scat_parity():
     assert rel < 2e-2, f"scat additive μ rel {rel:.3e} exceeds 2e-2"
 
 
+def test_additive_ocat_parity():
+    """Multi-smooth ocat vs mgcv ocat(R=4) — the FIRST mgcv ocat parity
+    check (parity_ocat.rs was smoke-only). Generated from a proper noisy-
+    latent DGP (z = η + logistic) where mgcv AND gamrs both converge cleanly
+    (mgcv: 3 iters; gamrs: ~5). On the older noiseless quantile-cut fixtures
+    the data is near-separable and mgcv itself blows the latent scale up
+    (θ≈181) or crashes — gamrs's θ∈(−3,3) bound is more robust there. This
+    pins the well-posed regime: converged_=True and predict_proba agreement.
+    """
+    import warnings
+
+    fx = load_fixture("2d_ocat_r4_n1500_k8_cr")
+    x = x_train_2d(fx)
+    y = y_train(fx)
+    k = fx["inputs"]["k"]
+    R = int(fx["inputs"]["r"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        g = gamrs.Gam(
+            family="ocat", r=R,
+            terms=[gamrs.CrTerm(0, k=int(k[0])), gamrs.CrTerm(1, k=int(k[1]))],
+        ).fit(x, y)
+    assert g.converged_, f"multi-smooth ocat should converge on well-posed data (conv={g.converged_})"
+    proba = np.asarray(g.predict_proba(x))
+    mgcv_proba = np.asarray(fx["mgcv_output"]["proba"])
+    assert proba.shape == mgcv_proba.shape == (len(y), R)
+    max_abs = float(np.abs(proba - mgcv_proba).max())
+    mean_abs = float(np.abs(proba - mgcv_proba).mean())
+    agree = float((np.argmax(proba, axis=1) == np.argmax(mgcv_proba, axis=1)).mean())
+    print(f"\n[ocat parity] max_abs={max_abs:.3e} mean_abs={mean_abs:.3e} class_agree={agree:.3f}")
+    # Observed: mean_abs ~1.8e-3, max_abs ~1.9e-2, class_agree ~0.983.
+    assert agree > 0.97, f"gamrs/mgcv ocat class agreement {agree:.3f} too low"
+    assert mean_abs < 5e-3, f"ocat predict_proba mean abs diff {mean_abs:.3e} exceeds 5e-3"
+    assert max_abs < 5e-2, f"ocat predict_proba max abs diff {max_abs:.3e} exceeds 5e-2"
+
+
 def test_additive_tweedie_profile_p_parity():
     """Tweedie profile-p (no tweedie_p): p estimated → 2 shape params."""
     fitted, rel = _fit_additive_cr(load_fixture("2d_tw_profile_log_n600_k8_cr"), "tw")

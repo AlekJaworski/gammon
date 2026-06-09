@@ -500,11 +500,17 @@ def test_ocat_single_smooth_usable(rng):
 
 
 def test_ocat_multi_smooth_predict_proba_usable(rng):
-    """Multi-smooth ocat: the joint Newton may report converged_=False
-    (the joint (ρ, θ) outer walks a near-flat ridge), but `predict_proba`
-    is scale-invariant under the ridge and stays accurate. Pin both
-    properties so a future convergence fix doesn't accidentally regress
-    predict_proba quality."""
+    """Multi-smooth ocat on NEAR-SEPARABLE data (noiseless quantile-cut
+    categories): converged_ may be False because the latent scale wants to
+    blow up (θ pins at the ±3 bound). This is the exact regime where mgcv
+    itself converges to a degenerate θ≈181 solution or aborts with "inner
+    loop 1; can't correct step size" — gamrs's θ-bound keeps it stable and
+    the conservative flag is correct. `predict_proba` is scale-invariant
+    under the ridge and stays accurate, so pin that it's still usable.
+
+    The well-posed (noisy-latent) regime — where gamrs converges and matches
+    mgcv — is covered by test_parity_multismooth.py::test_additive_ocat_parity.
+    """
     n = 1500
     X = np.column_stack([rng.uniform(0, 10, n), rng.uniform(0, 10, n)])
     eta = np.sin(X[:, 0]) + 0.5 * np.sin(X[:, 1] * 0.5)
