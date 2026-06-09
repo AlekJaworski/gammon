@@ -5,9 +5,12 @@ six composable trait layers (`Basis`, `BasisTransform`, `Loss`/`Link`/`VarianceF
 `InnerSolver`, `ScoreDerivatives`, `OuterSolver`). Designed for parity with
 R's `mgcv`.
 
-**Status: beta (v0.10).** Faster than `mgcv_rust` 0.23 at every tested
-fixture and scale (see [Performance](#performance)), and `mgcv` R-parity
-on µ across all ten families. Multi-smooth additive (`y ~ s(x0) + s(x1)`),
+**Status: beta (v0.11).** Fastest where wall time matters — large n and
+high basis dimension (up to ~2.3× at n=1M and ~15× at k=50 vs
+`mgcv_rust` 0.23), competitive-to-slower on tiny fits, with a known
+multi-smooth-NegBin gap; see [Performance](#performance) for the honest
+breakdown. `mgcv` R-parity on µ across all ten families. Multi-smooth
+additive (`y ~ s(x0) + s(x1)`),
 n-margin tensor products (`te(x0, x1, …)` / `ti(…)`) and thin-plate splines
 (`s(x0, x1, bs="tp")`) all ship. NegBin and Tweedie fit multi-smooth, with
 Tweedie offering both profile-p (`tw()`) and fixed-p (`Tweedie(p)`).
@@ -55,7 +58,7 @@ All ten families land 1-D parity against `mgcv`:
 | QuasiBinomial   | logit    | PIRLS        | 1-D Newton (prof φ) | ~7e-5              |
 | Gamma           | log      | PIRLS        | 1-D Newton (prof φ) | ~2e-2              |
 | InverseGaussian | log      | PIRLS        | 1-D Newton (prof φ) | ~3e-4              |
-| NegBin          | log      | PIRLS        | 2-D joint Newton    | ~9e-7              |
+| NegBin          | log      | PIRLS        | ρ-Newton + profile-θ | ~9e-7             |
 | Tweedie         | log      | PIRLS        | 3-D joint Newton    | ~5e-3              |
 | TDist (`scat`)  | identity | PIRLS        | 3-D joint Newton    | ~2e-2              |
 | Ocat            | logit    | gam.fit5     | joint β + threshold | smoke              |
@@ -98,38 +101,62 @@ full port story.
 
 ## Performance
 
-`gamrs` vs `mgcv_rust` 0.23.2, single-smooth, best-of-20 wall time
-after long warm-up. Numbers >1× mean `gamrs` is faster. Measured on a
-single 12th-gen Intel core. See `scripts/bench_matters.py`.
+`gamrs` vs `mgcv_rust` 0.23.2, best-of-7 median wall time after 3 warmup
+iters (`>1×` = `gamrs` faster). Reproduce with `scripts/bench_matters.py`.
+Numbers below are an i7-8565U (8th-gen, AVX2); the *ratios* are
+same-box-comparable but absolute times differ on your hardware.
 
-Single-smooth at gamrs-default `k=10`, n=2K:
+**gamrs wins at scale.** Single-smooth, k=20 — as n grows the
+constant-factor setup overhead amortises and gamrs pulls ahead:
 
-| family    | speedup vs mgcv_rust |
-| --------- | -------------------: |
-| Gaussian  | 1.6×                 |
-| Poisson   | 1.9×                 |
-| Bernoulli | 2.1×                 |
-| Tweedie   | 2.6×                 |
-| NegBin    | 1.0×                 |
-| scat      | 0.77×                |
-| ocat      | 14× *(†)*            |
+| family    | n=10K | n=100K |  n=1M |
+| --------- | ----: | -----: | ----: |
+| Gaussian  | 0.58× |  1.49× | 2.27× |
+| Poisson   | 0.24× |  1.01× | 1.89× |
+| Bernoulli | 0.39× |  1.12× | 1.84× |
 
-*(†)* ocat speedup is fixture-dependent; mgcv_rust's ocat path is
-slow on multi-category outputs by construction.
+It also wins as the basis dimension `k` grows (Gaussian, n=2K): k=10 →
+1.7×, k=20 → 4.0×, k=50 → 15×. (Those fits are <2ms — read them as
+above-the-noise ratios, not headline wall-time claims.)
 
-scat closed substantially in v0.11.1 — from v0.10.0's 0.07× to 0.77× of
-mgcv_rust. Two structural wins drove it: (a) analytic gradient + Level-2
-analytic Hessian + observed-W PIRLS + warm-start (v0.11.0), and (b)
-broadcast-expression conversion + batched-h_diag matmul across the IFT
-chain (v0.11.1). The remaining ~25 % gap is per-pair work in the
-Hessian assembly that's already broadcast-friendly — closing it would
-need either algorithmic shortcuts or fundamentally different BLAS
-dispatch at small p.
+**Shape-aware families (n=2K, k=10):**
+
+| family      | speedup | note                                          |
+| ----------- | ------: | --------------------------------------------- |
+| Tweedie 1-D |   1.93× |                                               |
+| ocat 1-D    |   14.5× | mgcv_rust's ocat path is slow by construction |
+| ocat 2-D    |   0.69× |                                               |
+| NegBin 1-D  |   0.64× |                                               |
+| NegBin 2-D  |   0.06× | multi-smooth profile-θ scaling gap (known)    |
+| scat 1-D    |   0.58× | <2ms — sub-noise                              |
+
+**Honest aggregate** (16 above-20ms cells across all sweeps): gamrs is
+faster in 8 — median 0.89×, geomean 0.83×, range 0.06×–14.5×. The wins
+concentrate where wall time actually matters — large n, large k, and
+Tweedie/ocat. Tiny fits (<20ms) and multi-smooth NegBin still trail
+mgcv_rust; the NegBin multi-smooth slowdown is a known profile-θ scaling
+issue under investigation.
+
+scat climbed from v0.10.0's 0.07× to v0.11's ~0.77× (at the 6K-row
+profiling fixture) via analytic gradient + Level-2 analytic Hessian +
+observed-W PIRLS + warm-start (v0.11.0) and broadcast-expression
+conversion + batched-h_diag matmul (v0.11.1). The residual gap is
+per-pair Hessian-assembly work at small p.
 
 For GLM families at large n, set `method="fREML"` (mgcv R's `bam()`
 equivalent — Wood & Fasiolo 2017 Fellner-Schall multiplicative updates
 with single-step IRLS per outer iteration). The defaults are sensible
 at small/medium n; the [perf guide](docs/perf.md) covers when to switch.
+
+### Parallel fits across threads
+
+As of v0.11.7 the fit releases the GIL (PyO3 `py.detach`) for the entire
+solve, so independent `Gam.fit(...)` / `fit_quantile(...)` calls run truly
+concurrently on a `ThreadPoolExecutor` — no process pool, no pickling of
+inputs. When fanning many fits across a thread pool, set
+`OPENBLAS_NUM_THREADS=1` so the BLAS backend doesn't oversubscribe cores
+against your own threads: on a 6K-row scat/fREML fit that turns the
+pre-0.11.7 0.58× (GIL-bound, serialised) into ~1.95× on 4 worker threads.
 
 ## Rust API
 
@@ -190,7 +217,7 @@ so adding a family is a `Loss` impl, not a fork of the optimiser.
 
 ## Versioning
 
-Beta (`0.10.x`). The API is stabilising; minor bumps may carry breaking
+Beta (`0.11.x`). The API is stabilising; minor bumps may carry breaking
 changes until the remaining shape-aware families (scat/Ocat/ELF) gain
 multi-smooth support and the 1.0 surface is locked.
 
