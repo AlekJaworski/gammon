@@ -54,16 +54,19 @@ impl Link for LogLink {
         1.0 / mu.max(eps)
     }
     fn d2_link_dmu(&self, mu: f64) -> f64 {
-        // d²η/dμ² = -1/μ²
+        // d²η/dμ² = -1/μ². Floor the DENOMINATOR (not just μ): flooring μ at
+        // 1e-300 and then squaring underflows to 0, so `-1/(m*m)` would be
+        // -1/0 = -inf. μ=exp(η) can legitimately reach ~0 on a divergent
+        // log-link iterate, so cap the denominator to keep d2 large-but-finite.
         let eps = 1e-300;
         let m = mu.max(eps);
-        -1.0 / (m * m)
+        -1.0 / (m * m).max(eps)
     }
     fn d3_link_dmu(&self, mu: f64) -> f64 {
-        // d³η/dμ³ = 2/μ³
+        // d³η/dμ³ = 2/μ³ — same denominator-floor reasoning as d2.
         let eps = 1e-300;
         let m = mu.max(eps);
-        2.0 / (m * m * m)
+        2.0 / (m * m * m).max(eps)
     }
     fn is_canonical(&self) -> bool {
         // log IS the canonical link for Poisson.
@@ -136,16 +139,17 @@ impl Link for InverseLink {
         -1.0 / m2
     }
     fn d2_link_dmu(&self, mu: f64) -> f64 {
-        // d²η/dμ² = 2/μ³
+        // d²η/dμ² = 2/μ³. Floor the DENOMINATOR (matching d_link_dmu): μ floored
+        // at 1e-300 then cubed underflows to 0, so `2/(m*m*m)` would be +inf.
         let eps = 1e-300;
         let m = mu.max(eps);
-        2.0 / (m * m * m)
+        2.0 / (m * m * m).max(eps)
     }
     fn d3_link_dmu(&self, mu: f64) -> f64 {
-        // d³η/dμ³ = -6/μ⁴
+        // d³η/dμ³ = -6/μ⁴ — same denominator-floor reasoning as d2.
         let eps = 1e-300;
         let m = mu.max(eps);
-        -6.0 / (m * m * m * m)
+        -6.0 / (m * m * m * m).max(eps)
     }
     fn is_canonical(&self) -> bool {
         // Reciprocal IS the canonical link for Gamma.

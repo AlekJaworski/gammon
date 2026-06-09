@@ -82,26 +82,35 @@ fn inverse_link_derivatives_match_fd() {
 }
 
 #[test]
-fn inverse_link_finite_at_boundary_and_small_mu() {
-    // The μ-floor keeps link / inverse_link / the FIRST derivative finite at
-    // μ=0 — those are the values PIRLS feeds back. At exactly μ=0 the 1/μ link
-    // is genuinely singular (and the cubed denominators in d2/d3 underflow the
-    // floor to +inf), but for any realistic positive μ the higher derivatives
-    // stay finite. Gamma μ is always > 0, so that's the contract that matters.
+fn inverse_link_all_derivatives_finite_including_zero() {
+    // The μ-floor + denominator-floor keep link / inverse_link / ALL
+    // derivatives finite even at μ=0. The 1/μ link is singular there, but PIRLS
+    // can transiently hit μ≈0 on a divergent iterate, and the link must not
+    // poison the Hessian with ±inf. (Gamma μ is positive in a healthy fit.)
     let l = InverseLink;
-    assert!(l.link(0.0).is_finite(), "link(0) must be floored finite");
-    assert!(
-        l.inverse_link(0.0).is_finite(),
-        "inverse_link(0) floored finite"
-    );
-    assert!(
-        l.d_link_dmu(0.0).is_finite(),
-        "d_link_dmu(0) floored finite"
-    );
-    for &mu in &[1e-6, 1e-3, 0.1, 1.0, 100.0] {
+    assert!(l.link(0.0).is_finite() && l.inverse_link(0.0).is_finite());
+    for &mu in &[0.0, 1e-6, 1e-3, 0.1, 1.0, 100.0] {
         assert!(
-            l.d2_link_dmu(mu).is_finite() && l.d3_link_dmu(mu).is_finite(),
-            "d2/d3 must be finite at realistic μ={mu}"
+            l.d_link_dmu(mu).is_finite()
+                && l.d2_link_dmu(mu).is_finite()
+                && l.d3_link_dmu(mu).is_finite(),
+            "all InverseLink derivatives must be finite at μ={mu}"
+        );
+    }
+}
+
+#[test]
+fn log_link_all_derivatives_finite_including_zero() {
+    // μ = exp(η) → 0 is reachable on a divergent log-link iterate; the
+    // denominator-floored derivatives must stay finite, not feed ±inf to PIRLS.
+    let l = LogLink;
+    assert!(l.link(0.0).is_finite(), "log link(0) floored finite");
+    for &mu in &[0.0, 1e-9, 1e-3, 1.0, 1.0e3] {
+        assert!(
+            l.d_link_dmu(mu).is_finite()
+                && l.d2_link_dmu(mu).is_finite()
+                && l.d3_link_dmu(mu).is_finite(),
+            "all LogLink derivatives must be finite at μ={mu}"
         );
     }
 }
