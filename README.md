@@ -66,8 +66,10 @@ All ten families land 1-D parity against `mgcv`:
 
 Multi-smooth (`s(x0) + s(x1) + …`) ships with `mgcv` R parity tests for
 Gaussian / Bernoulli / Poisson / QuasiPoisson / QuasiBinomial / Gamma /
-InvGauss / NegBin / Tweedie. scat / TDist multi-smooth fits run and
-converge; reference parity tests are pending. Quantile/ELF is
+InvGauss / NegBin / Tweedie / scat. scat / TDist multi-smooth now has mgcv
+reference parity tests too — 2-D µ rel-err ~9e-3, 3-D ~1.7e-2, with σ̂²
+matching mgcv to ~0.1% (`tests/parity_additive_scat.rs`,
+`scripts/r/gen_scat_multismooth_fixtures.R`). Quantile/ELF is
 single-smooth-only.
 
 Multi-smooth Ocat fits run, produce well-defined `predict_proba`, and

@@ -39,6 +39,26 @@ def test_additive_nb_parity():
     assert rel < 5e-3, f"NB additive μ rel {rel:.3e} exceeds 5e-3"
 
 
+def test_additive_scat_parity():
+    """scat (scaled-t), 2-D additive, identity link. Rust bar 1.5e-2; ~9e-3.
+
+    scat predicts on the identity scale, so no log-link inverse here. Closes
+    the README's "multi-smooth scat reference parity pending" gap at the FFI
+    boundary.
+    """
+    fx = load_fixture("2d_scat_identity_n600_k8_cr")
+    x = x_train_2d(fx)
+    y = y_train(fx)
+    k = fx["inputs"]["k"]
+    fitted = gamrs.fit_additive(
+        "scat", x, y, [gamrs.CrTerm(0, k=int(k[0])), gamrs.CrTerm(1, k=int(k[1]))]
+    )
+    assert len(fitted.rho) == 2
+    mu = np.asarray(fitted.predict(x))  # identity link → μ directly
+    rel = max_rel_err(mu, np.asarray(fx["mgcv_output"]["predictions_train"]))
+    assert rel < 2e-2, f"scat additive μ rel {rel:.3e} exceeds 2e-2"
+
+
 def test_additive_tweedie_profile_p_parity():
     """Tweedie profile-p (no tweedie_p): p estimated → 2 shape params."""
     fitted, rel = _fit_additive_cr(load_fixture("2d_tw_profile_log_n600_k8_cr"), "tw")
