@@ -254,14 +254,17 @@ where
                 }
             }
         }
-        let inner = self.inner_builder.build(
-            family.clone(),
-            self.x_design.clone(),
-            self.y.clone(),
-            self.prior_weights.clone(),
-            self.s_list.clone(),
-            opts,
-        );
+        let inner = {
+            let _t = crate::profile::scoped("fit_inner_build");
+            self.inner_builder.build(
+                family.clone(),
+                self.x_design.clone(),
+                self.y.clone(),
+                self.prior_weights.clone(),
+                self.s_list.clone(),
+                opts,
+            )
+        };
         let fit = {
             let _t = crate::profile::scoped("fit_inner_pirls");
             inner.fit(&rho_slice)?
