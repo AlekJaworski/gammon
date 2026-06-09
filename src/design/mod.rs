@@ -28,7 +28,7 @@
 use ndarray::{Array1, Array2, ArrayView2, Axis};
 use ndarray_linalg::Eigh;
 
-use crate::error::Result;
+use crate::error::{GamrsError, Result};
 
 mod additive;
 mod cr;
@@ -227,11 +227,15 @@ pub(crate) fn matrix_inf_norm(m: ArrayView2<f64>) -> f64 {
 /// Some downstream score paths (ocat in particular) apply a per-family
 /// "mgcv heuristic" rank adjustment via `Loss::score_rank_adjustment`
 /// to match mgcv's `non_zero_rows − 2` convention for CR splines.
-pub(crate) fn rank_and_log_pseudo_det(s: ArrayView2<f64>) -> (usize, f64) {
+pub(crate) fn rank_and_log_pseudo_det(s: ArrayView2<f64>) -> Result<(usize, f64)> {
     let s_owned = s.to_owned();
+    // eigh on a symmetric penalty is robust but can fail on pathological
+    // user-supplied designs (LAPACK convergence). Surface it as a typed
+    // GamrsError instead of a panic so the Python wheel raises a catchable
+    // exception with a clear message rather than a `PanicException`.
     let (eigs, _) = s_owned
         .eigh(ndarray_linalg::UPLO::Lower)
-        .expect("penalty eigendecomposition failed");
+        .map_err(|e| GamrsError::Linalg(format!("penalty eigendecomposition failed: {e}")))?;
     let max_eig = eigs.iter().cloned().fold(0.0_f64, f64::max);
     let tol = max_eig.max(1.0) * 1e-10;
     let mut rank = 0usize;
@@ -242,7 +246,7 @@ pub(crate) fn rank_and_log_pseudo_det(s: ArrayView2<f64>) -> (usize, f64) {
             log_det += e.ln();
         }
     }
-    (rank, log_det)
+    Ok((rank, log_det))
 }
 
 /// Assemble `S_total(ρ) = Σ_j exp(ρ_j) · s_list[j]`. The hot path inside

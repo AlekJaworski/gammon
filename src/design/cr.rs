@@ -110,7 +110,7 @@ impl DesignStrategy for Cr {
             }
         }
 
-        let (rank_s, log_pseudo_det_s) = rank_and_log_pseudo_det(s_block.view());
+        let (rank_s, log_pseudo_det_s) = rank_and_log_pseudo_det(s_block.view())?;
         let mp = p - rank_s;
 
         Ok(PreparedDesign {
@@ -228,7 +228,7 @@ impl DesignStrategy for CrStable {
             }
         }
 
-        let (rank_s, log_pseudo_det_s) = rank_and_log_pseudo_det(s_block.view());
+        let (rank_s, log_pseudo_det_s) = rank_and_log_pseudo_det(s_block.view())?;
         let mp = p - rank_s;
 
         Ok(PreparedDesign {

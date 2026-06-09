@@ -80,7 +80,7 @@ impl DesignStrategy for Re {
             s_block[[1 + j, 1 + j]] = 1.0;
         }
 
-        let (rank_s, log_pseudo_det_s) = rank_and_log_pseudo_det(s_block.view());
+        let (rank_s, log_pseudo_det_s) = rank_and_log_pseudo_det(s_block.view())?;
         let mp = p - rank_s;
 
         Ok(PreparedDesign {

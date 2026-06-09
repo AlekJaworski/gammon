@@ -441,7 +441,7 @@ impl DesignStrategy for Additive {
                         s_block[[start + r, start + c]] = s_smooth[[r, c]];
                     }
                 }
-                let (rank_j, log_det_j) = rank_and_log_pseudo_det(s_block.view());
+                let (rank_j, log_det_j) = rank_and_log_pseudo_det(s_block.view())?;
                 s_list.push(s_block);
                 rank_s_list.push(rank_j);
                 log_pseudo_det_s_list.push(log_det_j);
