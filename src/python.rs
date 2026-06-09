@@ -20,7 +20,7 @@
 //! row-aware guidance — "Gamma requires y > 0; got y=-0.3 at row 42") to
 //! Python's `ValueError`, so callers see actionable messages.
 
-use ndarray::{Array1, ArrayView1, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -900,7 +900,17 @@ impl PyFittedGam {
 /// Run `gamrs::fit_with_design` for a typed family using one of the
 /// canonical design strategies, with the string `design` keyword
 /// mediated at this single boundary.
-fn fit_dispatch_design<L, K, V>(
+/// Design choice resolved from the FFI string under the GIL, so the
+/// GIL-released closure below never captures a Python-borrowed `&str`.
+#[derive(Clone, Copy)]
+enum DesignChoice {
+    Cr,
+    Re,
+    CrStable,
+}
+
+fn fit_dispatch_design<'py, L, K, V>(
+    py: Python<'py>,
     family: crate::family::Family<L, K, V>,
     x: ArrayView2<f64>,
     y: ArrayView1<f64>,
@@ -909,21 +919,39 @@ fn fit_dispatch_design<L, K, V>(
     k: usize,
 ) -> PyResult<FittedGam>
 where
-    L: FamilyFit<K, V>,
-    K: crate::traits::Link + Clone,
-    V: crate::traits::VarianceFn + Clone,
+    // `+ Send` so the GIL-released closure satisfies pyo3's `Ungil`
+    // (`unsafe impl<T: Send> Ungil`). The family/link/variance types are plain
+    // Rust structs, so Send holds.
+    L: FamilyFit<K, V> + Send,
+    K: crate::traits::Link + Clone + Send,
+    V: crate::traits::VarianceFn + Clone + Send,
 {
-    let prep = match design_name {
-        "cr" => Cr { k }.prepare(x).map_err(map_err)?,
-        "re" => Re.prepare(x).map_err(map_err)?,
-        "cr_stable" => CrStable { k }.prepare(x).map_err(map_err)?,
+    // Resolve the design string under the GIL (cheap) — keeps the
+    // GIL-released section below free of any Python-borrowed data.
+    let choice = match design_name {
+        "cr" => DesignChoice::Cr,
+        "re" => DesignChoice::Re,
+        "cr_stable" => DesignChoice::CrStable,
         other => {
             return Err(PyValueError::new_err(format!(
                 "design must be 'cr', 're', or 'cr_stable'; got {other:?}"
             )))
         }
     };
-    L::fit_from_prep(family, prep, x, y, weights).map_err(map_err)
+    // Release the GIL for the heavy basis build + PIRLS/REML solve so Python
+    // threads can fit GAMs in parallel (e.g. a parallel DAG). `x` / `y` /
+    // `weights` are views into caller-OWNED Rust arrays (copied off the numpy
+    // buffers before this call), so nothing in the closure aliases a live
+    // Python object while the GIL is dropped.
+    py.detach(move || {
+        let prep = match choice {
+            DesignChoice::Cr => Cr { k }.prepare(x)?,
+            DesignChoice::Re => Re.prepare(x)?,
+            DesignChoice::CrStable => CrStable { k }.prepare(x)?,
+        };
+        L::fit_from_prep(family, prep, x, y, weights)
+    })
+    .map_err(map_err)
 }
 
 // =============================================================================
@@ -973,7 +1001,7 @@ where
     elf_lambda=None,
 ))]
 fn fit<'py>(
-    _py: Python<'py>,
+    py: Python<'py>,
     family_name: &str,
     x: PyReadonlyArray2<'py, f64>,
     y: PyReadonlyArray1<'py, f64>,
@@ -990,28 +1018,42 @@ fn fit<'py>(
     elf_sigma: Option<f64>,
     elf_lambda: Option<f64>,
 ) -> PyResult<PyFittedGam> {
-    let x_view: ArrayView2<f64> = x.as_array();
-    let y_view: ArrayView1<f64> = y.as_array();
+    // Copy the numpy inputs into owned Rust arrays so the per-family dispatch
+    // can release the GIL during the solve (see `fit_dispatch_design`) without
+    // aliasing the live numpy buffers. The copy is O(n·p), negligible next to
+    // the fit.
+    let x_owned: Array2<f64> = x.as_array().to_owned();
+    let y_owned: Array1<f64> = y.as_array().to_owned();
     let w_owned: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
+    let x_view: ArrayView2<f64> = x_owned.view();
+    let y_view: ArrayView1<f64> = y_owned.view();
     let w_view: Option<ArrayView1<f64>> = w_owned.as_ref().map(|a| a.view());
 
     let fitted: FittedGam = match family_name {
-        "gaussian" => fit_dispatch_design(gaussian_identity(), x_view, y_view, w_view, design, k)?,
-        "bernoulli" | "binomial" => {
-            fit_dispatch_design(bernoulli_logit(), x_view, y_view, w_view, design, k)?
+        "gaussian" => {
+            fit_dispatch_design(py, gaussian_identity(), x_view, y_view, w_view, design, k)?
         }
-        "poisson" => fit_dispatch_design(poisson_log(), x_view, y_view, w_view, design, k)?,
+        "bernoulli" | "binomial" => {
+            fit_dispatch_design(py, bernoulli_logit(), x_view, y_view, w_view, design, k)?
+        }
+        "poisson" => fit_dispatch_design(py, poisson_log(), x_view, y_view, w_view, design, k)?,
         "quasipoisson" => {
-            fit_dispatch_design(quasipoisson_log(), x_view, y_view, w_view, design, k)?
+            fit_dispatch_design(py, quasipoisson_log(), x_view, y_view, w_view, design, k)?
         }
         "quasibinomial" => {
-            fit_dispatch_design(quasibinomial_logit(), x_view, y_view, w_view, design, k)?
+            fit_dispatch_design(py, quasibinomial_logit(), x_view, y_view, w_view, design, k)?
         }
-        "Gamma" => fit_dispatch_design(gamma_inverse(), x_view, y_view, w_view, design, k)?,
-        "gamma" => fit_dispatch_design(gamma_log(), x_view, y_view, w_view, design, k)?,
-        "inverse_gaussian" | "inverse.gaussian" => {
-            fit_dispatch_design(inverse_gaussian_log(), x_view, y_view, w_view, design, k)?
-        }
+        "Gamma" => fit_dispatch_design(py, gamma_inverse(), x_view, y_view, w_view, design, k)?,
+        "gamma" => fit_dispatch_design(py, gamma_log(), x_view, y_view, w_view, design, k)?,
+        "inverse_gaussian" | "inverse.gaussian" => fit_dispatch_design(
+            py,
+            inverse_gaussian_log(),
+            x_view,
+            y_view,
+            w_view,
+            design,
+            k,
+        )?,
         "negbin" | "nb" => {
             let theta_val = theta.unwrap_or(2.0);
             if theta_val <= 0.0 {
@@ -1019,7 +1061,7 @@ fn fit<'py>(
                     "negbin theta must be > 0; got theta={theta_val}"
                 )));
             }
-            fit_dispatch_design(negbin_log(theta_val), x_view, y_view, w_view, design, k)?
+            fit_dispatch_design(py, negbin_log(theta_val), x_view, y_view, w_view, design, k)?
         }
         "tdist" | "scat" => {
             let nu_val = nu.unwrap_or(5.0);
@@ -1030,6 +1072,7 @@ fn fit<'py>(
             // data-scale dispersion init).
             let sigma2_init = sigma2.unwrap_or_else(|| scat_response_scale(y_view).powi(2));
             fit_dispatch_design(
+                py,
                 tdist_identity(nu_val, sigma2_init),
                 x_view,
                 y_view,
@@ -1045,6 +1088,7 @@ fn fit<'py>(
             //   Some(val) → fixed-p   (mgcv `Tweedie(p=val)`): p held = val.
             match tweedie_p {
                 None => fit_dispatch_design(
+                    py,
                     tweedie_log(1.5, phi_val),
                     x_view,
                     y_view,
@@ -1059,6 +1103,7 @@ fn fit<'py>(
                         )));
                     }
                     fit_dispatch_design(
+                        py,
                         tweedie_log_fixed_p(p_val, phi_val),
                         x_view,
                         y_view,
@@ -1082,6 +1127,7 @@ fn fit<'py>(
             }
             let thresholds = Array1::<f64>::zeros(n_cats - 2);
             fit_dispatch_design(
+                py,
                 ocat_identity(thresholds, n_cats),
                 x_view,
                 y_view,
@@ -1100,6 +1146,7 @@ fn fit<'py>(
             let sigma_val = elf_sigma.unwrap_or(0.0);
             let lambda_val = elf_lambda.unwrap_or(0.0);
             fit_dispatch_design(
+                py,
                 elf_identity(tau_val, sigma_val, lambda_val),
                 x_view,
                 y_view,
@@ -1312,7 +1359,8 @@ fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<Term
 
 /// Run `gamrs::fit_with_design(..., Additive { terms })` for a typed family.
 /// String dispatch on `family_name` happens here at the FFI boundary.
-fn fit_additive_dispatch<L, K, V>(
+fn fit_additive_dispatch<'py, L, K, V>(
+    py: Python<'py>,
     family: crate::family::Family<L, K, V>,
     x: ArrayView2<f64>,
     y: ArrayView1<f64>,
@@ -1320,12 +1368,20 @@ fn fit_additive_dispatch<L, K, V>(
     terms: Vec<TermSpec>,
 ) -> PyResult<FittedGam>
 where
-    L: FamilyFit<K, V>,
-    K: crate::traits::Link + Clone,
-    V: crate::traits::VarianceFn + Clone,
+    // `+ Send` so the GIL-released closure satisfies pyo3's `Ungil` — see
+    // `fit_dispatch_design`.
+    L: FamilyFit<K, V> + Send,
+    K: crate::traits::Link + Clone + Send,
+    V: crate::traits::VarianceFn + Clone + Send,
 {
-    let prep = Additive { terms }.prepare(x).map_err(map_err)?;
-    L::fit_from_prep(family, prep, x, y, weights).map_err(map_err)
+    // GIL released for the basis build + solve (the heavy part); `x` / `y` /
+    // `weights` view caller-owned arrays and `terms` is owned, so the closure
+    // never touches a live Python object. See `fit_dispatch_design`.
+    py.detach(move || {
+        let prep = Additive { terms }.prepare(x)?;
+        L::fit_from_prep(family, prep, x, y, weights)
+    })
+    .map_err(map_err)
 }
 
 /// Fit a multi-smooth additive gamrs GAM: `y ~ s(x_{c_0}) + s(x_{c_1}) + …`.
@@ -1358,7 +1414,7 @@ where
     elf_lambda=None,
 ))]
 fn fit_additive<'py>(
-    _py: Python<'py>,
+    py: Python<'py>,
     family_name: &str,
     x: PyReadonlyArray2<'py, f64>,
     y: PyReadonlyArray1<'py, f64>,
@@ -1374,31 +1430,46 @@ fn fit_additive<'py>(
     elf_sigma: Option<f64>,
     elf_lambda: Option<f64>,
 ) -> PyResult<PyFittedGam> {
-    let x_view: ArrayView2<f64> = x.as_array();
-    let y_view: ArrayView1<f64> = y.as_array();
+    // Own the numpy inputs so the dispatch can release the GIL during the solve
+    // (see `fit_dispatch_design`). `term_specs` is built under the GIL (it reads
+    // the Python list) and is already owned.
+    let x_owned: Array2<f64> = x.as_array().to_owned();
+    let y_owned: Array1<f64> = y.as_array().to_owned();
     let w_owned: Option<Array1<f64>> = weights.map(|w| w.as_array().to_owned());
+    let x_view: ArrayView2<f64> = x_owned.view();
+    let y_view: ArrayView1<f64> = y_owned.view();
     let w_view: Option<ArrayView1<f64>> = w_owned.as_ref().map(|a| a.view());
     let term_specs = build_term_specs(&terms)?;
 
     let fitted: FittedGam = match family_name {
         "gaussian" => {
-            fit_additive_dispatch(gaussian_identity(), x_view, y_view, w_view, term_specs)?
+            fit_additive_dispatch(py, gaussian_identity(), x_view, y_view, w_view, term_specs)?
         }
         "bernoulli" | "binomial" => {
-            fit_additive_dispatch(bernoulli_logit(), x_view, y_view, w_view, term_specs)?
+            fit_additive_dispatch(py, bernoulli_logit(), x_view, y_view, w_view, term_specs)?
         }
-        "poisson" => fit_additive_dispatch(poisson_log(), x_view, y_view, w_view, term_specs)?,
+        "poisson" => fit_additive_dispatch(py, poisson_log(), x_view, y_view, w_view, term_specs)?,
         "quasipoisson" => {
-            fit_additive_dispatch(quasipoisson_log(), x_view, y_view, w_view, term_specs)?
+            fit_additive_dispatch(py, quasipoisson_log(), x_view, y_view, w_view, term_specs)?
         }
-        "quasibinomial" => {
-            fit_additive_dispatch(quasibinomial_logit(), x_view, y_view, w_view, term_specs)?
-        }
-        "Gamma" => fit_additive_dispatch(gamma_inverse(), x_view, y_view, w_view, term_specs)?,
-        "gamma" => fit_additive_dispatch(gamma_log(), x_view, y_view, w_view, term_specs)?,
-        "inverse_gaussian" | "inverse.gaussian" => {
-            fit_additive_dispatch(inverse_gaussian_log(), x_view, y_view, w_view, term_specs)?
-        }
+        "quasibinomial" => fit_additive_dispatch(
+            py,
+            quasibinomial_logit(),
+            x_view,
+            y_view,
+            w_view,
+            term_specs,
+        )?,
+        "Gamma" => fit_additive_dispatch(py, gamma_inverse(), x_view, y_view, w_view, term_specs)?,
+        "gamma" => fit_additive_dispatch(py, gamma_log(), x_view, y_view, w_view, term_specs)?,
+        "inverse_gaussian" | "inverse.gaussian" => fit_additive_dispatch(
+            py,
+            inverse_gaussian_log(),
+            x_view,
+            y_view,
+            w_view,
+            term_specs,
+        )?,
         "negbin" | "nb" => {
             let theta_val = theta.unwrap_or(2.0);
             if theta_val <= 0.0 {
@@ -1406,7 +1477,14 @@ fn fit_additive<'py>(
                     "negbin theta must be > 0; got theta={theta_val}"
                 )));
             }
-            fit_additive_dispatch(negbin_log(theta_val), x_view, y_view, w_view, term_specs)?
+            fit_additive_dispatch(
+                py,
+                negbin_log(theta_val),
+                x_view,
+                y_view,
+                w_view,
+                term_specs,
+            )?
         }
         "tdist" | "scat" => {
             let nu_val = nu.unwrap_or(5.0);
@@ -1414,6 +1492,7 @@ fn fit_additive<'py>(
             // arm above. Pass y / σ² in original units.
             let sigma2_init = sigma2.unwrap_or_else(|| scat_response_scale(y_view).powi(2));
             fit_additive_dispatch(
+                py,
                 tdist_identity(nu_val, sigma2_init),
                 x_view,
                 y_view,
@@ -1428,6 +1507,7 @@ fn fit_additive<'py>(
             //   Some(val) → fixed-p   (mgcv `Tweedie(p=val)`): p held = val.
             match tweedie_p {
                 None => fit_additive_dispatch(
+                    py,
                     tweedie_log(1.5, phi_val),
                     x_view,
                     y_view,
@@ -1441,6 +1521,7 @@ fn fit_additive<'py>(
                         )));
                     }
                     fit_additive_dispatch(
+                        py,
                         tweedie_log_fixed_p(p_val, phi_val),
                         x_view,
                         y_view,
@@ -1463,6 +1544,7 @@ fn fit_additive<'py>(
             }
             let thresholds = Array1::<f64>::zeros(n_cats - 2);
             fit_additive_dispatch(
+                py,
                 ocat_identity(thresholds, n_cats),
                 x_view,
                 y_view,
@@ -1480,6 +1562,7 @@ fn fit_additive<'py>(
             let sigma_val = elf_sigma.unwrap_or(0.0);
             let lambda_val = elf_lambda.unwrap_or(0.0);
             fit_additive_dispatch(
+                py,
                 elf_identity(tau_val, sigma_val, lambda_val),
                 x_view,
                 y_view,
