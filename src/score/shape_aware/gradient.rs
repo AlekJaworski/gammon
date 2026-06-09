@@ -188,6 +188,7 @@ where
         if !self.family_base.loss.allows_no_refresh() {
             return None;
         }
+        let _t = crate::profile::scoped("no_refresh_probe");
         self.stats.bump_no_refresh_attempt();
         let n_terms = self.s_list.len();
         let n_shape = self.family_base.n_shape_params();

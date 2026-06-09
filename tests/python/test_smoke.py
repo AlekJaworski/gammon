@@ -148,6 +148,33 @@ def test_bad_scale_raises(toy_gaussian):
         g.predict(x, scale="nonsense")
 
 
+def test_degenerate_input_never_aborts_the_interpreter(rng):
+    """Contract guard for the wheel's `panic = "unwind"` strategy.
+
+    A degenerate / non-finite fit must surface as a *catchable* Python
+    exception, never a hard process abort. PyO3 converts a Rust panic into a
+    `PanicException` (a ``BaseException``) only when the wheel is built with
+    `panic = "unwind"` — under `panic = "abort"` the same panic ``SIGABRT``s
+    the interpreter and this test's process would die before the final
+    assertion (pytest would report the worker as crashed). Reaching the end
+    means every degenerate input was handled without killing the process.
+    """
+    n = 60
+    x = rng.standard_normal((n, 1))
+    degenerate_responses = [
+        np.full(n, np.nan),          # non-finite response
+        np.full(n, np.inf),          # non-finite response
+        np.full(n, 3.0),             # zero-variance response
+        np.zeros(n),                 # all-zero response
+    ]
+    for y in degenerate_responses:
+        try:
+            gamrs.GAM("gaussian", k=10).fit(x, y)
+        except BaseException:  # noqa: BLE001 — catchable is the whole point
+            pass
+    assert True  # survived every case ⇒ no input aborted the interpreter
+
+
 # --------------------------------------------------------------------------- #
 # Multi-smooth fit_additive + typed terms                                     #
 # --------------------------------------------------------------------------- #

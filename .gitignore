@@ -18,3 +18,13 @@ venv/
 .vscode/
 *.swp
 
+# Proprietary fixtures — real housing sales used for the local scat parity
+# repro (data/SCAT_PARITY_BUG.md + .csv/.parquet). MUST NOT ship in the
+# public MIT repo. The committable, synthetic restatement of that bug is
+# tests/parity_scat.rs::scat_downweights_high_outliers_synthetic.
+/data/
+
+# uv dev lockfile — Cargo.lock is the committed lock that matters; uv.lock
+# is a local dev convenience (the wheel/CI build uses pip + maturin).
+uv.lock
+

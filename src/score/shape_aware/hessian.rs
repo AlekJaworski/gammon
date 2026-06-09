@@ -241,6 +241,7 @@ where
             build_xtwx, compute_dev_grad_beta_working_rss, hess_ift_rho, HessIftCtx,
         };
 
+        let _t_total = crate::profile::scoped("rho_only_total");
         let (fit, family) = self.fit_inner_at(theta)?;
         let n_terms = self.s_list.len();
         let rho_slice: Vec<f64> = theta.slice(ndarray::s![..n_terms]).to_vec();
@@ -357,7 +358,10 @@ where
             sigma2,
             dev_grad_beta: &dev_grad_beta,
         };
-        let h_rho = hess_ift_rho(&ctx);
+        let h_rho = {
+            let _t = crate::profile::scoped("hess_ift_rho");
+            hess_ift_rho(&ctx)
+        };
 
         // Capture NoRefresh accepted state — port of mgcv_rust's
         // `warm_state` write (`gam_optimized.rs:1408-1414`). b1[:, k] =

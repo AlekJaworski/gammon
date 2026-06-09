@@ -119,7 +119,17 @@ harness = false
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-panic = "abort"
+# `unwind` (NOT `abort`) is load-bearing for the Python wheel: wheels build
+# with `--release`, and PyO3 wraps every `#[pyfunction]`/`#[pymethods]` body
+# in `catch_unwind`, converting a Rust panic into a catchable Python
+# `PanicException`. Under `panic = "abort"` there is no unwinding, so any
+# panic (a stray `.unwrap()` on a singular system, an arithmetic overflow,
+# an out-of-bounds slice) SIGABRTs the user's interpreter instead of raising.
+# For a library loaded into a host process that is the wrong failure mode.
+# The unwind-table cost is negligible for a numerical crate (panics are off
+# the hot path), and `cargo test` already runs unwind, so this also makes the
+# release-profile test runs behave like the wheel.
+panic = "unwind"
 strip = true
 
 # Release-quality runtime with ~3-4× faster compile vs `release`.

@@ -120,5 +120,11 @@ fn bench_2d() {
 fn main() {
     println!("[bench_nb] NegBin profile-θ benchmarks");
     bench_1d();
+    // Per-phase breakdown of the 2D fit: build with `--features profile`
+    // and the reset/dump below emit the phase table (rho_only_total /
+    // fit_inner_pirls / frozen_beta_probe / no_refresh_probe / hess_ift_rho).
+    // No-ops without the feature.
+    gamrs::profile::reset();
     bench_2d();
+    gamrs::profile::dump(&mut std::io::stderr()).unwrap();
 }

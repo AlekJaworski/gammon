@@ -157,3 +157,86 @@ fn scat_raw_scale_via_rust_api() {
         "raw-scale scat μ rel error {rel:.3e} exceeds 5e-2 (conditioning?)"
     );
 }
+
+/// Regression for the v0.11 `scat` IRLS-fallback bug (see
+/// `docs/scat_parity_bug.md`). The bug inverted the robustness: in the
+/// presence of high-side outliers gamrs `scat` pulled the fitted mean
+/// *above* the Gaussian/OLS fit, when scat must down-weight large-residual
+/// points and pull the fit *below* it (toward the bulk). This is a
+/// synthetic, self-contained restatement of the real-data Phoenix fixture
+/// that triggered it — no proprietary data — so the directional contract
+/// is locked in CI.
+///
+/// Construction: a gentle clean trend with a dense cluster of large
+/// **positive** outliers. Gaussian chases them up; scat down-weights them.
+/// The directional assertions (`scat < gaussian`, scat closer to the clean
+/// trend) would both have FAILED under the pre-fix wrong-sign behaviour.
+#[test]
+fn scat_downweights_high_outliers_synthetic() {
+    let n = 240usize;
+    let x_vec: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+    // Clean signal: gentle slope; mean over [0,1) ≈ 10.25.
+    let signal = |xi: f64| 10.0 + 0.5 * xi;
+    // Deterministic, ~zero-mean bounded "noise" (no RNG dependency).
+    let noise = |i: usize| 0.05 * ((i as f64) * 0.7).sin();
+    let mut y_vec: Vec<f64> = (0..n).map(|i| signal(x_vec[i]) + noise(i)).collect();
+    // Inject large positive outliers on ~12.5% of rows, spread across x.
+    for i in (0..n).step_by(8) {
+        y_vec[i] += 8.0;
+    }
+
+    let x = Array2::from_shape_vec((n, 1), x_vec).unwrap();
+    let y = Array1::from_vec(y_vec);
+    let y_mean = y.iter().sum::<f64>() / (n as f64);
+    let y_var = y.iter().map(|&v| (v - y_mean).powi(2)).sum::<f64>() / (n as f64);
+    let k = 10usize;
+
+    let g = gamrs::fit(gamrs::family::gaussian_identity(), x.view(), y.view(), None, k)
+        .expect("gaussian fit should not fail");
+    let s = gamrs::fit(
+        gamrs::family::tdist_identity(5.0, y_var * 0.1),
+        x.view(),
+        y.view(),
+        None,
+        k,
+    )
+    .expect("scat fit should not fail");
+
+    let mu_g = g.predict(x.view()).expect("gaussian predict");
+    let mu_s = s.predict(x.view()).expect("scat predict");
+    assert!(
+        mu_s.iter().all(|v| v.is_finite()),
+        "scat predictions must be finite"
+    );
+
+    let mean_g = mu_g.iter().sum::<f64>() / (n as f64);
+    let mean_s = mu_s.iter().sum::<f64>() / (n as f64);
+    let clean_level = 10.25; // mean of `signal` over x ∈ [0,1)
+    println!(
+        "[scat outlier-direction] gaussian_mean={mean_g:.3} scat_mean={mean_s:.3} \
+         clean≈{clean_level:.3}; ν̂ via σ̂²={:.3e}; gap={:.3}",
+        s.scale,
+        mean_g - mean_s,
+    );
+
+    // (1) Correct sign: scat sits BELOW gaussian under positive outliers.
+    //     Pre-fix this was inverted (scat ABOVE gaussian) — the bug.
+    assert!(
+        mean_s < mean_g,
+        "scat mean {mean_s:.3} must be below gaussian {mean_g:.3} \
+         under high-side outliers (robustness sign regression)"
+    );
+    // (2) Non-trivial gap: require a clear separation, not just noise.
+    assert!(
+        mean_g - mean_s > 0.2,
+        "scat should down-weight outliers by a clear margin (gap {:.3} ≤ 0.2)",
+        mean_g - mean_s
+    );
+    // (3) scat lands closer to the clean trend than the outlier-chasing
+    //     Gaussian fit.
+    assert!(
+        (mean_s - clean_level).abs() < (mean_g - clean_level).abs(),
+        "scat ({mean_s:.3}) should be closer to the clean level {clean_level:.3} \
+         than gaussian ({mean_g:.3})"
+    );
+}

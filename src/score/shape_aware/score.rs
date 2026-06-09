@@ -262,7 +262,10 @@ where
             self.s_list.clone(),
             opts,
         );
-        let fit = inner.fit(&rho_slice)?;
+        let fit = {
+            let _t = crate::profile::scoped("fit_inner_pirls");
+            inner.fit(&rho_slice)?
+        };
         self.stats.record_pirls_call(fit.iterations);
         // Stash the converged η̂ for the next outer iter's warm-start.
         *self.last_eta.borrow_mut() = Some(fit.eta.clone());
@@ -385,6 +388,7 @@ where
         fit: &GaussianInnerFit<S>,
         theta: &Array1<f64>,
     ) -> f64 {
+        let _t = crate::profile::scoped("frozen_beta_probe");
         let n_terms = self.s_list.len();
         let n_shape = self.family_base.n_shape_params();
         debug_assert_eq!(theta.len(), n_terms + n_shape);
