@@ -157,6 +157,16 @@ impl Loss for TDist {
         1.0e-8
     }
 
+    /// mgcv `scat` initialize starts μ at the response (`mustart <- y`,
+    /// `efam.r:1430`), so the first PIRLS residuals are ~0 — the natural
+    /// saturated start for the location-scale t. The trait default `(y+ȳ)/2`
+    /// instead injects an artificial half-shrink-to-mean residual on iteration
+    /// 0. Identity link, so μ is on the (internally standardized) response
+    /// scale; exact-zero rows get mgcv's `+0.1` nudge.
+    fn initial_mu(&self, y: ndarray::ArrayView1<f64>) -> ndarray::Array1<f64> {
+        y.mapv(|yi| if yi == 0.0 { 0.1 } else { yi })
+    }
+
     /// **Observed-W PIRLS pair for scat** — port of mgcv R's `gam.fit4.r`
     /// inner-loop W/z build (lines 368-399). Direct port of `0.5·D_μμ·(dμ/dη)²`
     /// with `(y − μ) · g'(μ)·dμ/dη / α` working response, expected-Hessian
