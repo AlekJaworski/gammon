@@ -8,6 +8,21 @@ is locked. Versions correspond to the published PyPI wheels.
 ## [Unreleased]
 
 ### Added
+- **GAMLSS: Gaussian location-scale (`gaulss`) — the first multi-linear-
+  predictor family.** `gamrs.fit_gaulss(X, y, mu_terms=…, sigma_terms=…)` fits
+  `y ~ N(μ(x), σ(x)²)` with smooth μ(x) AND σ(x), jointly. Because the Gaussian
+  location-scale Fisher information is block-diagonal (μ ⟂ log σ), the joint
+  MLE is computed by **orthogonal alternating Fisher scoring** — an alternation
+  of two single-predictor penalised weighted-Gaussian REML fits (μ reweighted
+  by 1/σ²(x); log σ via the scale IRLS) — reusing the existing single-predictor
+  fit stack rather than a dense block-Newton. One fit yields every quantile
+  (`GaulssFit.predict_quantile`), monotone in τ so bands never cross. Native
+  Rust driver (`src/fit/gaulss.rs`, exported as `gamrs::fit_gaulss`). Confronted
+  with mgcv `gaulss`: recovers the same μ̂/σ̂ (RMSE ~3e-4 / ~1e-3) and matches
+  OOS pinball to ~0.05%, ~70× faster than R `gaulss` at n=800
+  (`tests/python/test_parity_multismooth.py::test_gaulss_joint_parity`,
+  `src/fit/gaulss.rs` unit test). This is the seam for the broader GAMLSS class
+  (`shash`/`gevlss`); non-orthogonal families will extend the alternation.
 - **Distributional location-scale quantiles — `fit_quantile_lss`.** A new
   quantile path that models the whole conditional distribution (location μ(x)
   + scale σ(x), two Gaussian GAMs) and derives every quantile as

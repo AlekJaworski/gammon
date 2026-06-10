@@ -66,8 +66,8 @@ pub use design::{
 pub use error::{GamrsError, Result};
 pub use family::{ocat_init_theta, OcatLoss, OcatVariance};
 pub use fit::{
-    fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver,
-    FitWithProfile, FittedGam, LinkKind, PredictScale,
+    fit, fit_gaulss, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver,
+    FitWithProfile, FittedGam, GaulssFit, GaulssOpts, LinkKind, PredictScale,
 };
 pub use inner::{CholeskySolver, LinearSolver, LuSolver};
 pub use score::{FixedAtOneProfile, MgcvTwoSigmaProfile, OwnedByLossProfile, Profile};
