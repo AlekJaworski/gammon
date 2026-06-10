@@ -1630,11 +1630,46 @@ fn set_outer_algorithm(algorithm: Option<&str>) -> PyResult<()> {
     }
 }
 
+/// Fit a Gaussian location-scale (`gaulss`) GAMLSS model: two linear
+/// predictors (μ via `mu_terms`, log σ via `sigma_terms`), fit jointly by
+/// orthogonal alternating Fisher scoring. Returns the two block fits (`μ` and
+/// `log σ`, each a `FittedGam`) plus `(n_iters, converged)`. The Python
+/// `gamrs.fit_gaulss` wrapper composes them into quantiles.
+#[pyfunction]
+#[pyo3(signature = (x, y, mu_terms, sigma_terms, max_iter=50, tol=1e-6))]
+fn fit_gaulss<'py>(
+    py: Python<'py>,
+    x: PyReadonlyArray2<'py, f64>,
+    y: PyReadonlyArray1<'py, f64>,
+    mu_terms: Bound<'py, pyo3::types::PyList>,
+    sigma_terms: Bound<'py, pyo3::types::PyList>,
+    max_iter: usize,
+    tol: f64,
+) -> PyResult<(PyFittedGam, PyFittedGam, usize, bool)> {
+    let x_owned: Array2<f64> = x.as_array().to_owned();
+    let y_owned: Array1<f64> = y.as_array().to_owned();
+    let mu_specs = build_term_specs(&mu_terms)?;
+    let sigma_specs = build_term_specs(&sigma_terms)?;
+    let opts = crate::fit::GaulssOpts { max_iter, tol };
+    let fit = py
+        .detach(move || {
+            crate::fit::fit_gaulss(mu_specs, sigma_specs, x_owned.view(), y_owned.view(), opts)
+        })
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok((
+        PyFittedGam { inner: fit.loc },
+        PyFittedGam { inner: fit.scale },
+        fit.n_iters,
+        fit.converged,
+    ))
+}
+
 #[pymodule]
 fn _gamrs_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFittedGam>()?;
     m.add_function(wrap_pyfunction!(fit, m)?)?;
     m.add_function(wrap_pyfunction!(fit_additive, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_gaulss, m)?)?;
     m.add_function(wrap_pyfunction!(set_outer_tuning_override, m)?)?;
     m.add_function(wrap_pyfunction!(set_outer_algorithm, m)?)?;
     Ok(())

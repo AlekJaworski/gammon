@@ -83,6 +83,20 @@ all τ, the bands never cross, and `shape="shash"` captures skew/kurtosis.
 Matches mgcv `gaulss` OOS pinball to within ~1% on a heteroskedastic 2-D split
 (`scripts/r/gen_quantile_lss_fixture.R`).
 
+### GAMLSS — Gaussian location-scale (`gaulss`)
+
+`fit_gaulss(X, y, mu_terms=…, sigma_terms=…)` is the first GAMLSS
+(multi-linear-predictor) family: it fits `y ~ N(μ(x), σ(x)²)` with smooth μ(x)
+**and** σ(x) *jointly*. Because the Gaussian location-scale Fisher information
+is block-diagonal (μ ⟂ log σ), the joint MLE is an **orthogonal alternation**
+of two single-predictor weighted-Gaussian REML fits — reusing the existing fit
+stack rather than a dense block-Newton. One fit gives every quantile
+(`q_τ = μ + σ·Φ⁻¹(τ)`, no crossing). It recovers mgcv `gaulss`'s μ̂/σ̂ to
+RMSE ~3e-4 / ~1e-3 and its OOS pinball to ~0.05%, at ~70× the speed (n=800).
+Unlike the two-stage `fit_quantile_lss`, μ is reweighted by 1/σ²(x) each pass —
+the joint-MLE efficiency gain. This is the seam for the wider GAMLSS class
+(`shash`, `gevlss`): non-orthogonal families extend the same alternation.
+
 Multi-smooth Ocat now has an mgcv reference parity test
 (`tests/parity_additive_scat.rs`'s ocat sibling in
 `test_parity_multismooth.py::test_additive_ocat_parity`,

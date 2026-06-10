@@ -187,6 +187,61 @@ def test_additive_quantile_lss_parity():
         )
 
 
+def test_gaulss_joint_parity():
+    """Joint Gaussian location-scale (`gaulss`) — the first GAMLSS family —
+    vs mgcv `gaulss`. The native `fit_gaulss` driver fits μ(x) and log σ(x)
+    jointly by orthogonal alternating Fisher scoring; it should reproduce mgcv
+    `gaulss` (not just match its pinball like the two-stage `fit_quantile_lss`,
+    but recover the same μ̂ and σ̂).
+
+    The fixture stores gaulss's per-τ test predictions; we recover its μ̂, σ̂ via
+    `μ = q_0.5`, `σ = (q_0.9 − q_0.5)/Φ⁻¹(0.9)`. Contracts: converged, no
+    crossing, μ̂/σ̂ match gaulss tightly, and OOS pinball within 2% (observed
+    ~0.05%).
+    """
+    import statistics
+
+    fx = load_fixture("2d_quantile_lss_hetero_n800_k10_cr")
+    x_tr = np.ascontiguousarray(np.asarray(fx["inputs"]["x_train"], dtype=np.float64))
+    y_tr = np.ascontiguousarray(np.asarray(fx["inputs"]["y_train"], dtype=np.float64))
+    x_te = np.ascontiguousarray(np.asarray(fx["inputs"]["x_test"], dtype=np.float64))
+    y_te = np.ascontiguousarray(np.asarray(fx["inputs"]["y_test"], dtype=np.float64))
+    k = int(fx["inputs"]["k"][0])
+    pt = fx["gaulss_output"]["per_tau"]
+    z90 = statistics.NormalDist().inv_cdf(0.9)
+    mu_ga = np.asarray(pt["0.5"]["pred_test"], dtype=np.float64)
+    sig_ga = (np.asarray(pt["0.9"]["pred_test"], dtype=np.float64) - mu_ga) / z90
+
+    fit = gamrs.fit_gaulss(
+        x_tr, y_tr,
+        mu_terms=[gamrs.CrTerm(0, k=k), gamrs.CrTerm(1, k=k)],
+        sigma_terms=[gamrs.CrTerm(0, k=k), gamrs.CrTerm(1, k=k)],
+    )
+    assert fit.converged_, f"gaulss alternation did not converge (iters={fit.n_iters_})"
+
+    # No crossing across a fine τ grid (one fit → all τ).
+    grid = np.linspace(0.05, 0.95, 19)
+    Q = np.asarray(fit.predict_quantile(x_te, grid))
+    assert Q.shape == (len(y_te), grid.size)
+    assert int((np.diff(Q, axis=1) < 0).sum()) == 0, "gaulss quantiles crossed"
+
+    # Recover the SAME μ̂, σ̂ as mgcv gaulss (not just matching pinball).
+    mu_j = fit.predict_loc(x_te)
+    sig_j = fit.predict_sigma(x_te)
+    rmse_mu = float(np.sqrt(np.mean((mu_j - mu_ga) ** 2)))
+    rmse_sig = float(np.sqrt(np.mean((sig_j - sig_ga) ** 2)))
+    print(f"\n[gaulss parity] iters={fit.n_iters_} rmse_mu={rmse_mu:.5f} rmse_sig={rmse_sig:.5f}")
+    assert rmse_mu < 0.01, f"μ̂ vs gaulss RMSE {rmse_mu:.5f} too large"
+    assert rmse_sig < 0.02, f"σ̂ vs gaulss RMSE {rmse_sig:.5f} too large"
+
+    # OOS pinball parity (within 2%; observed ~0.05%).
+    for tau in fx["inputs"]["taus"]:
+        ref = float(pt[str(tau)]["oos_pinball"])
+        q = np.asarray(fit.predict_quantile(x_te, float(tau))).ravel()
+        pb = _pinball(y_te, q, tau)
+        assert pb <= 1.02 * ref, f"τ={tau}: gaulss OOS pinball {pb:.6f} exceeds 1.02× mgcv {ref:.6f}"
+
+
 def test_additive_tweedie_profile_p_parity():
     """Tweedie profile-p (no tweedie_p): p estimated → 2 shape params."""
     fitted, rel = _fit_additive_cr(load_fixture("2d_tw_profile_log_n600_k8_cr"), "tw")

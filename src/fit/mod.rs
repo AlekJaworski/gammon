@@ -43,6 +43,7 @@ use crate::error::{GamrsError, Result};
 pub mod canonical;
 pub mod driver;
 mod family_impls;
+pub mod gaulss;
 // scat response-standardization scale, shared with the Python wrapper's
 // scat/tdist dispatch arms so the default σ² seed matches the in-core fit.
 // Only the Python bindings consume the re-export; family_impls uses the fn
@@ -59,6 +60,7 @@ pub use canonical::{
     fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver, FitWithProfile,
 };
 pub use driver::{ExplicitInit, LambdaInit, SmartInit, ZeroInit};
+pub use gaulss::{fit_gaulss, GaulssFit, GaulssOpts};
 
 /// Link kind tag carried on the [`FittedGam`] so `predict_ci` /
 /// `predict_diff` can map between η (linear-predictor) and μ (response)
