@@ -7,17 +7,6 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
-### Added
-- **Multi-smooth (additive) Quantile/ELF.** `fit_quantile` gained a `terms=`
-  argument (`CrTerm` / `TeTerm` / …) so quantile fits run on additive designs
-  (`y ~ s(x0) + s(x1) + …`), not just a single smooth. The SHASH σ pilot, the
-  K-fold CV σ search, and the final fit all use the additive design; σ stays a
-  single family-level scale. First multi-smooth quantile parity test against
-  qgam: 2-D additive OOS pinball within ±0.6% of qgam at τ ∈ {0.1, 0.5, 0.9}
-  (`scripts/r/gen_quantile_multismooth_fixture.R`,
-  `tests/python/test_parity_multismooth.py::test_additive_quantile_oos_parity`,
-  `tests/quantile_smoke.rs::quantile_multismooth_additive_monotone_and_converged`).
-
 ## [0.11.8] — 2026-06-10
 
 ### Changed
@@ -32,8 +21,28 @@ is locked. Versions correspond to the published PyPI wheels.
   `GamrsError::Linalg` on failure instead of `expect()`-panicking
   (`src/design/mod.rs::rank_and_log_pseudo_det`). Degenerate / rank-deficient
   designs surface as a catchable error rather than a host-interpreter abort.
+- **Wheel portability: AVX-512 leak in the Linux build.** The first 0.11.8
+  build tripped the SDE Haswell portability guard on an `vbroadcastsd zmm0`
+  (AVX-512) instruction — the guard correctly blocked the PyPI publish (no
+  broken wheel shipped). Root cause: the manylinux Rust toolchain was not
+  emitting baseline x86-64 codegen. Pinned `RUSTFLAGS=-C target-cpu=x86-64`
+  in the Linux release job so our Rust is deterministically baseline (and the
+  sccache key can't reuse a native-arch object); the rebuilt wheel disassembles
+  to zero `zmm` instructions and passes the guard. Also gated `publish-pypi` to
+  release events so a candidate can be `workflow_dispatch`-tested through
+  build + guard without publishing.
 
 ### Added
+- **Multi-smooth (additive) Quantile/ELF.** `fit_quantile` gained a `terms=`
+  argument (`CrTerm` / `TeTerm` / …) so quantile fits run on additive designs
+  (`y ~ s(x0) + s(x1) + …`), not just a single smooth. The SHASH σ pilot, the
+  K-fold CV σ search, and the final fit all use the additive design; σ stays a
+  single family-level scale. First multi-smooth quantile parity test against
+  qgam (the mgcv-family ground truth): 2-D additive OOS pinball within ±0.6%
+  of qgam at τ ∈ {0.1, 0.5, 0.9}
+  (`scripts/r/gen_quantile_multismooth_fixture.R`,
+  `tests/python/test_parity_multismooth.py::test_additive_quantile_oos_parity`,
+  `tests/quantile_smoke.rs::quantile_multismooth_additive_monotone_and_converged`).
 - **Multi-smooth `scat` (scaled-t) mgcv reference parity.** 2-D and 3-D
   additive fixtures (`tests/parity_additive_scat.rs`,
   `tests/python/test_parity_multismooth.py::test_additive_scat_parity`,
