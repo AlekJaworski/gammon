@@ -76,6 +76,13 @@ pinball loss matches `qgam` to within ±0.6% at τ ∈ {0.1, 0.5, 0.9}
 (`scripts/r/gen_quantile_multismooth_fixture.R`,
 `test_parity_multismooth.py::test_additive_quantile_oos_parity`).
 
+For a *coherent* set of quantiles, `fit_quantile_lss` fits the conditional
+distribution by its location μ(x) and scale σ(x) and derives every quantile
+as `q_τ(x) = μ(x) + σ(x)·z_τ` — the mgcv `gaulss`/`shash` view. One fit serves
+all τ, the bands never cross, and `shape="shash"` captures skew/kurtosis.
+Matches mgcv `gaulss` OOS pinball to within ~1% on a heteroskedastic 2-D split
+(`scripts/r/gen_quantile_lss_fixture.R`).
+
 Multi-smooth Ocat now has an mgcv reference parity test
 (`tests/parity_additive_scat.rs`'s ocat sibling in
 `test_parity_multismooth.py::test_additive_ocat_parity`,

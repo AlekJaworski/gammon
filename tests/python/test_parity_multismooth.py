@@ -141,6 +141,52 @@ def test_additive_quantile_oos_parity():
         )
 
 
+def test_additive_quantile_lss_parity():
+    """Distributional location-scale quantile vs mgcv `gaulss`.
+
+    `fit_quantile_lss` models μ(x) + σ(x) and derives every quantile as
+    q_τ = μ + σ·Φ⁻¹(τ) — the mgcv `gaulss` view. The fixture
+    (`2d_quantile_lss_hetero_n800_k10_cr.json`, from
+    `scripts/r/gen_quantile_lss_fixture.R`) embeds a fixed train/test split
+    and gaulss's per-τ held-out pinball on a heteroskedastic-in-x0 DGP.
+
+    Two contracts:
+      1. **No crossing** — a single fit's quantiles are monotone in τ across a
+         fine grid (guaranteed by construction: z_τ ↑, σ > 0).
+      2. **Parity** — OOS pinball ≤ 1.05× gaulss (the 5% bar). gamrs is a
+         two-stage estimator (μ, then σ on log|resid|) vs gaulss's joint fit,
+         yet observed within ~1% at every τ.
+    """
+    fx = load_fixture("2d_quantile_lss_hetero_n800_k10_cr")
+    x_tr = np.ascontiguousarray(np.asarray(fx["inputs"]["x_train"], dtype=np.float64))
+    y_tr = np.ascontiguousarray(np.asarray(fx["inputs"]["y_train"], dtype=np.float64))
+    x_te = np.ascontiguousarray(np.asarray(fx["inputs"]["x_test"], dtype=np.float64))
+    y_te = np.ascontiguousarray(np.asarray(fx["inputs"]["y_test"], dtype=np.float64))
+    k = int(fx["inputs"]["k"][0])
+
+    fit = gamrs.fit_quantile_lss(
+        x_tr, y_tr, terms=[gamrs.CrTerm(0, k=k), gamrs.CrTerm(1, k=k)], shape="gaussian"
+    )
+
+    # Contract 1: no crossing across a fine τ grid (one fit → all τ).
+    grid = np.linspace(0.05, 0.95, 19)
+    Q = np.asarray(fit.predict_quantile(x_te, grid))  # (n_test, 19)
+    assert Q.shape == (len(y_te), grid.size)
+    crossings = int((np.diff(Q, axis=1) < 0).sum())
+    assert crossings == 0, f"distributional quantiles crossed at {crossings} (n, τ) cells"
+
+    # Contract 2: OOS pinball parity with gaulss per τ.
+    for tau in fx["inputs"]["taus"]:
+        ref = float(fx["gaulss_output"]["per_tau"][str(tau)]["oos_pinball"])
+        q = np.asarray(fit.predict_quantile(x_te, float(tau))).ravel()
+        pb = _pinball(y_te, q, tau)
+        ratio = pb / ref
+        print(f"\n[lss-quantile τ={tau}] gamrs OOS pinball={pb:.6f} gaulss={ref:.6f} ratio={ratio:.4f}")
+        assert ratio <= 1.05, (
+            f"τ={tau}: gamrs LSS OOS pinball {pb:.6f} exceeds 1.05× gaulss {ref:.6f} (ratio {ratio:.4f})"
+        )
+
+
 def test_additive_tweedie_profile_p_parity():
     """Tweedie profile-p (no tweedie_p): p estimated → 2 shape params."""
     fitted, rel = _fit_additive_cr(load_fixture("2d_tw_profile_log_n600_k8_cr"), "tw")

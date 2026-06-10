@@ -52,7 +52,12 @@ from ._low_level import (
 )
 from ._fitter import Gam, GAMFitter
 from ._predictor import GamPredictor
-from ._quantile import fit_quantile, tune_quantile_sigma
+from ._quantile import (
+    QuantileLSSFit,
+    fit_quantile,
+    fit_quantile_lss,
+    tune_quantile_sigma,
+)
 from ._stubs import GamSummary, TermContributions
 
 __all__ = [
@@ -76,4 +81,7 @@ __all__ = [
     # qgam-style σ-calibration (task #111).
     "fit_quantile",
     "tune_quantile_sigma",
+    # Distributional location-scale quantile (gaulss/shash view).
+    "fit_quantile_lss",
+    "QuantileLSSFit",
 ]

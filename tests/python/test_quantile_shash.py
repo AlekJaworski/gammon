@@ -130,3 +130,48 @@ def test_fast_oos_within_5pct_of_mgcv_rust():
 
         # Within ~5% above mgcv_rust (better is fine — gamrs may beat it).
         assert pb_g <= 1.05 * pb_m, (tau, pb_g, pb_m)
+
+
+def test_lss_shash_fixes_skewed_tails():
+    """`fit_quantile_lss(shape="shash")` corrects the tail mis-coverage that
+    the Gaussian shape suffers on skewed data.
+
+    On strongly right-skewed (centered-lognormal) conditional noise, the
+    Gaussian shape assumes symmetry and badly mis-covers the tails — most
+    dramatically the *lower* tail, where q̂₀.₁ can fall below nearly all the
+    data. SHASH fits the skew on the standardised residuals and corrects it.
+    This locks the value of the optional `shape="shash"` path.
+    """
+    rng = np.random.default_rng(7)
+    n = 1500
+    x0 = rng.uniform(0, 1, n)
+    x1 = rng.uniform(0, 1, n)
+    mu = np.sin(2 * np.pi * x0) + 1.5 * (x1 - 0.5)
+    scale = 0.2 + 0.3 * x0
+    raw = rng.lognormal(mean=0.0, sigma=0.8, size=n)
+    noise = (raw - np.exp(0.8**2 / 2)) / np.std(raw)  # mean 0, var 1, right-skewed
+    y = mu + scale * noise
+    X = np.column_stack([x0, x1])
+    terms = [gamrs.CrTerm(0, k=10), gamrs.CrTerm(1, k=8)]
+
+    fg = gamrs.fit_quantile_lss(X, y, terms=terms, shape="gaussian")
+    fs = gamrs.fit_quantile_lss(X, y, terms=terms, shape="shash")
+
+    tails = [0.05, 0.1, 0.9, 0.95, 0.99]
+
+    def cov_err(fit):
+        return {
+            t: abs(float((y <= np.asarray(fit.predict_quantile(X, t)).ravel()).mean()) - t)
+            for t in tails
+        }
+
+    eg, es = cov_err(fg), cov_err(fs)
+
+    # SHASH actually fit non-trivial skew (eps != 0).
+    assert fs.shash_params_ is not None and abs(fs.shash_params_[2]) > 0.2, fs.shash_params_
+    # The Gaussian shape badly mis-covers the lower tail of right-skewed data;
+    # SHASH brings it back near target.
+    assert eg[0.1] > 0.05, f"expected Gaussian lower-tail mis-coverage, got err={eg[0.1]:.3f}"
+    assert es[0.1] < 0.04, f"SHASH lower-tail coverage err {es[0.1]:.3f} too large"
+    # And SHASH is better on average across the extreme tails.
+    assert np.mean(list(es.values())) < np.mean(list(eg.values())), (es, eg)

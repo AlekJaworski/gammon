@@ -7,6 +7,23 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+### Added
+- **Distributional location-scale quantiles — `fit_quantile_lss`.** A new
+  quantile path that models the whole conditional distribution (location μ(x)
+  + scale σ(x), two Gaussian GAMs) and derives every quantile as
+  `q_τ(x) = μ(x) + σ(x)·z_τ` from a single fit — the mgcv `gaulss`/`shash`
+  view. Quantiles never cross (z_τ ↑ in τ, σ > 0) and τ is a predict-time
+  argument (`QuantileLSSFit.predict_quantile(X, tau)`), so one fit serves all
+  τ. `shape="gaussian"` (default, `z_τ = Φ⁻¹(τ)`, no scipy needed) or
+  `shape="shash"` (fits skew/kurtosis on the standardised residuals via the
+  existing SHASH helper; needed for skewed data). Pure Python over existing
+  Gaussian fits — no Rust change. Confronted with mgcv `gaulss`: 2-D
+  heteroskedastic OOS pinball within ~1% at τ ∈ {0.1, 0.5, 0.9}, zero
+  crossings (`scripts/r/gen_quantile_lss_fixture.R`,
+  `tests/python/test_parity_multismooth.py::test_additive_quantile_lss_parity`);
+  the SHASH shape corrects the Gaussian shape's tail mis-coverage on skewed
+  data (`test_quantile_shash.py::test_lss_shash_fixes_skewed_tails`).
+
 ## [0.11.8] — 2026-06-10
 
 ### Changed

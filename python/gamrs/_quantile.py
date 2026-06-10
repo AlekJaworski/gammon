@@ -36,6 +36,9 @@ Deferred (TODO follow-up):
 
 from __future__ import annotations
 
+import dataclasses
+import statistics
+import warnings
 from typing import Any, Optional, Sequence
 
 import numpy as np
@@ -43,6 +46,7 @@ import numpy as np
 from . import _gamrs_native
 from ._coerce import to_1d_array, to_2d_with_columns
 from ._fitter import Gam, _resolve_term_cols
+from ._low_level import CrStableTerm, CrTerm, TeTerm
 
 
 def _pinball(y: np.ndarray, y_pred: np.ndarray, tau: float) -> float:
@@ -469,3 +473,194 @@ def fit_quantile(
     g.coverage_shift_ = coverage_shift  # type: ignore[attr-defined]
     g.co_ = co_val  # type: ignore[attr-defined]  # qgam ELF scale (=σ̂); None if not fast_oos
     return g
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Distributional (location-scale) quantile — the `gaulss`/`shash` view.
+# ─────────────────────────────────────────────────────────────────────────
+
+# E[log|Z|] for Z ~ N(0, 1) = -γ/2 - (log 2)/2 ≈ -0.6351. Subtracting it from
+# log|y - μ̂| makes that an unbiased estimator of log σ (the residual is σ·Z).
+_E_LOG_ABS_NORMAL = -0.6351814227307388
+
+
+def _halve_term_k(term: Any) -> Any:
+    """Return a copy of a smooth term with its basis dim ~halved (floor 3).
+
+    The scale model σ(x) is usually a flatter function than the location, and
+    a lower k guards against overfitting `log|residuals|`. CR/CR-stable carry a
+    scalar k; tensor terms carry a per-margin tuple; `re`/parametric have no k.
+    """
+    if isinstance(term, (CrTerm, CrStableTerm)):
+        return dataclasses.replace(term, k=max(3, int(term.k) // 2))
+    if isinstance(term, TeTerm):
+        ka, kb = term.k
+        return dataclasses.replace(term, k=(max(3, ka // 2), max(3, kb // 2)))
+    k = getattr(term, "k", None)
+    if isinstance(k, tuple):
+        return dataclasses.replace(term, k=tuple(max(3, ki // 2) for ki in k))
+    return term  # ReTerm / ParametricTerm — nothing to halve
+
+
+class QuantileLSSFit:
+    """Distributional location-scale quantile fit — ONE fit, ALL τ.
+
+    Models the conditional distribution of `y | x` by a smooth location μ(x)
+    and a smooth scale σ(x), then derives every quantile as
+
+        q_τ(x) = μ(x) + σ(x) · z_τ
+
+    where `z_τ` is the τ-quantile of the standardised residual distribution —
+    `Φ⁻¹(τ)` for `shape="gaussian"`, or a fitted SHASH quantile (skew/kurtosis)
+    for `shape="shash"`. Because `z_τ` is monotone in τ and σ(x) > 0, the
+    quantiles **never cross**, and a single fit yields *every* τ — the mgcv
+    `gaulss`/`shash` distributional view, in contrast to the per-τ pinball fit
+    of :func:`fit_quantile`.
+
+    Attributes:
+      shape: ``"gaussian"`` or ``"shash"``.
+      shash_params_: ``[mu, tau, eps, phi]`` SHASH MLE on the standardised
+        residuals (``None`` for the Gaussian shape).
+    """
+
+    def __init__(self, g_loc: Gam, g_scale: Gam, shape: str, shash_params: Optional[np.ndarray]):
+        self._g_loc = g_loc
+        self._g_scale = g_scale
+        self.shape = shape
+        self.shash_params_ = shash_params
+
+    def predict_loc(self, X: Any) -> np.ndarray:
+        """Conditional location μ̂(x) (the median for symmetric `z_τ`)."""
+        return np.asarray(self._g_loc.predict(X), dtype=float).ravel()
+
+    def predict_sigma(self, X: Any) -> np.ndarray:
+        """Conditional scale σ̂(x) = exp(η̂_scale(x)) — always positive."""
+        return np.exp(np.asarray(self._g_scale.predict(X), dtype=float).ravel())
+
+    def _z(self, tau: float) -> float:
+        if self.shape == "gaussian":
+            return statistics.NormalDist().inv_cdf(tau)
+        from ._shash import shash_qf
+
+        return shash_qf(tau, self.shash_params_)
+
+    def predict_quantile(self, X: Any, tau: Any) -> np.ndarray:
+        """`q_τ(x)` for one τ (returns ``(n,)``) or many (returns ``(n, n_τ)``).
+
+        Monotone in τ by construction, so the returned bands never cross.
+        """
+        mu = self.predict_loc(X)
+        sigma = self.predict_sigma(X)
+        scalar = np.ndim(tau) == 0
+        taus = np.atleast_1d(np.asarray(tau, dtype=float))
+        if np.any((taus <= 0.0) | (taus >= 1.0)):
+            raise ValueError("all tau must be in the open interval (0, 1)")
+        z = np.array([self._z(float(t)) for t in taus])
+        q = mu[:, None] + sigma[:, None] * z[None, :]
+        return q[:, 0] if scalar else q
+
+    def predict(self, X: Any, tau: float = 0.5) -> np.ndarray:
+        """Alias for :meth:`predict_quantile`; defaults to the median."""
+        return self.predict_quantile(X, tau)
+
+
+def fit_quantile_lss(
+    X: Any,
+    y: Any,
+    terms: Optional[Sequence[Any]] = None,
+    k: int = 10,
+    design: str = "cr",
+    k_scale: Optional[int] = None,
+    scale_terms: Optional[Sequence[Any]] = None,
+    shape: str = "gaussian",
+    method: Optional[str] = None,
+) -> QuantileLSSFit:
+    """Fit a distributional location-scale quantile model — one fit, all τ.
+
+    Unlike :func:`fit_quantile` (a per-τ smoothed-pinball fit), this models the
+    *whole* conditional distribution and derives every quantile from it, so the
+    bands never cross and a single fit serves all τ. It's the mgcv
+    `gaulss`/`shash` view, implemented as a two-stage estimator:
+
+      1. **Location** μ(x): a Gaussian GAM of `y` on `x`.
+      2. **Scale** σ(x): a Gaussian GAM of `log|y − μ̂(x)| − E[log|N(0,1)|]`
+         on `x` (the Euler–Mascheroni correction makes this an unbiased `log σ`
+         estimator), then σ̂(x) = exp(·).
+      3. **Shape** (`shape="shash"` only): a SHASH MLE on the standardised
+         residuals `(y − μ̂)/σ̂` captures skew/kurtosis; `z_τ` becomes the SHASH
+         quantile instead of `Φ⁻¹(τ)`.
+
+    There is no `tau` argument — τ is chosen at predict time
+    (:meth:`QuantileLSSFit.predict_quantile`), since one fit yields all τ.
+
+    Args:
+      X: ``(n, d)`` design (DataFrame / ndarray / 1-D vector).
+      y: ``(n,)`` response.
+      terms: optional typed-term list for a multi-smooth location
+        (`CrTerm` / `TeTerm` / …). When given, `k` / `design` are ignored.
+      k: location basis dim when `terms` is None (default 10).
+      design: location basis kind when `terms` is None (default ``"cr"``).
+      k_scale: scale basis dim when `terms`/`scale_terms` are None. Defaults to
+        ``max(3, k // 2)`` — σ(x) is usually flatter than μ(x).
+      scale_terms: optional explicit typed terms for the scale model. When
+        None and `terms` is given, the scale reuses the location terms with
+        each basis dim ~halved.
+      shape: ``"gaussian"`` (default; `z_τ = Φ⁻¹(τ)`, no scipy needed) or
+        ``"shash"`` (fit skew/kurtosis; needs the `[quantile]` extra). A SHASH
+        fit that diverges falls back to Gaussian with a warning.
+      method: outer optimiser for the two GAMs (``"REML"`` default / ``"fREML"``).
+
+    Returns:
+      A :class:`QuantileLSSFit`. Use `.predict_quantile(X, tau)` for any/all τ,
+      `.predict_loc(X)` for μ̂, `.predict_sigma(X)` for σ̂.
+    """
+    if shape not in ("gaussian", "shash"):
+        raise ValueError(f"shape must be 'gaussian' or 'shash'; got {shape!r}")
+
+    y_arr = to_1d_array(y, name="y")
+    x_2d, _cols = to_2d_with_columns(X, None)
+    if x_2d.shape[0] != y_arr.shape[0]:
+        raise ValueError(
+            f"X has {x_2d.shape[0]} rows but y has {y_arr.shape[0]} elements"
+        )
+
+    # ── Stage 1: location μ(x) via a Gaussian GAM. ──
+    if terms is not None:
+        g_loc = Gam(family="gaussian", terms=list(terms), method=method)
+    else:
+        g_loc = Gam(family="gaussian", k_default=int(k), design=design, method=method)
+    g_loc.fit(X, y)
+    mu = np.asarray(g_loc.predict(X), dtype=float).ravel()
+
+    # ── Stage 2: scale σ(x) via a Gaussian GAM on the Euler-corrected
+    #            log|residual|. ──
+    floor = 1e-3 * (float(np.std(y_arr)) or 1.0)
+    log_abs_r = np.log(np.maximum(np.abs(y_arr - mu), floor)) - _E_LOG_ABS_NORMAL
+    if scale_terms is not None:
+        g_scale = Gam(family="gaussian", terms=list(scale_terms), method=method)
+    elif terms is not None:
+        g_scale = Gam(family="gaussian", terms=[_halve_term_k(t) for t in terms], method=method)
+    else:
+        ks = int(k_scale) if k_scale is not None else max(3, int(k) // 2)
+        g_scale = Gam(family="gaussian", k_default=ks, design=design, method=method)
+    g_scale.fit(X, log_abs_r)
+    sigma = np.exp(np.asarray(g_scale.predict(X), dtype=float).ravel())
+
+    # ── Stage 3 (shape="shash"): SHASH MLE on the standardised residuals. ──
+    shash_params: Optional[np.ndarray] = None
+    if shape == "shash":
+        from ._shash import fit_shash
+
+        z_std = (y_arr - mu) / np.maximum(sigma, 1e-12)
+        try:
+            shash_params = fit_shash(z_std)
+        except Exception:
+            warnings.warn(
+                "SHASH fit on standardised residuals diverged; falling back to "
+                "Gaussian z_τ (Φ⁻¹).",
+                UserWarning,
+                stacklevel=2,
+            )
+            shape = "gaussian"
+
+    return QuantileLSSFit(g_loc, g_scale, shape, shash_params)
