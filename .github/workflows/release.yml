@@ -33,6 +33,13 @@ jobs:
           # code runs anywhere; dispatched kernels still hit AVX2/AVX-512.
           OPENBLAS_DYNAMIC_ARCH: "1"
           OPENBLAS_TARGET: "PRESCOTT"
+          # Pin OUR Rust codegen to the x86-64 baseline too. rustc already
+          # defaults to baseline, but making it explicit (a) is deterministic
+          # regardless of the build runner's CPU and (b) changes the sccache
+          # key, so a poisoned cached object from a native-arch build can't be
+          # reused. Belt-and-suspenders against the AVX-512 leak the SDE guard
+          # caught on the 0.11.8 build.
+          RUSTFLAGS: "-C target-cpu=x86-64"
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static
@@ -50,6 +57,32 @@ jobs:
           python -m pip install --upgrade pip numpy pytest
           python -m pip install --no-index --find-links dist/ gamrs
           python -c "import gamrs; print('linux wheel imported OK')"
+      - name: Diagnose ISA (locate any AVX-512 in the wheel .so)
+        # Non-fatal evidence step: disassemble the installed extension and
+        # print which symbols (if any) contain AVX-512 (zmm) instructions.
+        # A Rust mangled name (_ZN5gamrs…) means our codegen leaked; an
+        # OpenBLAS name (…_SKYLAKEX / dgemm_ / sgemm_…) means the BLAS common
+        # or kernel code did. This tells us where the 0.11.8 leak originated
+        # without guessing. Runs before the guard so it executes even when the
+        # guard later fails.
+        run: |
+          set +e
+          SO=$(python -c "import gamrs, glob, os; d=os.path.dirname(gamrs.__file__); print(glob.glob(os.path.join(d,'_gamrs_native*.so'))[0])")
+          echo "SO: $SO"
+          objdump -d "$SO" > /tmp/disasm.txt 2>/dev/null
+          echo "=== AVX-512 (zmm) instruction count ==="
+          grep -cE '%?zmm[0-9]' /tmp/disasm.txt
+          echo "=== distinct owning symbols (Rust _ZN… vs OpenBLAS) ==="
+          awk '/^[0-9a-f]+ <.*>:/{sym=$0} /%?zmm[0-9]/{print sym}' /tmp/disasm.txt | sort -u | head -60
+          echo "=== first 20 zmm sites in context ==="
+          awk '/^[0-9a-f]+ <.*>:/{sym=$0} /%?zmm[0-9]/{print sym" || "$0}' /tmp/disasm.txt | head -20
+          set -e
+      - uses: actions/upload-artifact@v7
+        # Upload BEFORE the guard so the wheel is always retained for local
+        # disassembly even when the portability guard fails.
+        with:
+          name: wheels-linux-${{ matrix.target }}
+          path: dist
       - name: Set up Intel SDE
         uses: petarpetrovt/setup-sde@v5.0
         with:
@@ -72,10 +105,6 @@ jobs:
           echo "SDE at: $SDE_PATH"
           "$SDE_PATH/sde64" -hsw -- python tools/portability_check.py
           echo "Portability guard OK: fit runs clean under emulated AVX2 (Haswell)."
-      - uses: actions/upload-artifact@v7
-        with:
-          name: wheels-linux-${{ matrix.target }}
-          path: dist
 
   macos:
     runs-on: ${{ matrix.runner }}
@@ -159,6 +188,10 @@ jobs:
   publish-pypi:
     runs-on: ubuntu-latest
     needs: [linux, macos, windows, sdist]
+    # Only publish on a real GitHub release. `workflow_dispatch` runs build +
+    # validate + portability guard so a release candidate can be smoke-tested
+    # without ever pushing to PyPI (publishing a version is irreversible).
+    if: github.event_name == 'release'
     steps:
       - uses: actions/download-artifact@v8
         with:
