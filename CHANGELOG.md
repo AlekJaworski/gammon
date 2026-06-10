@@ -7,6 +7,8 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.11.9] — 2026-06-10
+
 ### Added
 - **GAMLSS: Gaussian location-scale (`gaulss`) — the first multi-linear-
   predictor family.** `gamrs.fit_gaulss(X, y, mu_terms=…, sigma_terms=…)` fits
@@ -167,7 +169,8 @@ is locked. Versions correspond to the published PyPI wheels.
 - First beta. Multi-smooth additive, tensor products, and the ten-family
   parity battery.
 
-[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.11.8...HEAD
+[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.11.9...HEAD
+[0.11.9]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.9
 [0.11.8]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.8
 [0.11.7]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.7
 [0.11.6]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.6
