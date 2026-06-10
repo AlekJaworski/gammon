@@ -7,6 +7,8 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.11.8] — 2026-06-10
+
 ### Changed
 - **Wheels now build with `panic = "unwind"`** (was `abort`). PyO3 wraps every
   binding in `catch_unwind`, so a Rust panic on a degenerate input now
@@ -14,21 +16,45 @@ is locked. Versions correspond to the published PyPI wheels.
   host interpreter. Correct failure mode for a library; negligible cost for a
   numerical crate.
 
+### Fixed
+- Penalty pseudo-determinant eigendecomposition now returns a typed
+  `GamrsError::Linalg` on failure instead of `expect()`-panicking
+  (`src/design/mod.rs::rank_and_log_pseudo_det`). Degenerate / rank-deficient
+  designs surface as a catchable error rather than a host-interpreter abort.
+
 ### Added
+- **Multi-smooth `scat` (scaled-t) mgcv reference parity.** 2-D and 3-D
+  additive fixtures (`tests/parity_additive_scat.rs`,
+  `tests/python/test_parity_multismooth.py::test_additive_scat_parity`,
+  `scripts/r/gen_scat_multismooth_fixtures.R`): µ rel-err ~9e-3 (2-D) /
+  ~1.7e-2 (3-D), σ̂² matching mgcv to ~0.1 %. Closes the README's
+  "multi-smooth scat reference parity pending" gap.
+- **First mgcv `ocat` multi-smooth parity** (`parity_ocat.rs` was smoke-only):
+  `test_additive_ocat_parity` against `ocat(R=4)` on a well-posed noisy-latent
+  DGP where both gamrs and mgcv converge cleanly — `predict_proba` agrees to
+  ~1.8e-3 mean abs / ~98 % class agreement
+  (`scripts/r/gen_ocat_multismooth_fixtures.R`).
 - Synthetic, committable regression test for the v0.11.2 `scat`
   robustness-direction fix
   (`tests/parity_scat.rs::scat_downweights_high_outliers_synthetic`) — locks
   the directional contract (scat pulls *below* Gaussian under positive
   outliers) without depending on the proprietary housing fixture.
+- Degenerate-input smoke test
+  (`test_degenerate_input_never_aborts_the_interpreter`): NaN / inf /
+  zero-variance fits raise catchable Python exceptions, never `SIGABRT`.
 - `profile`-feature timers on the NegBin/Ocat profile-θ path
   (`rho_only_total`, `fit_inner_pirls`, `frozen_beta_probe`,
-  `no_refresh_probe`, `hess_ift_rho`), matching the joint-Newton path's
-  instrumentation. `cargo bench --bench bench_nb --features profile` now emits
-  a per-phase breakdown.
+  `no_refresh_probe`, `hess_ift_rho`, `fit_inner_build`), matching the
+  joint-Newton path's instrumentation. `cargo bench --bench bench_nb
+  --features profile` now emits a per-phase breakdown; `bench_nb` gained
+  realistic-size synthetic 2-D NegBin cases (n=2K, n=5K).
 
 ### Docs
 - `docs/scat_parity_bug.md` rewritten as a self-contained **RESOLVED** note
   (was a stale "open" handoff referencing gitignored proprietary data).
+- README: multi-smooth families line now lists `scat`; ocat paragraph documents
+  the near-separable regime where mgcv itself diverges (θ≈181) or aborts while
+  gamrs's θ∈(−3,3) bound stays stable.
 - This `CHANGELOG.md` added.
 
 ### Internal
@@ -89,7 +115,8 @@ is locked. Versions correspond to the published PyPI wheels.
 - First beta. Multi-smooth additive, tensor products, and the ten-family
   parity battery.
 
-[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.11.7...HEAD
+[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.11.8...HEAD
+[0.11.8]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.8
 [0.11.7]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.7
 [0.11.6]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.6
 [0.11.5]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.5
