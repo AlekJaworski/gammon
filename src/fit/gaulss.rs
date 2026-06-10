@@ -184,6 +184,10 @@ pub fn fit_gaulss(
         }
     }
 
+    // `converged` reflects BOTH the outer alternation AND the two block fits —
+    // an alternation that hit tolerance is still suspect if a block's inner
+    // REML Newton bailed (mirrors `quantile.rs`'s `outer && final_fit`).
+    let converged = converged && loc.converged && scale.converged;
     Ok(GaulssFit {
         loc,
         scale,

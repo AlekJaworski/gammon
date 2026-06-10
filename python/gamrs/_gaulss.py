@@ -35,7 +35,8 @@ class GaulssFit:
 
     Attributes:
       n_iters_: outer alternation iterations to convergence.
-      converged_: whether the alternation hit the tolerance before the cap.
+      converged_: True iff the outer alternation hit the tolerance before the
+        cap AND both block fits (μ and log σ) converged internally.
     """
 
     def __init__(self, loc: Any, scale: Any, n_iters: int, converged: bool):
