@@ -47,6 +47,7 @@ pub mod design;
 pub mod error;
 pub mod family;
 pub mod fit;
+pub mod gamlss;
 pub mod inner;
 pub mod outer;
 pub mod profile;
