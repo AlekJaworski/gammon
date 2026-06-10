@@ -45,10 +45,10 @@ pub struct ArmijoElfInner<S: LinearSolver = CholeskySolver> {
     pub x_design: Array2<f64>,
     pub y: Array1<f64>,
     pub prior_weights: Option<Array1<f64>>,
-    /// Per-term penalty blocks. ELF/quantile currently only supports a
-    /// single smoothing parameter (`s_list.len() == 1`); multi-smooth
-    /// quantile fits would need per-term penalty in the Armijo objective,
-    /// not yet wired.
+    /// Per-term penalty blocks. Multi-smooth quantile is supported: `fit`
+    /// combines them as `Σ_j exp(ρ_j) S_j` via `combined_s` (one entry per
+    /// smoothing parameter), and the Armijo objective penalises with that
+    /// `s_total` — so the loop below is term-count agnostic.
     pub s_list: Vec<Array2<f64>>,
     /// Family carries (τ, σ, λ). `prior_weights` are NOT folded into the
     /// per-obs ELF weights — qgam's pinball loss doesn't have a natural

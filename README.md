@@ -62,15 +62,19 @@ All ten families land 1-D parity against `mgcv`:
 | Tweedie         | log      | PIRLS        | 3-D joint Newton    | ~5e-3              |
 | TDist (`scat`)  | identity | PIRLS        | 3-D joint Newton    | ~2e-2              |
 | Ocat            | logit    | gam.fit5     | joint β + threshold | smoke              |
-| Quantile (ELF)  | identity | Armijo BT    | 1-D Newton          | smoke              |
+| Quantile (ELF)  | identity | Armijo BT    | ρ-Newton (per term) | qgam OOS ~1.00×    |
 
 Multi-smooth (`s(x0) + s(x1) + …`) ships with `mgcv` R parity tests for
 Gaussian / Bernoulli / Poisson / QuasiPoisson / QuasiBinomial / Gamma /
 InvGauss / NegBin / Tweedie / scat. scat / TDist multi-smooth now has mgcv
 reference parity tests too — 2-D µ rel-err ~9e-3, 3-D ~1.7e-2, with σ̂²
 matching mgcv to ~0.1% (`tests/parity_additive_scat.rs`,
-`scripts/r/gen_scat_multismooth_fixtures.R`). Quantile/ELF is
-single-smooth-only.
+`scripts/r/gen_scat_multismooth_fixtures.R`). Quantile/ELF now fits
+multi-smooth additive too (`y ~ s(x0) + s(x1) + …` via the `terms=` arg of
+`fit_quantile`): on a 2-D additive heteroskedastic split its out-of-sample
+pinball loss matches `qgam` to within ±0.6% at τ ∈ {0.1, 0.5, 0.9}
+(`scripts/r/gen_quantile_multismooth_fixture.R`,
+`test_parity_multismooth.py::test_additive_quantile_oos_parity`).
 
 Multi-smooth Ocat now has an mgcv reference parity test
 (`tests/parity_additive_scat.rs`'s ocat sibling in
@@ -225,8 +229,8 @@ so adding a family is a `Loss` impl, not a fork of the optimiser.
 ## Versioning
 
 Beta (`0.11.x`). The API is stabilising; minor bumps may carry breaking
-changes until the remaining shape-aware families (scat/Ocat/ELF) gain
-multi-smooth support and the 1.0 surface is locked.
+changes until the 1.0 surface is locked. All ten families plus Ocat and
+Quantile/ELF now fit multi-smooth additive designs.
 
 ## License
 

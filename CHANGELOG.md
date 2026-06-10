@@ -7,6 +7,17 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+### Added
+- **Multi-smooth (additive) Quantile/ELF.** `fit_quantile` gained a `terms=`
+  argument (`CrTerm` / `TeTerm` / …) so quantile fits run on additive designs
+  (`y ~ s(x0) + s(x1) + …`), not just a single smooth. The SHASH σ pilot, the
+  K-fold CV σ search, and the final fit all use the additive design; σ stays a
+  single family-level scale. First multi-smooth quantile parity test against
+  qgam: 2-D additive OOS pinball within ±0.6% of qgam at τ ∈ {0.1, 0.5, 0.9}
+  (`scripts/r/gen_quantile_multismooth_fixture.R`,
+  `tests/python/test_parity_multismooth.py::test_additive_quantile_oos_parity`,
+  `tests/quantile_smoke.rs::quantile_multismooth_additive_monotone_and_converged`).
+
 ## [0.11.8] — 2026-06-10
 
 ### Changed

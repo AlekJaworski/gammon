@@ -42,7 +42,7 @@ import numpy as np
 
 from . import _gamrs_native
 from ._coerce import to_1d_array, to_2d_with_columns
-from ._fitter import Gam
+from ._fitter import Gam, _resolve_term_cols
 
 
 def _pinball(y: np.ndarray, y_pred: np.ndarray, tau: float) -> float:
@@ -79,14 +79,27 @@ def _fit_elf_native(
     sigma: float,
     k: int,
     design: str,
+    terms: Optional[Sequence[Any]] = None,
 ) -> Any:
-    """Run a single ELF fit at the given (τ, σ) directly through the
-    native binding. Returns the ``FittedGam`` object.
+    """Run a single ELF fit at the given (τ, σ). Returns the ``FittedGam``.
 
     The σ argument is plumbed as the native binding's ``elf_sigma`` kwarg
     (gamrs's name for qgam's σ scale parameter). ``sigma=0.0`` defers to
     the Rust-side heuristic, matching v0.x semantics.
+
+    Single-smooth (``terms is None``): hits the native ``fit`` directly with
+    ``(k, design)``. Multi-smooth (``terms`` given): routes through
+    ``Gam(family="quantile", terms=...)`` so the additive design + the same
+    (τ, σ) plumbing apply; ``k`` / ``design`` are ignored. ``terms`` must be
+    integer-column (resolved upfront by the caller) so it survives the CV
+    row-slicing that drops the column-name context.
     """
+    if terms is not None:
+        g = Gam(family="quantile", terms=list(terms))
+        g._elf_tau = float(tau)  # type: ignore[attr-defined]
+        g._elf_sigma = float(sigma)  # type: ignore[attr-defined]
+        g.fit(x_2d, y)
+        return g._fitted
     return _gamrs_native.fit(
         "elf",
         x_2d,
@@ -98,7 +111,14 @@ def _fit_elf_native(
     )
 
 
-def _shash_co(x_2d: np.ndarray, y: np.ndarray, tau: float, k: int, design: str) -> float:
+def _shash_co(
+    x_2d: np.ndarray,
+    y: np.ndarray,
+    tau: float,
+    k: int,
+    design: str,
+    terms: Optional[Sequence[Any]] = None,
+) -> float:
     """qgam-faithful ELF scale ``co`` from a SHASH ``err``-param fit.
 
     Ports mgcv_rust's ``fast_oos`` σ source (qgam ``.getErrParam``):
@@ -116,7 +136,10 @@ def _shash_co(x_2d: np.ndarray, y: np.ndarray, tau: float, k: int, design: str) 
     degenerate OR scipy/SHASH is unavailable (keeps scipy an optional boost,
     not a hard requirement of the fast path).
     """
-    g_pilot = Gam(family="gaussian", k_default=int(k), design=design)
+    if terms is not None:
+        g_pilot = Gam(family="gaussian", terms=list(terms))
+    else:
+        g_pilot = Gam(family="gaussian", k_default=int(k), design=design)
     g_pilot.fit(x_2d, y)
     mu0 = np.asarray(g_pilot.predict(x_2d, scale="response"), dtype=np.float64).ravel()
     resid = np.asarray(y, dtype=np.float64).ravel() - mu0
@@ -173,6 +196,7 @@ def _cv_loss_at_sigma(
     k: int,
     folds: Sequence[tuple[np.ndarray, np.ndarray]],
     design: str,
+    terms: Optional[Sequence[Any]] = None,
 ) -> float:
     """K-fold mean pinball loss at the given σ. Folds that fail to fit
     or produce NaN predictions contribute ``+inf``.
@@ -183,7 +207,9 @@ def _cv_loss_at_sigma(
             x_tr = np.ascontiguousarray(x_2d[train_idx], dtype=np.float64)
             y_tr = np.ascontiguousarray(y[train_idx], dtype=np.float64)
             x_te = np.ascontiguousarray(x_2d[test_idx], dtype=np.float64)
-            f = _fit_elf_native(x_tr, y_tr, tau=tau, sigma=sigma, k=k, design=design)
+            f = _fit_elf_native(
+                x_tr, y_tr, tau=tau, sigma=sigma, k=k, design=design, terms=terms
+            )
             y_pred = np.asarray(f.predict(x_te))
             if not np.all(np.isfinite(y_pred)):
                 losses.append(np.inf)
@@ -206,6 +232,7 @@ def tune_quantile_sigma(
     design: str = "cr",
     seed: int = 0,
     xatol: float = 0.05,
+    terms: Optional[Sequence[Any]] = None,
 ) -> tuple[float, dict[str, Any]]:
     """Pick σ for the ELF / quantile family via K-fold pinball CV.
 
@@ -229,6 +256,10 @@ def tune_quantile_sigma(
       seed: RNG seed for fold construction.
       xatol: Brent absolute tolerance in ``log σ`` space (default 0.05 ≈
         5% in σ — empirically enough for stable σ̂ on n ≥ 200).
+      terms: optional typed-term list (``CrTerm`` / ``TeTerm`` / …) for a
+        multi-smooth additive quantile. When given, ``k`` / ``design`` are
+        ignored and every fold fit uses this additive design. σ stays a
+        single family-level scale (one CV search), not per-term.
     """
     try:
         from scipy.optimize import minimize_scalar
@@ -240,7 +271,7 @@ def tune_quantile_sigma(
     if not 0.0 < tau < 1.0:
         raise ValueError(f"tau must be in (0, 1); got tau={tau}")
 
-    x_2d, _ = to_2d_with_columns(X, None)
+    x_2d, cols_for_terms = to_2d_with_columns(X, None)
     y_arr = to_1d_array(y, name="y")
     if x_2d.shape[0] != y_arr.shape[0]:
         raise ValueError(
@@ -261,9 +292,18 @@ def tune_quantile_sigma(
             f"brent_bracket must satisfy lo < hi; got ({lo}, {hi})"
         )
 
+    # Resolve any string-column terms to integer columns now — CV slices
+    # x_2d to a bare ndarray per fold, losing the column-name context.
+    resolved_terms = (
+        [_resolve_term_cols(t, list(cols_for_terms)) for t in terms]
+        if terms is not None
+        else None
+    )
+
     def objective(log_sigma: float) -> float:
         return _cv_loss_at_sigma(
-            float(np.exp(log_sigma)), x_2d, y_arr, tau, k, folds, design
+            float(np.exp(log_sigma)), x_2d, y_arr, tau, k, folds, design,
+            terms=resolved_terms,
         )
 
     result = minimize_scalar(
@@ -299,6 +339,7 @@ def fit_quantile(
     sigma: Optional[float] = None,
     coverage_calibrate: bool = False,
     preset: Optional[str] = None,
+    terms: Optional[Sequence[Any]] = None,
 ) -> Gam:
     """Fit a quantile (ELF) GAM with σ chosen by K-fold pinball CV.
 
@@ -312,7 +353,7 @@ def fit_quantile(
       X: ``(n, d)`` design (DataFrame / ndarray / 1-D vector accepted).
       y: ``(n,)`` response.
       tau: target quantile in ``(0, 1)``.
-      k: basis dim for the single ELF smooth.
+      k: basis dim for the single ELF smooth (ignored when ``terms`` is set).
       K_folds: CV folds for σ tuning.
       brent_bracket: ``(log_lo, log_hi)`` bracket on ``log σ``.
       design: basis kind (default ``'cr'``).
@@ -331,6 +372,11 @@ def fit_quantile(
           of the CV cost. Falls back to the native σ heuristic if scipy is
           absent.
         - ``"quality_oos"``: CV-tuned σ + coverage calibration.
+      terms: optional typed-term list (``CrTerm`` / ``TeTerm`` / …) for a
+        multi-smooth additive quantile (``y ~ s(x0) + s(x1) + …``). When
+        given, ``k`` / ``design`` are ignored and the SHASH pilot, every CV
+        fold, and the final fit all use this additive design. σ remains a
+        single family-level scale (one CV / SHASH search across all terms).
 
     Returns:
       A fitted :class:`gamrs.Gam` with extra attributes attached:
@@ -358,17 +404,28 @@ def fit_quantile(
             )
 
     # Coerce once — needed for the SHASH pilot and/or coverage calibration.
-    x_2d_full, _ = to_2d_with_columns(X, None)
+    x_2d_full, cols_for_terms = to_2d_with_columns(X, None)
     y_full = to_1d_array(y, name="y")
     x_2d_contig = np.ascontiguousarray(x_2d_full, dtype=np.float64)
     y_contig = np.ascontiguousarray(y_full, dtype=np.float64)
+
+    # Multi-smooth: resolve string-column terms to integer columns up front
+    # so the SHASH pilot and the CV folds (which slice X to a bare ndarray,
+    # dropping the column-name context) all see the same integer-column terms.
+    resolved_terms = (
+        [_resolve_term_cols(t, list(cols_for_terms)) for t in terms]
+        if terms is not None
+        else None
+    )
 
     # fast_oos σ: qgam-faithful SHASH err-param (closes the extreme-tail gap
     # the bare Rust σ heuristic leaves at τ≳0.95). co=0.0 → defer to the Rust
     # heuristic (degenerate pilot or scipy absent).
     co_val: Optional[float] = None
     if use_shash:
-        co_val = _shash_co(x_2d_contig, y_contig, float(tau), int(k), design)
+        co_val = _shash_co(
+            x_2d_contig, y_contig, float(tau), int(k), design, terms=resolved_terms
+        )
         sigma = co_val if co_val > 0.0 else 0.0  # σ = co; 0.0 = native heuristic
 
     info: Optional[dict[str, Any]] = None
@@ -383,13 +440,18 @@ def fit_quantile(
             design=design,
             seed=seed,
             xatol=xatol,
+            terms=resolved_terms,
         )
 
     # Build + fit the Gam ONCE at the target (τ, σ). We plumb τ/σ through the
     # Gam's ELF config so `g.fit()` lands at the right fit directly — no
     # fit-then-replace double pass (matches mgcv_rust's single fit). The
     # `Gam.fit` path sets `_gamrs_family='elf'` for family='quantile'.
-    g = Gam(family="quantile", k_default=int(k), design=design)
+    # Multi-smooth → typed-term Gam; single-smooth → the (k, design) Gam.
+    if resolved_terms is not None:
+        g = Gam(family="quantile", terms=resolved_terms)
+    else:
+        g = Gam(family="quantile", k_default=int(k), design=design)
     g._elf_tau = float(tau)  # type: ignore[attr-defined]
     g._elf_sigma = float(sigma)  # type: ignore[attr-defined]
     g.fit(X, y)

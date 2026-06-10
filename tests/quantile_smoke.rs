@@ -165,6 +165,124 @@ fn quantile_three_taus_monotone_and_converged() {
 }
 
 #[test]
+fn quantile_multismooth_additive_monotone_and_converged() {
+    // 2-D additive DGP: y = sin(2π x0) + 2·(x1 − 0.5) + N(0, σ²(x0)),
+    // heteroskedastic in x0 so the τ-quantile surfaces fan out. The true
+    // τ-quantile is the additive signal + σ(x0)·Φ⁻¹(τ) — additive in the
+    // two predictors, so an additive `s(x0) + s(x1)` smooth is well-specified.
+    //
+    // This exercises the multi-smooth ELF path: two CR penalty blocks, so
+    // the outer Newton runs on a length-2 ρ and `ArmijoElfInner` assembles
+    // `Σ_j exp(ρ_j) S_j` via `combined_s`. The single-smooth smoke test above
+    // never touches the multi-penalty assembly.
+    use gamrs::{Additive, TermSpec};
+    use ndarray::Array2;
+
+    let n = 600;
+    let k = 8;
+    let mut x = Array2::<f64>::zeros((n, 2));
+    let mut y = Array1::<f64>::zeros(n);
+    for i in 0..n {
+        // Decorrelated, deterministic covariates (two distinct hashes).
+        let x0 = prand(i, 101);
+        let x1 = prand(i, 211);
+        x[[i, 0]] = x0;
+        x[[i, 1]] = x1;
+        let signal = (2.0 * std::f64::consts::PI * x0).sin() + 2.0 * (x1 - 0.5);
+        let scale = 0.1 + 0.3 * x0;
+        let z = pnormal(prand(i, 307), prand(i, 419));
+        y[i] = signal + scale * z;
+    }
+
+    let taus = [0.1_f64, 0.5, 0.9];
+    let mut preds: Vec<Array1<f64>> = Vec::with_capacity(3);
+
+    for &tau in &taus {
+        let fit = gamrs::fit_with_design(
+            gamrs::family::elf_identity(tau, /*sigma=*/ 0.0, /*lambda=*/ 0.0),
+            Additive {
+                terms: vec![
+                    TermSpec::Cr { col: 0, k },
+                    TermSpec::Cr { col: 1, k },
+                ],
+            },
+            x.view(),
+            y.view(),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("multi-smooth ELF fit (τ={tau}) failed: {e}"));
+
+        assert!(fit.converged, "τ={tau}: multi-smooth outer Newton did not converge");
+        assert_eq!(
+            fit.rho.len(),
+            2,
+            "τ={tau}: expected 2 smoothing params (one per CR term), got {}",
+            fit.rho.len()
+        );
+        assert!(
+            fit.n_iters > 0 && fit.n_iters < 50,
+            "τ={tau}: outer iters = {} (expected 1..50)",
+            fit.n_iters
+        );
+        assert!(
+            fit.edf_total.is_finite() && fit.edf_total >= 1.0 && fit.edf_total <= 2.0 * k as f64,
+            "τ={tau}: edf = {} out of plausible range",
+            fit.edf_total
+        );
+
+        let pred = fit.predict(x.view()).expect("predict failed");
+
+        // Coverage: fraction of y below q̂_τ ≈ τ. Looser band than the
+        // single-smooth test — the additive surface has more freedom.
+        let coverage = y
+            .iter()
+            .zip(pred.iter())
+            .filter(|(yj, qj)| **yj <= **qj)
+            .count() as f64
+            / n as f64;
+        assert!(
+            (coverage - tau).abs() < 0.15,
+            "τ={tau}: empirical coverage {coverage:.3} too far from target"
+        );
+
+        println!(
+            "[ms-quantile τ={tau}] iters={} edf={:.2} ρ̂=[{:.2}, {:.2}] coverage={:.3}",
+            fit.n_iters, fit.edf_total, fit.rho[0], fit.rho[1], coverage
+        );
+        preds.push(pred);
+    }
+
+    // Monotonicity across τ at most points (additive surfaces can cross
+    // slightly with finite data, but the ordering must hold in aggregate).
+    let mut crossings_low_mid = 0;
+    let mut crossings_mid_high = 0;
+    for ((p_low, p_mid), p_high) in preds[0]
+        .iter()
+        .zip(preds[1].iter())
+        .zip(preds[2].iter())
+    {
+        if p_low > p_mid {
+            crossings_low_mid += 1;
+        }
+        if p_mid > p_high {
+            crossings_mid_high += 1;
+        }
+    }
+    let frac_low_mid = crossings_low_mid as f64 / n as f64;
+    let frac_mid_high = crossings_mid_high as f64 / n as f64;
+    assert!(
+        frac_low_mid < 0.10,
+        "q_0.1 ≥ q_0.5 at {:.1}% of points (should be < 10%)",
+        100.0 * frac_low_mid
+    );
+    assert!(
+        frac_mid_high < 0.10,
+        "q_0.5 ≥ q_0.9 at {:.1}% of points (should be < 10%)",
+        100.0 * frac_mid_high
+    );
+}
+
+#[test]
 fn quantile_invalid_tau_errors() {
     let x = Array1::from_vec(vec![0.0_f64, 0.5, 1.0]);
     let y = Array1::from_vec(vec![0.0_f64, 1.0, 2.0]);
