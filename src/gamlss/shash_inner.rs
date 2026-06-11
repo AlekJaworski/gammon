@@ -23,6 +23,8 @@
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 
 use super::shash::{ShashDensity, L2_INDEX};
+use crate::error::{GamrsError, Result};
+use crate::inner::{CholeskySolver, LinearSolver};
 
 /// The four per-predictor designs and (λ-combined) penalties for a shash fit.
 #[derive(Clone, Copy)]
@@ -182,6 +184,145 @@ pub fn penalized_grad_hess(
     (grad, hess)
 }
 
+#[inline]
+fn inf_norm(v: ArrayView1<f64>) -> f64 {
+    v.iter().map(|x| x.abs()).fold(0.0_f64, f64::max)
+}
+
+/// Solve `(−H + τI) Δ = g` for the Newton ascent direction. `−H` is SPD near
+/// the maximum (since `H = ∇²L` is negative-definite there); when it is not —
+/// far from the optimum or because shash is non-orthogonal — the diagonal is
+/// inflated by a growing `τ` (a Levenberg-style perturbation, mgcv's
+/// "ensure negative definiteness" step) until the Cholesky succeeds, blending
+/// the Newton step toward gradient ascent.
+fn solve_ascent(hess: &Array2<f64>, grad: ArrayView1<f64>, tp: usize) -> Result<Array1<f64>> {
+    let neg_h = hess.mapv(|v| -v);
+    let diag_max = (0..tp)
+        .map(|i| neg_h[[i, i]].abs())
+        .fold(1.0_f64, f64::max);
+    let mut tau = 0.0_f64;
+    for _ in 0..32 {
+        let mut a = neg_h.clone();
+        if tau > 0.0 {
+            for i in 0..tp {
+                a[[i, i]] += tau;
+            }
+        }
+        if let Ok(fact) = CholeskySolver::factorize(a) {
+            return Ok(CholeskySolver::solve(&fact, grad));
+        }
+        tau = if tau == 0.0 { 1e-8 * diag_max } else { tau * 10.0 };
+    }
+    Err(GamrsError::SingularSystem(
+        "shash inner Newton: Hessian could not be stabilised to SPD".into(),
+    ))
+}
+
+/// Options for the shash joint inner Newton solve.
+#[derive(Clone, Copy, Debug)]
+pub struct ShashInnerOpts {
+    /// Maximum Newton iterations.
+    pub max_iter: usize,
+    /// Converge when `‖∇L‖∞ < grad_tol`.
+    pub grad_tol: f64,
+    /// Also converge when an accepted step has `‖Δ‖∞ < step_tol`.
+    pub step_tol: f64,
+    /// Maximum step-halvings per iteration (sufficient-increase line search).
+    pub max_halvings: usize,
+}
+
+impl Default for ShashInnerOpts {
+    fn default() -> Self {
+        Self {
+            max_iter: 100,
+            grad_tol: 1e-8,
+            step_tol: 1e-11,
+            max_halvings: 40,
+        }
+    }
+}
+
+/// Result of the joint inner solve: the penalised MLE `β̂` and diagnostics.
+#[derive(Clone, Debug)]
+pub struct ShashInnerFit {
+    /// Penalised coefficient estimate (flat, block `b` at `offset(b)`).
+    pub beta: Array1<f64>,
+    /// Penalised log-likelihood at `β̂`.
+    pub loglik: f64,
+    /// `‖∇L‖∞` at `β̂`.
+    pub grad_norm: f64,
+    /// Newton iterations taken.
+    pub n_iter: usize,
+    /// Whether a convergence criterion was met (vs hitting `max_iter`).
+    pub converged: bool,
+}
+
+/// Joint penalised Newton solve for the shash coefficients given fixed
+/// per-block penalties: maximise `L(β)` (see [`penalized_loglik`]) by damped
+/// Newton steps with a Hessian perturbation ([`solve_ascent`]) and a
+/// sufficient-increase line search (step-halving).
+pub fn fit_inner(
+    density: &ShashDensity,
+    blocks: &ShashBlocks,
+    beta0: ArrayView1<f64>,
+    y: ArrayView1<f64>,
+    opts: ShashInnerOpts,
+) -> Result<ShashInnerFit> {
+    let tp = blocks.total_p();
+    let mut beta = beta0.to_owned();
+    let mut ll = penalized_loglik(density, blocks, beta.view(), y);
+    let mut grad_norm = f64::INFINITY;
+    let mut converged = false;
+    let mut n_iter = 0;
+
+    while n_iter < opts.max_iter {
+        n_iter += 1;
+        let (grad, hess) = penalized_grad_hess(density, blocks, beta.view(), y);
+        grad_norm = inf_norm(grad.view());
+        if grad_norm < opts.grad_tol {
+            converged = true;
+            break;
+        }
+        let delta = solve_ascent(&hess, grad.view(), tp)?;
+
+        // Sufficient-increase line search (any strict increase accepted).
+        let mut t = 1.0_f64;
+        let mut accepted = false;
+        for _ in 0..=opts.max_halvings {
+            let trial = &beta + &(&delta * t);
+            let ll_t = penalized_loglik(density, blocks, trial.view(), y);
+            if ll_t > ll {
+                let step = inf_norm((&delta * t).view());
+                beta = trial;
+                ll = ll_t;
+                accepted = true;
+                if step < opts.step_tol {
+                    converged = true;
+                }
+                break;
+            }
+            t *= 0.5;
+        }
+        if !accepted {
+            // No increase even at the smallest step: a stationary point within
+            // numerical resolution (grad already small relative to scale).
+            converged = true;
+            break;
+        }
+        if converged {
+            break;
+        }
+    }
+
+    Ok(ShashInnerFit {
+        beta,
+        loglik: ll,
+        grad_norm,
+        n_iter,
+        converged,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +475,157 @@ mod tests {
                     fd
                 );
             }
+        }
+    }
+
+    // --- phase 4b: damped Newton convergence -------------------------------
+
+    /// mgcv's intercept-only shash MLE (cross-checked against an independent
+    /// BFGS optimum) — see `scripts/r/gen_shash_inner_mle_fixture.R`.
+    #[derive(serde::Deserialize)]
+    struct MleFixture {
+        n: usize,
+        y: Vec<f64>,
+        b: f64,
+        coef_mu: f64,
+        coef_tau: f64,
+        coef_eps: f64,
+        coef_phi: f64,
+        loglik: f64,
+    }
+
+    fn load_mle_fixture() -> MleFixture {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("tests/fixtures/shash_inner_mle_mgcv.json");
+        let txt = std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("missing fixture {}: {e}", p.display()));
+        serde_json::from_str(&txt).expect("malformed shash_inner MLE fixture")
+    }
+
+    #[test]
+    fn fit_inner_recovers_mgcv_intercept_mle() {
+        let fx = load_mle_fixture();
+        let n = fx.n;
+        // Intercept-only designs (ones), zero penalty -> pure MLE.
+        let ones = Array2::<f64>::ones((n, 1));
+        let zero = Array2::<f64>::zeros((1, 1));
+        let blk = ShashBlocks {
+            x: [ones.view(), ones.view(), ones.view(), ones.view()],
+            s: [zero.view(), zero.view(), zero.view(), zero.view()],
+            b: fx.b,
+        };
+        let y = Array1::from(fx.y.clone());
+        let d = ShashDensity::default();
+        let beta0 = Array1::<f64>::zeros(4);
+        let fit = fit_inner(
+            &d,
+            &blk,
+            beta0.view(),
+            y.view(),
+            ShashInnerOpts {
+                grad_tol: 1e-9,
+                ..Default::default()
+            },
+        )
+        .expect("inner fit");
+
+        assert!(fit.converged, "did not converge (iters={})", fit.n_iter);
+        assert!(
+            fit.grad_norm < 1e-7,
+            "gradient not driven to ~0: {}",
+            fit.grad_norm
+        );
+        let mgcv = [fx.coef_mu, fx.coef_tau, fx.coef_eps, fx.coef_phi];
+        for (k, &m) in mgcv.iter().enumerate() {
+            assert!(
+                (fit.beta[k] - m).abs() < 1e-5,
+                "coef[{k}] = {} vs mgcv {m}",
+                fit.beta[k]
+            );
+        }
+        // Σℓ₀ at β̂ matches mgcv's logLik (no penalty here).
+        assert!(
+            (fit.loglik - fx.loglik).abs() < 1e-4,
+            "loglik {} vs mgcv {}",
+            fit.loglik,
+            fx.loglik
+        );
+    }
+
+    #[test]
+    fn fit_inner_converges_on_penalized_smooth() {
+        // Real penalty + multi-column μ/τ designs; start from the phase-3 init,
+        // the actual pipeline. The Newton must drive ‖∇L‖→0 (penalised MLE).
+        let prob = make_problem();
+        let blk = blocks_of(&prob);
+        let d = ShashDensity::default();
+        let init = crate::gamlss::shash_init::shash_init(
+            blk.x[0], blk.x[1], blk.x[2], blk.x[3], prob.y.view(), 0.0,
+        )
+        .expect("init");
+        let mut beta0 = Array1::<f64>::zeros(blk.total_p());
+        beta0
+            .slice_mut(ndarray::s![0..3])
+            .assign(&init.beta_mu);
+        beta0
+            .slice_mut(ndarray::s![3..5])
+            .assign(&init.beta_tau);
+        // ε/φ blocks start at 0 (already zero).
+
+        let fit = fit_inner(&d, &blk, beta0.view(), prob.y.view(), ShashInnerOpts::default())
+            .expect("inner fit");
+        assert!(fit.converged, "did not converge (iters={})", fit.n_iter);
+        assert!(
+            fit.grad_norm < 1e-6,
+            "penalised gradient not ~0 at solution: {}",
+            fit.grad_norm
+        );
+
+        // The fit must improve on (or equal) the starting objective.
+        let ll0 = penalized_loglik(&d, &blk, beta0.view(), prob.y.view());
+        assert!(
+            fit.loglik >= ll0 - 1e-9,
+            "objective decreased: {} < {}",
+            fit.loglik,
+            ll0
+        );
+    }
+
+    #[test]
+    fn fit_inner_recovers_from_a_far_start() {
+        // Damping/perturbation robustness: a deliberately bad start must still
+        // reach the same intercept MLE as the zero start.
+        let fx = load_mle_fixture();
+        let n = fx.n;
+        let ones = Array2::<f64>::ones((n, 1));
+        let zero = Array2::<f64>::zeros((1, 1));
+        let blk = ShashBlocks {
+            x: [ones.view(), ones.view(), ones.view(), ones.view()],
+            s: [zero.view(), zero.view(), zero.view(), zero.view()],
+            b: fx.b,
+        };
+        let y = Array1::from(fx.y.clone());
+        let d = ShashDensity::default();
+        let beta0 = Array1::from(vec![-3.0, 2.0, 1.5, 0.8]); // far from MLE
+        let fit = fit_inner(
+            &d,
+            &blk,
+            beta0.view(),
+            y.view(),
+            ShashInnerOpts {
+                grad_tol: 1e-9,
+                ..Default::default()
+            },
+        )
+        .expect("inner fit");
+        assert!(fit.converged, "did not converge from far start");
+        let mgcv = [fx.coef_mu, fx.coef_tau, fx.coef_eps, fx.coef_phi];
+        for (k, &m) in mgcv.iter().enumerate() {
+            assert!(
+                (fit.beta[k] - m).abs() < 1e-4,
+                "coef[{k}] = {} vs mgcv {m} (far start)",
+                fit.beta[k]
+            );
         }
     }
 
