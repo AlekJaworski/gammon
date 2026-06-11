@@ -41,19 +41,38 @@
 //! The effective degrees of freedom is
 //!   `EDF = total_p − tr(Hp⁻¹ S_ρ) = total_p − trace_a_inv(Hp_fact, S_ρ)`.
 //!
-//! ## What is deferred
+//! ## The analytic gradient `∂V/∂ρ` (phase 5b)
 //!
-//! The analytic REML gradient `∂V/∂ρ` requires third derivatives of the
-//! log-likelihood (`l3`, via `∂β̂/∂ρ` and `∂Hp/∂ρ`), which this density does
-//! not yet expose. We therefore drive the outer optimiser with a
-//! FINITE-DIFFERENCE gradient (and Hessian) of `V` — central differences in ρ.
-//! The dimension is small (≤ 4 smoothing parameters), so the `O(d²)` extra
-//! inner solves per outer step are cheap. The analytic gradient is a deferred
-//! follow-up.
+//! [`reml_grad`] computes the REML gradient analytically (mgcv
+//! `gam.fit4.r:1346-1365,1408-1413`), replacing the central-difference gradient
+//! the outer optimiser used in phase 5a. Per smoothing parameter `i` (penalised
+//! block `b(i)`, `λ_i = exp(ρ_i)`):
+//! ```text
+//!   ∂V/∂ρ_i = −½·λ_i·β̂_b(i)ᵀ S0_b(i) β̂_b(i)     (penalty quadratic)
+//!             + ½·rank_i                            (from ½ Σ rank ρ)
+//!             − ½·d log|Hp|/dρ_i
+//!
+//!   d log|Hp|/dρ_i = tr(Hp⁻¹ dS_i) + tr(Hp⁻¹ M_i)
+//! ```
+//! where `dS_i` is the dense (tp×tp) matrix carrying `λ_i S0_i` in block `b(i)`
+//! (zero elsewhere) and `M_i = d(−∇²ℓ_data)/dρ_i`. Since `−∇²ℓ_data` depends on
+//! ρ only through β̂, implicit differentiation of the inner stationarity
+//! condition gives `dβ̂/dρ_i = −Hp⁻¹·(dS_i·β̂)`, hence
+//! `dη_c[obs]/dρ_i = X_c[obs]·(dβ̂/dρ_i)_block_c`, and
+//! ```text
+//!   M_i[block a, block b] = −Σ_obs X_a[obs]ᵀ X_b[obs]·(Σ_c l3_eta[a,b,c]·dη_c/dρ_i)
+//! ```
+//! i.e. the same block assembly as `penalized_grad_hess`'s `−∇²ℓ_data`, but
+//! weighting each observation's 4×4 by `Σ_c l3_eta[a,b,c]·dη_c/dρ_i` instead of
+//! `l2_eta[a,b]`. The traces are taken with `CholeskySolver::trace_a_inv`
+//! against the `Hp` factorisation. [`reml_grad`] is FD-gated against
+//! `reml_eval(...).laml` (`reml_grad_matches_finite_difference`) and drives the
+//! [`fit_reml`] outer optimiser (the FD Hessian from `fd_grad_hess` is retained
+//! only for the Newton step).
 
 use ndarray::{Array1, Array2};
 
-use super::shash::ShashDensity;
+use super::shash::{ShashDensity, L3_INDEX};
 use super::shash_inner::{
     fit_inner, penalized_grad_hess, penalized_loglik, ShashBlocks, ShashInnerOpts,
 };
@@ -276,6 +295,173 @@ pub fn reml_eval(
     })
 }
 
+/// Analytic REML / LAML gradient `∂V/∂ρ` (length [`ShashProblem::n_sp`]) at a
+/// converged β̂.
+///
+/// `beta_hat` MUST be the penalised MLE returned by [`reml_eval`] at this same
+/// ρ — then `Hp = −∇²(penalised loglik)` is SPD and the implicit-function
+/// derivative `dβ̂/dρ_i = −Hp⁻¹(dS_i β̂)` is well defined. See the module doc
+/// (and mgcv `gam.fit4.r:1346-1365,1408-1413`) for the full derivation; in
+/// brief, per smoothing parameter `i` (penalised block `b(i)`):
+/// ```text
+///   ∂V/∂ρ_i = −½ λ_i β̂_b(i)ᵀ S0_b(i) β̂_b(i) + ½ rank_i − ½ d log|Hp|/dρ_i
+///   d log|Hp|/dρ_i = tr(Hp⁻¹ dS_i) + tr(Hp⁻¹ M_i)
+/// ```
+/// with `dS_i = λ_i S0_i` embedded in block `b(i)` and `M_i` the third-
+/// derivative-weighted data-Hessian sensitivity (assembled exactly like
+/// `penalized_grad_hess`'s `−∇²ℓ_data`, but per-obs weight
+/// `Σ_c l3_eta[a,b,c]·dη_c/dρ_i`).
+pub fn reml_grad(
+    density: &ShashDensity,
+    problem: &ShashProblem,
+    rho: &[f64],
+    beta_hat: ndarray::ArrayView1<f64>,
+) -> Result<Array1<f64>> {
+    let n_sp = problem.n_sp();
+    assert_eq!(
+        rho.len(),
+        n_sp,
+        "rho length {} must equal the number of penalised blocks {}",
+        rho.len(),
+        n_sp
+    );
+    let s = problem.combined_penalties(rho);
+    let blocks = problem.blocks(&s);
+    let y = problem.y.view();
+    let tp = blocks.total_p();
+    let p = blocks.p();
+    let off = [
+        blocks.offset(0),
+        blocks.offset(1),
+        blocks.offset(2),
+        blocks.offset(3),
+    ];
+
+    // Hp = −∇²(penalised loglik) at β̂; SPD near the inner optimum.
+    let (_grad, hess) = penalized_grad_hess(density, &blocks, beta_hat, y);
+    let hp = hess.mapv(|v| -v);
+    let hp_fact = CholeskySolver::factorize(hp).map_err(|_| {
+        GamrsError::SingularSystem(
+            "shash reml_grad: −Hess (Hp) is not SPD at β̂ — pass the converged \
+             reml_eval β̂ at this ρ"
+                .into(),
+        )
+    })?;
+
+    // Linear predictors at β̂ (shared across all smoothing parameters).
+    let eta = blocks.eta(beta_hat);
+
+    // Map each smoothing-parameter index i → its penalised block k and the
+    // corresponding unscaled penalty S0 and rank.
+    let mut grad = Array1::<f64>::zeros(n_sp);
+    let mut i = 0usize; // smoothing-parameter index
+    for k in 0..4 {
+        let Some(pen) = &problem.penalties[k] else {
+            continue;
+        };
+        let lam = rho[i].exp();
+        let pk = p[k];
+        let offk = off[k];
+        let beta_k = beta_hat.slice(ndarray::s![offk..offk + pk]);
+
+        // (1) Penalty-quadratic term: −½ λ_i β̂_kᵀ S0_k β̂_k.
+        let s0beta = pen.s0.dot(&beta_k);
+        let pen_quad = lam * beta_k.dot(&s0beta);
+        let mut gi = -0.5 * pen_quad;
+
+        // (2) Rank term: +½ rank_i.
+        gi += 0.5 * pen.rank as f64;
+
+        // (3) −½ d log|Hp|/dρ_i = −½ [tr(Hp⁻¹ dS_i) + tr(Hp⁻¹ M_i)].
+        //
+        // dS_i: the dense (tp×tp) penalty derivative, λ_i S0_k in block k.
+        let mut ds_i = Array2::<f64>::zeros((tp, tp));
+        for r in 0..pk {
+            for c in 0..pk {
+                ds_i[[offk + r, offk + c]] = lam * pen.s0[[r, c]];
+            }
+        }
+        let tr_ds = CholeskySolver::trace_a_inv(&hp_fact, ds_i.view());
+
+        // dβ̂/dρ_i = −Hp⁻¹ (dS_i · β̂). (rhs is the full vector dS_i·β̂; only
+        // block k of β̂ contributes since dS_i is block-k only.)
+        let mut rhs = Array1::<f64>::zeros(tp);
+        for r in 0..pk {
+            rhs[offk + r] = lam * s0beta[r];
+        }
+        let dbeta = CholeskySolver::solve(&hp_fact, rhs.view()).mapv(|v| -v);
+
+        // dη_c[obs]/dρ_i = X_c[obs] · (dβ̂/dρ_i)_block_c   →  n×4.
+        let n = blocks.n();
+        let mut deta = Array2::<f64>::zeros((n, 4));
+        for (c, &pc) in p.iter().enumerate() {
+            let dbeta_c = dbeta.slice(ndarray::s![off[c]..off[c] + pc]);
+            let de_c = blocks.x[c].dot(&dbeta_c);
+            deta.column_mut(c).assign(&de_c);
+        }
+
+        // M_i[block a, block b] = −Σ_obs X_a[obs]ᵀ X_b[obs] · W_i[obs][a,b],
+        // with W_i[obs][a,b] = Σ_c l3_eta[obs][a,b,c]·dη_c[obs]/dρ_i.
+        let mut m_i = Array2::<f64>::zeros((tp, tp));
+        for obs in 0..n {
+            let eta_obs = [
+                eta[[obs, 0]],
+                eta[[obs, 1]],
+                eta[[obs, 2]],
+                eta[[obs, 3]],
+            ];
+            let l3_packed = density.l3_eta(y[obs], eta_obs, blocks.b);
+            // Unpack l3_eta → dense symmetric 4×4×4.
+            let mut l3 = [[[0.0_f64; 4]; 4]; 4];
+            for (idx, &(a, bb, cc)) in L3_INDEX.iter().enumerate() {
+                let v = l3_packed[idx];
+                // 6 permutations (duplicates collapse on assignment).
+                l3[a][bb][cc] = v;
+                l3[a][cc][bb] = v;
+                l3[bb][a][cc] = v;
+                l3[bb][cc][a] = v;
+                l3[cc][a][bb] = v;
+                l3[cc][bb][a] = v;
+            }
+            let deta_obs = [
+                deta[[obs, 0]],
+                deta[[obs, 1]],
+                deta[[obs, 2]],
+                deta[[obs, 3]],
+            ];
+            // W[a][b] = Σ_c l3[a][b][c]·dη_c, then M block += −X_aᵀ X_b · W[a][b].
+            for a in 0..4 {
+                let xa_row = blocks.x[a].row(obs);
+                for b in 0..4 {
+                    let mut w = 0.0;
+                    for c in 0..4 {
+                        w += l3[a][b][c] * deta_obs[c];
+                    }
+                    if w == 0.0 {
+                        continue;
+                    }
+                    let w = -w; // the leading minus of −∇²ℓ_data.
+                    let xb_row = blocks.x[b].row(obs);
+                    for r in 0..p[a] {
+                        let xar_w = xa_row[r] * w;
+                        let mrow = off[a] + r;
+                        for sc in 0..p[b] {
+                            m_i[[mrow, off[b] + sc]] += xar_w * xb_row[sc];
+                        }
+                    }
+                }
+            }
+        }
+        let tr_m = CholeskySolver::trace_a_inv(&hp_fact, m_i.view());
+
+        gi -= 0.5 * (tr_ds + tr_m);
+        grad[i] = gi;
+        i += 1;
+    }
+
+    Ok(grad)
+}
+
 /// Options for the outer (smoothing-parameter) REML ascent.
 #[derive(Clone, Copy, Debug)]
 pub struct ShashRemlOpts {
@@ -420,14 +606,15 @@ fn solve_ascent_rho(hess: &Array2<f64>, grad: ndarray::ArrayView1<f64>, d: usize
 }
 
 /// Maximise the REML / LAML criterion `V(ρ)` over the log-smoothing-parameters
-/// ρ with a compact damped-Newton ascent driven by a FINITE-DIFFERENCE gradient
-/// and Hessian (central differences, step `opts.fd_h`).
+/// ρ with a compact damped-Newton ascent. The gradient is ANALYTIC
+/// ([`reml_grad`], phase 5b); the Hessian is still the central-difference
+/// `fd_grad_hess` Hessian (step `opts.fd_h`) used only to shape the Newton step.
 ///
-/// Each outer step solves `(−H_fd)Δ = g_fd` (with a growing diagonal bump if
-/// `−H_fd` is not SPD, [`solve_ascent_rho`]) and accepts the full/halved step
+/// Each outer step solves `(−H_fd)Δ = g_analytic` (with a growing diagonal bump
+/// if `−H_fd` is not SPD, [`solve_ascent_rho`]) and accepts the full/halved step
 /// only if `laml` strictly increases — otherwise the step is halved up to
-/// `max_halvings`. Converges on `‖g_fd‖∞ < grad_tol`, a tiny accepted step, or
-/// `max_iter`. Inner solves are warm-started from the previous β̂.
+/// `max_halvings`. Converges on `‖g_analytic‖∞ < grad_tol`, a tiny accepted
+/// step, or `max_iter`. Inner solves are warm-started from the previous β̂.
 pub fn fit_reml(
     density: &ShashDensity,
     problem: &ShashProblem,
@@ -458,10 +645,16 @@ pub fn fit_reml(
 
     while n_iter < opts.max_iter {
         n_iter += 1;
-        let (v0, grad, hess, beta_centre, _conv) =
+        // FD Hessian (for the Newton step) + the converged centre β̂; the FD
+        // gradient it also returns is discarded — we use the ANALYTIC gradient
+        // [`reml_grad`] at the centre β̂ instead (phase 5b).
+        let (v0, _grad_fd, hess, beta_centre, _conv) =
             fd_grad_hess(density, problem, &rho, beta_warm.view(), &opts)?;
         beta_warm = beta_centre;
         v_cur = v0;
+
+        // Analytic ∂V/∂ρ at the centre (FD-gated to ~1e-8 vs FD-of-laml).
+        let grad = reml_grad(density, problem, &rho, beta_warm.view())?;
 
         let gnorm = inf_norm(grad.view());
         if gnorm < opts.grad_tol {
@@ -658,6 +851,51 @@ mod tests {
             "FD gradient at fit_reml optimum not ~0: {gnorm} (rho={:?})",
             fit.rho
         );
+    }
+
+    #[test]
+    fn reml_grad_matches_finite_difference() {
+        // The core phase-5b correctness gate: analytic ∂V/∂ρ vs central FD of
+        // reml_eval(...).laml. FD-of-laml itself carries ~1e-5 error (each laml
+        // is a full inner solve), so the tolerance is ~1e-3. β̂ comes from a
+        // converged reml_eval; every FD probe is warm-started from it.
+        let (problem, beta0) = make_problem();
+        let d = ShashDensity::default();
+        let inner = ShashInnerOpts {
+            grad_tol: 1e-10,
+            ..Default::default()
+        };
+        let h = 1e-4;
+        let mut max_err = 0.0_f64;
+        for rho in [vec![0.3, -0.2], vec![-0.5, 0.8]] {
+            // Converged β̂ at this ρ (the analytic gradient assumes stationarity).
+            let centre = reml_eval(&d, &problem, &rho, beta0.view(), inner).expect("centre");
+            let beta_hat = centre.beta.clone();
+            let g_analytic = reml_grad(&d, &problem, &rho, beta_hat.view()).expect("reml_grad");
+
+            for i in 0..rho.len() {
+                let mut rp = rho.clone();
+                let mut rm = rho.clone();
+                rp[i] += h;
+                rm[i] -= h;
+                let vp = reml_eval(&d, &problem, &rp, beta_hat.view(), inner)
+                    .expect("vp")
+                    .laml;
+                let vm = reml_eval(&d, &problem, &rm, beta_hat.view(), inner)
+                    .expect("vm")
+                    .laml;
+                let fd = (vp - vm) / (2.0 * h);
+                let err = (g_analytic[i] - fd).abs();
+                max_err = max_err.max(err);
+                assert!(
+                    err < 1e-3,
+                    "∂V/∂ρ[{i}] at rho={rho:?}: analytic {} vs FD {} (err {err:.2e})",
+                    g_analytic[i],
+                    fd
+                );
+            }
+        }
+        eprintln!("reml_grad vs FD max err {max_err:.2e}");
     }
 
     #[test]
