@@ -65,7 +65,9 @@ use crate::design::{Additive, DesignStrategy, Predictor, TermSpec};
 use crate::error::{GamrsError, Result};
 use crate::gamlss::shash::ShashDensity;
 use crate::gamlss::shash_init::shash_init;
-use crate::gamlss::shash_reml::{fit_reml, ShashPenalty, ShashProblem, ShashRemlEval, ShashRemlOpts};
+use crate::gamlss::shash_reml::{
+    fit_reml, ShashPenalty, ShashProblem, ShashRemlEval, ShashRemlOpts,
+};
 
 /// One fitted shash linear-predictor block: its coefficient slice plus the
 /// predict-time design rebuilder. `predictor == None` marks an intercept-only
@@ -198,8 +200,7 @@ impl ShashGamFit {
         let n = mu.len();
         let mut q = Array1::<f64>::zeros(n);
         for i in 0..n {
-            q[i] = mu[i]
-                + del[i] * sigma[i] * (asinh_zp / del[i] + eps[i] / del[i]).sinh();
+            q[i] = mu[i] + del[i] * sigma[i] * (asinh_zp / del[i] + eps[i] / del[i]).sinh();
         }
         Ok(q)
     }
@@ -265,7 +266,9 @@ pub fn fit_shash(
 ) -> Result<ShashGamFit> {
     let n = y.len();
     if n == 0 {
-        return Err(GamrsError::InvalidParameter("fit_shash: empty response".into()));
+        return Err(GamrsError::InvalidParameter(
+            "fit_shash: empty response".into(),
+        ));
     }
     if x.nrows() != n {
         return Err(GamrsError::InvalidParameter(format!(
@@ -331,7 +334,9 @@ pub fn fit_shash(
     } = fit.eval;
     let predictors = [pred_mu, pred_tau, pred_eps, pred_phi];
     let make_block = |b: usize, predictor: Option<Predictor>| ShashBlockFit {
-        beta: beta.slice(ndarray::s![off[b]..off[b] + block_p[b]]).to_owned(),
+        beta: beta
+            .slice(ndarray::s![off[b]..off[b] + block_p[b]])
+            .to_owned(),
         predictor,
     };
     let [p0, p1, p2, p3] = predictors;
@@ -538,7 +543,10 @@ mod tests {
 
         // (2) Total EDF vs mgcv.
         let edf_diff = (fit.edf - fx.edf_total).abs();
-        eprintln!("fit_shash: EDF gamrs {} vs mgcv {} (diff {edf_diff:.3e})", fit.edf, fx.edf_total);
+        eprintln!(
+            "fit_shash: EDF gamrs {} vs mgcv {} (diff {edf_diff:.3e})",
+            fit.edf, fx.edf_total
+        );
         assert!(
             edf_diff < 0.1,
             "EDF = {} vs mgcv {} (diff {edf_diff})",

@@ -404,12 +404,7 @@ pub fn reml_grad(
         // with W_i[obs][a,b] = Σ_c l3_eta[obs][a,b,c]·dη_c[obs]/dρ_i.
         let mut m_i = Array2::<f64>::zeros((tp, tp));
         for obs in 0..n {
-            let eta_obs = [
-                eta[[obs, 0]],
-                eta[[obs, 1]],
-                eta[[obs, 2]],
-                eta[[obs, 3]],
-            ];
+            let eta_obs = [eta[[obs, 0]], eta[[obs, 1]], eta[[obs, 2]], eta[[obs, 3]]];
             let l3_packed = density.l3_eta(y[obs], eta_obs, blocks.b);
             // Unpack l3_eta → dense symmetric 4×4×4.
             let mut l3 = [[[0.0_f64; 4]; 4]; 4];
@@ -584,9 +579,7 @@ fn inf_norm(v: ndarray::ArrayView1<f64>) -> f64 {
 /// step; otherwise it blends toward gradient ascent.
 fn solve_ascent_rho(hess: &Array2<f64>, grad: ndarray::ArrayView1<f64>, d: usize) -> Array1<f64> {
     let neg_h = hess.mapv(|v| -v);
-    let diag_max = (0..d)
-        .map(|i| neg_h[[i, i]].abs())
-        .fold(1.0_f64, f64::max);
+    let diag_max = (0..d).map(|i| neg_h[[i, i]].abs()).fold(1.0_f64, f64::max);
     let mut tau = 0.0_f64;
     for _ in 0..32 {
         let mut a = neg_h.clone();
@@ -598,7 +591,11 @@ fn solve_ascent_rho(hess: &Array2<f64>, grad: ndarray::ArrayView1<f64>, d: usize
         if let Ok(fact) = CholeskySolver::factorize(a) {
             return CholeskySolver::solve(&fact, grad);
         }
-        tau = if tau == 0.0 { 1e-8 * diag_max } else { tau * 10.0 };
+        tau = if tau == 0.0 {
+            1e-8 * diag_max
+        } else {
+            tau * 10.0
+        };
     }
     // Fallback: pure gradient ascent (scaled). Should be unreachable given the
     // growing τ; we never error out of the outer loop on this.
@@ -749,7 +746,10 @@ mod tests {
         let s0_tau = arr2(&[[0.0, 0.0], [0.0, 1.0]]);
         let penalties = [
             Some(ShashPenalty { s0: s0_mu, rank: 2 }),
-            Some(ShashPenalty { s0: s0_tau, rank: 1 }),
+            Some(ShashPenalty {
+                s0: s0_tau,
+                rank: 1,
+            }),
             None,
             None,
         ];
@@ -906,21 +906,19 @@ mod tests {
         let v0 = reml_eval(&d, &problem, &rho0, beta0.view(), ShashInnerOpts::default())
             .unwrap()
             .laml;
-        let fit = fit_reml(
-            &d,
-            &problem,
-            &rho0,
-            beta0.view(),
-            ShashRemlOpts::default(),
-        )
-        .expect("fit_reml");
+        let fit = fit_reml(&d, &problem, &rho0, beta0.view(), ShashRemlOpts::default())
+            .expect("fit_reml");
         assert!(
             fit.eval.laml >= v0 - 1e-9,
             "fit_reml did not increase laml: {} < {}",
             fit.eval.laml,
             v0
         );
-        assert!(fit.converged, "fit_reml did not converge (iters={})", fit.n_iter);
+        assert!(
+            fit.converged,
+            "fit_reml did not converge (iters={})",
+            fit.n_iter
+        );
     }
 
     // --- the mgcv confrontation (the real TDD oracle for this project) ------
@@ -1023,8 +1021,15 @@ mod tests {
             ShashRemlOpts::default(),
         )
         .expect("fit_reml");
-        assert!(fit.converged, "outer REML did not converge (iters={})", fit.n_iter);
-        assert!(fit.eval.inner_converged, "inner solve did not converge at ρ̂");
+        assert!(
+            fit.converged,
+            "outer REML did not converge (iters={})",
+            fit.n_iter
+        );
+        assert!(
+            fit.eval.inner_converged,
+            "inner solve did not converge at ρ̂"
+        );
 
         // 1) Selected log-smoothing-params ≈ mgcv's. gamrs recovers these to
         //    ~1e-5 here; 0.02 (sp within ~2%) is a tight bound with margin for
@@ -1074,10 +1079,22 @@ mod tests {
     fn edf_decreases_as_penalty_grows() {
         let (problem, beta0) = make_problem();
         let d = ShashDensity::default();
-        let light = reml_eval(&d, &problem, &[-1.0, -1.0], beta0.view(), ShashInnerOpts::default())
-            .expect("light");
-        let heavy = reml_eval(&d, &problem, &[5.0, 5.0], beta0.view(), ShashInnerOpts::default())
-            .expect("heavy");
+        let light = reml_eval(
+            &d,
+            &problem,
+            &[-1.0, -1.0],
+            beta0.view(),
+            ShashInnerOpts::default(),
+        )
+        .expect("light");
+        let heavy = reml_eval(
+            &d,
+            &problem,
+            &[5.0, 5.0],
+            beta0.view(),
+            ShashInnerOpts::default(),
+        )
+        .expect("heavy");
         assert!(
             heavy.edf < light.edf,
             "EDF did not decrease as penalty grew: heavy {} vs light {}",

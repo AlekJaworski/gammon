@@ -108,7 +108,9 @@ pub fn fit_gaulss(
 ) -> Result<GaulssFit> {
     let n = y.len();
     if n == 0 {
-        return Err(GamrsError::InvalidParameter("gaulss: empty response".into()));
+        return Err(GamrsError::InvalidParameter(
+            "gaulss: empty response".into(),
+        ));
     }
     let y_owned = y.to_owned();
 
@@ -120,17 +122,22 @@ pub fn fit_gaulss(
     // ── Init: unweighted μ fit, then a smooth log-σ start from |residuals|. ──
     let mut loc = fit_with_design(
         gaussian_identity(),
-        Additive { terms: mu_terms.clone() },
+        Additive {
+            terms: mu_terms.clone(),
+        },
         x,
         y,
         None,
     )?;
     let mu0 = loc.predict(x)?;
-    let log_abs_r0: Array1<f64> =
-        (0..n).map(|i| (y_owned[i] - mu0[i]).abs().max(floor).ln() - E_LOG_ABS_NORMAL).collect();
+    let log_abs_r0: Array1<f64> = (0..n)
+        .map(|i| (y_owned[i] - mu0[i]).abs().max(floor).ln() - E_LOG_ABS_NORMAL)
+        .collect();
     let mut scale = fit_with_design(
         gaussian_identity(),
-        Additive { terms: sigma_terms.clone() },
+        Additive {
+            terms: sigma_terms.clone(),
+        },
         x,
         log_abs_r0.view(),
         None,
@@ -148,7 +155,9 @@ pub fn fit_gaulss(
         let inv_sig2: Array1<f64> = eta2.mapv(|e| (-2.0 * e).exp());
         loc = fit_with_design(
             gaussian_identity(),
-            Additive { terms: mu_terms.clone() },
+            Additive {
+                terms: mu_terms.clone(),
+            },
             x,
             y,
             Some(inv_sig2.view()),
@@ -166,7 +175,9 @@ pub fn fit_gaulss(
             .collect();
         scale = fit_with_design(
             gaussian_identity(),
-            Additive { terms: sigma_terms.clone() },
+            Additive {
+                terms: sigma_terms.clone(),
+            },
             x,
             z2.view(),
             None,
@@ -281,11 +292,18 @@ mod tests {
             let u2 = frac((i as f64 + 0.5) * 0.5698402909980532 + 0.59);
             y[i] = mu + sg * pnormal(u1, u2);
         }
-        let terms = vec![TermSpec::Cr { col: 0, k: 10 }, TermSpec::Cr { col: 1, k: 10 }];
+        let terms = vec![
+            TermSpec::Cr { col: 0, k: 10 },
+            TermSpec::Cr { col: 1, k: 10 },
+        ];
         let sterms = vec![TermSpec::Cr { col: 0, k: 6 }, TermSpec::Cr { col: 1, k: 6 }];
         let fit = fit_gaulss(terms, sterms, x.view(), y.view(), GaulssOpts::default())
             .expect("gaulss fit");
-        assert!(fit.converged, "gaulss did not converge (iters={})", fit.n_iters);
+        assert!(
+            fit.converged,
+            "gaulss did not converge (iters={})",
+            fit.n_iters
+        );
 
         // σ̂(x) should track the true heteroskedastic scale (corr > 0.8).
         let sig = fit.predict_sigma(x.view()).unwrap();
@@ -305,7 +323,10 @@ mod tests {
         let q50 = fit.predict_quantile(x.view(), 0.5).unwrap();
         let q90 = fit.predict_quantile(x.view(), 0.9).unwrap();
         for i in 0..n {
-            assert!(q10[i] <= q50[i] && q50[i] <= q90[i], "quantiles crossed at i={i}");
+            assert!(
+                q10[i] <= q50[i] && q50[i] <= q90[i],
+                "quantiles crossed at i={i}"
+            );
         }
         let cov10 = (0..n).filter(|&i| y[i] <= q10[i]).count() as f64 / n as f64;
         let cov90 = (0..n).filter(|&i| y[i] <= q90[i]).count() as f64 / n as f64;

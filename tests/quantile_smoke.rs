@@ -201,10 +201,7 @@ fn quantile_multismooth_additive_monotone_and_converged() {
         let fit = gamrs::fit_with_design(
             gamrs::family::elf_identity(tau, /*sigma=*/ 0.0, /*lambda=*/ 0.0),
             Additive {
-                terms: vec![
-                    TermSpec::Cr { col: 0, k },
-                    TermSpec::Cr { col: 1, k },
-                ],
+                terms: vec![TermSpec::Cr { col: 0, k }, TermSpec::Cr { col: 1, k }],
             },
             x.view(),
             y.view(),
@@ -212,7 +209,10 @@ fn quantile_multismooth_additive_monotone_and_converged() {
         )
         .unwrap_or_else(|e| panic!("multi-smooth ELF fit (τ={tau}) failed: {e}"));
 
-        assert!(fit.converged, "τ={tau}: multi-smooth outer Newton did not converge");
+        assert!(
+            fit.converged,
+            "τ={tau}: multi-smooth outer Newton did not converge"
+        );
         assert_eq!(
             fit.rho.len(),
             2,
@@ -256,11 +256,7 @@ fn quantile_multismooth_additive_monotone_and_converged() {
     // slightly with finite data, but the ordering must hold in aggregate).
     let mut crossings_low_mid = 0;
     let mut crossings_mid_high = 0;
-    for ((p_low, p_mid), p_high) in preds[0]
-        .iter()
-        .zip(preds[1].iter())
-        .zip(preds[2].iter())
-    {
+    for ((p_low, p_mid), p_high) in preds[0].iter().zip(preds[1].iter()).zip(preds[2].iter()) {
         if p_low > p_mid {
             crossings_low_mid += 1;
         }

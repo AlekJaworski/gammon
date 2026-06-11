@@ -88,8 +88,10 @@ pub fn penalized_loglik(
     let n = blocks.n();
     let mut ll = 0.0;
     for i in 0..n {
-        let [mu, tau, eps, phi] =
-            ShashDensity::linkinv([eta[[i, 0]], eta[[i, 1]], eta[[i, 2]], eta[[i, 3]]], blocks.b);
+        let [mu, tau, eps, phi] = ShashDensity::linkinv(
+            [eta[[i, 0]], eta[[i, 1]], eta[[i, 2]], eta[[i, 3]]],
+            blocks.b,
+        );
         ll += density.l0(y[i], mu, tau, eps, phi);
     }
     // − ½ Σᵦ βᵦᵀ Sᵦ βᵦ
@@ -135,7 +137,7 @@ pub fn penalized_grad_hess(
         let eta_i = [eta[[i, 0]], eta[[i, 1]], eta[[i, 2]], eta[[i, 3]]];
         let g_i = density.l1_eta(y[i], eta_i, blocks.b); // 4
         let h_packed = density.l2_eta(y[i], eta_i, blocks.b); // 10
-        // Unpack to dense 4×4.
+                                                              // Unpack to dense 4×4.
         let mut h_i = [[0.0_f64; 4]; 4];
         for (idx, &(a, c)) in L2_INDEX.iter().enumerate() {
             h_i[a][c] = h_packed[idx];
@@ -197,9 +199,7 @@ fn inf_norm(v: ArrayView1<f64>) -> f64 {
 /// the Newton step toward gradient ascent.
 fn solve_ascent(hess: &Array2<f64>, grad: ArrayView1<f64>, tp: usize) -> Result<Array1<f64>> {
     let neg_h = hess.mapv(|v| -v);
-    let diag_max = (0..tp)
-        .map(|i| neg_h[[i, i]].abs())
-        .fold(1.0_f64, f64::max);
+    let diag_max = (0..tp).map(|i| neg_h[[i, i]].abs()).fold(1.0_f64, f64::max);
     let mut tau = 0.0_f64;
     for _ in 0..32 {
         let mut a = neg_h.clone();
@@ -211,7 +211,11 @@ fn solve_ascent(hess: &Array2<f64>, grad: ArrayView1<f64>, tp: usize) -> Result<
         if let Ok(fact) = CholeskySolver::factorize(a) {
             return Ok(CholeskySolver::solve(&fact, grad));
         }
-        tau = if tau == 0.0 { 1e-8 * diag_max } else { tau * 10.0 };
+        tau = if tau == 0.0 {
+            1e-8 * diag_max
+        } else {
+            tau * 10.0
+        };
     }
     Err(GamrsError::SingularSystem(
         "shash inner Newton: Hessian could not be stabilised to SPD".into(),
@@ -391,7 +395,13 @@ mod tests {
         }
         // A non-trivial β to evaluate derivatives at (not the optimum).
         let beta = Array1::from(vec![0.3, 0.9, 0.5, -0.6, 0.25, 0.1, -0.05]);
-        Prob { x, s, y, beta, b: 1e-2 }
+        Prob {
+            x,
+            s,
+            y,
+            beta,
+            b: 1e-2,
+        }
     }
 
     fn blocks_of(p: &Prob) -> ShashBlocks<'_> {
@@ -560,20 +570,27 @@ mod tests {
         let blk = blocks_of(&prob);
         let d = ShashDensity::default();
         let init = crate::gamlss::shash_init::shash_init(
-            blk.x[0], blk.x[1], blk.x[2], blk.x[3], prob.y.view(), 0.0,
+            blk.x[0],
+            blk.x[1],
+            blk.x[2],
+            blk.x[3],
+            prob.y.view(),
+            0.0,
         )
         .expect("init");
         let mut beta0 = Array1::<f64>::zeros(blk.total_p());
-        beta0
-            .slice_mut(ndarray::s![0..3])
-            .assign(&init.beta_mu);
-        beta0
-            .slice_mut(ndarray::s![3..5])
-            .assign(&init.beta_tau);
+        beta0.slice_mut(ndarray::s![0..3]).assign(&init.beta_mu);
+        beta0.slice_mut(ndarray::s![3..5]).assign(&init.beta_tau);
         // ε/φ blocks start at 0 (already zero).
 
-        let fit = fit_inner(&d, &blk, beta0.view(), prob.y.view(), ShashInnerOpts::default())
-            .expect("inner fit");
+        let fit = fit_inner(
+            &d,
+            &blk,
+            beta0.view(),
+            prob.y.view(),
+            ShashInnerOpts::default(),
+        )
+        .expect("inner fit");
         assert!(fit.converged, "did not converge (iters={})", fit.n_iter);
         assert!(
             fit.grad_norm < 1e-6,
@@ -647,7 +664,12 @@ mod tests {
         ];
         let blk0 = ShashBlocks {
             x: blk.x,
-            s: [zero[0].view(), zero[1].view(), zero[2].view(), zero[3].view()],
+            s: [
+                zero[0].view(),
+                zero[1].view(),
+                zero[2].view(),
+                zero[3].view(),
+            ],
             b: prob.b,
         };
         let (g_unp, _) = penalized_grad_hess(&d, &blk0, prob.beta.view(), prob.y.view());

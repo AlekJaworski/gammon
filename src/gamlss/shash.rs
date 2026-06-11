@@ -31,9 +31,15 @@ impl Default for ShashDensity {
 /// Lower-triangular packing order of the symmetric 4×4 param Hessian returned
 /// by [`ShashDensity::l2`]: `[mm, mt, me, mp, tt, te, tp, ee, ep, pp]`.
 pub const L2_INDEX: [(usize, usize); 10] = [
-    (0, 0), (0, 1), (0, 2), (0, 3),
-    (1, 1), (1, 2), (1, 3),
-    (2, 2), (2, 3),
+    (0, 0),
+    (0, 1),
+    (0, 2),
+    (0, 3),
+    (1, 1),
+    (1, 2),
+    (1, 3),
+    (2, 2),
+    (2, 3),
     (3, 3),
 ];
 
@@ -45,14 +51,24 @@ pub const L2_INDEX: [(usize, usize); 10] = [
 /// `∂³ℓ/∂θ_a∂θ_b∂θ_c` (fully symmetric, so only the 20 sorted triples are
 /// stored).
 pub const L3_INDEX: [(usize, usize, usize); 20] = [
-    (0, 0, 0), (0, 0, 1), (0, 0, 2), (0, 0, 3),
-    (0, 1, 1), (0, 1, 2), (0, 1, 3),
-    (0, 2, 2), (0, 2, 3),
+    (0, 0, 0),
+    (0, 0, 1),
+    (0, 0, 2),
+    (0, 0, 3),
+    (0, 1, 1),
+    (0, 1, 2),
+    (0, 1, 3),
+    (0, 2, 2),
+    (0, 2, 3),
     (0, 3, 3),
-    (1, 1, 1), (1, 1, 2), (1, 1, 3),
-    (1, 2, 2), (1, 2, 3),
+    (1, 1, 1),
+    (1, 1, 2),
+    (1, 1, 3),
+    (1, 2, 2),
+    (1, 2, 3),
     (1, 3, 3),
-    (2, 2, 2), (2, 2, 3),
+    (2, 2, 2),
+    (2, 2, 3),
     (2, 3, 3),
     (3, 3, 3),
 ];
@@ -115,8 +131,7 @@ impl ShashDensity {
         let dep = dte - del * asinh_z * dee;
         let dmp = dmt + de / (sig * s_sp1) - del * asinh_z * dme;
         let dtp = zsd * dmp;
-        let dpp =
-            dtp - del * asinh_z * dep + del * (z / s_sp1 - asinh_z) * de - 2.0 * self.phi_pen;
+        let dpp = dtp - del * asinh_z * dep + del * (z / s_sp1 - asinh_z) * de - 2.0 * self.phi_pen;
         [dmm, dmt, dme, dmp, dtt, dte, dtp, dee, dep, dpp]
     }
 
@@ -179,8 +194,7 @@ impl ShashDensity {
             - del * asinh_z * dmme;
         let dmtp = zsd * dmmp - dmp;
         let dttp = zsd * dmtp;
-        let dmpp = dmtp + dep / (sig * s_sp1)
-            + z * z * de / (sig * s_sp1.powi(3))
+        let dmpp = dmtp + dep / (sig * s_sp1) + z * z * de / (sig * s_sp1.powi(3))
             - del * asinh_z * dmep
             + del * dme * (z / s_sp1 - asinh_z);
         let dtpp = zsd * dmpp;
@@ -219,12 +233,7 @@ impl ShashDensity {
         let [mu, tau, eps, phi] = Self::linkinv(eta, b);
         let l1 = self.l1(y, mu, tau, eps, phi);
         let dp = link_dparam(eta, b); // [dμ/dη₁, dτ/dη₂, dε/dη₃, dφ/dη₄]
-        [
-            l1[0] * dp[0],
-            l1[1] * dp[1],
-            l1[2] * dp[2],
-            l1[3] * dp[3],
-        ]
+        [l1[0] * dp[0], l1[1] * dp[1], l1[2] * dp[2], l1[3] * dp[3]]
     }
 
     /// η-space Hessian, lower-triangular packed per [`L2_INDEX`].
@@ -557,8 +566,7 @@ mod tests {
         let h = 1e-6;
         for &eta2 in &[-2.0, -1.0, -0.5, 0.0, 0.2, 0.5, 1.0, 2.0] {
             let d3 = logeb_d3tau(eta2, B_LOGEB);
-            let fd = (logeb_d2tau(eta2 + h, B_LOGEB) - logeb_d2tau(eta2 - h, B_LOGEB))
-                / (2.0 * h);
+            let fd = (logeb_d2tau(eta2 + h, B_LOGEB) - logeb_d2tau(eta2 - h, B_LOGEB)) / (2.0 * h);
             assert!(
                 (d3 - fd).abs() < 1e-5,
                 "d³τ/dη₂³ at η₂={eta2}: analytic {d3} vs FD {fd}"
@@ -573,8 +581,8 @@ mod tests {
         let h = 1e-6;
         for &eta2 in &[-2.0, -1.0, -0.5, 0.0, 0.2, 0.5, 1.0, 2.0] {
             let d = logeb_dtau(eta2, B_LOGEB);
-            let fd = (logeb_linkinv(eta2 + h, B_LOGEB) - logeb_linkinv(eta2 - h, B_LOGEB))
-                / (2.0 * h);
+            let fd =
+                (logeb_linkinv(eta2 + h, B_LOGEB) - logeb_linkinv(eta2 - h, B_LOGEB)) / (2.0 * h);
             assert!(
                 (d - fd).abs() < 1e-6,
                 "dτ/dη₂ at η₂={eta2}: analytic {d} vs FD {fd}"
@@ -587,8 +595,7 @@ mod tests {
         let h = 1e-6;
         for &eta2 in &[-2.0, -1.0, -0.5, 0.0, 0.2, 0.5, 1.0, 2.0] {
             let d2 = logeb_d2tau(eta2, B_LOGEB);
-            let fd =
-                (logeb_dtau(eta2 + h, B_LOGEB) - logeb_dtau(eta2 - h, B_LOGEB)) / (2.0 * h);
+            let fd = (logeb_dtau(eta2 + h, B_LOGEB) - logeb_dtau(eta2 - h, B_LOGEB)) / (2.0 * h);
             assert!(
                 (d2 - fd).abs() < 1e-5,
                 "d²τ/dη₂² at η₂={eta2}: analytic {d2} vs FD {fd}"
@@ -779,32 +786,64 @@ mod tests {
             1.5,
             [0.0, -0.5, 0.0, 0.0],
             [
-                -2.63081663, -7.76443715, -7.82738701, 8.17982712, -11.37925265, -11.55064273,
-                12.07072816, -12.69415399, 8.84940395, -5.90308433,
+                -2.63081663,
+                -7.76443715,
+                -7.82738701,
+                8.17982712,
+                -11.37925265,
+                -11.55064273,
+                12.07072816,
+                -12.69415399,
+                8.84940395,
+                -5.90308433,
             ],
         ),
         (
             2.3,
             [1.0, 0.0, 0.2, 0.0],
             [
-                -0.60787957, -1.66662378, -1.47728817, 0.31162296, -2.14358142, -1.90146005,
-                0.40109889, -2.43196816, 0.68313894, -0.51939311,
+                -0.60787957,
+                -1.66662378,
+                -1.47728817,
+                0.31162296,
+                -2.14358142,
+                -1.90146005,
+                0.40109889,
+                -2.43196816,
+                0.68313894,
+                -0.51939311,
             ],
         ),
         (
             -0.5,
             [0.5, -1.0, -0.1, 0.3],
             [
-                -18.94629031, 29.35055217, -23.01254414, -24.55116155, -28.31099621, 22.40355266,
-                23.90145328, -19.13786756, -13.82106343, -8.30274107,
+                -18.94629031,
+                29.35055217,
+                -23.01254414,
+                -24.55116155,
+                -28.31099621,
+                22.40355266,
+                23.90145328,
+                -19.13786756,
+                -13.82106343,
+                -8.30274107,
             ],
         ),
         (
             0.7,
             [-0.3, 0.2, 0.0, -0.2],
             [
-                -0.42720807, -1.12955377, -0.91944615, -0.26398329, -1.12270393, -0.91197950,
-                -0.26183952, -1.59469642, 0.22378650, -0.47890767,
+                -0.42720807,
+                -1.12955377,
+                -0.91944615,
+                -0.26398329,
+                -1.12270393,
+                -0.91197950,
+                -0.26183952,
+                -1.59469642,
+                0.22378650,
+                -0.47890767,
             ],
         ),
     ];

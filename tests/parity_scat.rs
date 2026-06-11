@@ -191,8 +191,14 @@ fn scat_downweights_high_outliers_synthetic() {
     let y_var = y.iter().map(|&v| (v - y_mean).powi(2)).sum::<f64>() / (n as f64);
     let k = 10usize;
 
-    let g = gamrs::fit(gamrs::family::gaussian_identity(), x.view(), y.view(), None, k)
-        .expect("gaussian fit should not fail");
+    let g = gamrs::fit(
+        gamrs::family::gaussian_identity(),
+        x.view(),
+        y.view(),
+        None,
+        k,
+    )
+    .expect("gaussian fit should not fail");
     let s = gamrs::fit(
         gamrs::family::tdist_identity(5.0, y_var * 0.1),
         x.view(),
