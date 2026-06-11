@@ -685,6 +685,153 @@ mod tests {
         assert!(fit.converged, "fit_reml did not converge (iters={})", fit.n_iter);
     }
 
+    // --- the mgcv confrontation (the real TDD oracle for this project) ------
+    //
+    // Feeds gamrs mgcv's OWN per-block design + penalty from a fitted 2-smooth
+    // shash GAMLSS (scripts/r/gen_shash_reml_fixture.R) and confronts the
+    // REML-selected smoothing params, total EDF and fitted linear predictors.
+
+    #[derive(serde::Deserialize)]
+    struct RemlFixture {
+        n: usize,
+        b: f64,
+        log_sp: Vec<f64>,
+        edf_total: f64,
+        p: Vec<usize>,
+        rank: Vec<usize>,
+        #[serde(rename = "X1")]
+        x1: Vec<f64>,
+        #[serde(rename = "X2")]
+        x2: Vec<f64>,
+        #[serde(rename = "X3")]
+        x3: Vec<f64>,
+        #[serde(rename = "X4")]
+        x4: Vec<f64>,
+        #[serde(rename = "S1")]
+        s1: Vec<f64>,
+        #[serde(rename = "S2")]
+        s2: Vec<f64>,
+        eta: Vec<f64>,
+        y: Vec<f64>,
+    }
+
+    fn load_reml_fixture() -> RemlFixture {
+        let mut p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        p.push("tests/fixtures/shash_reml_mgcv.json");
+        let txt = std::fs::read_to_string(&p)
+            .unwrap_or_else(|e| panic!("missing fixture {}: {e}", p.display()));
+        serde_json::from_str(&txt).expect("malformed shash_reml fixture")
+    }
+
+    fn mat(flat: &[f64], rows: usize, cols: usize) -> Array2<f64> {
+        Array2::from_shape_vec((rows, cols), flat.to_vec()).expect("shape")
+    }
+
+    #[test]
+    fn fit_reml_matches_mgcv_two_smooth_shash() {
+        let fx = load_reml_fixture();
+        let n = fx.n;
+        let x = [
+            mat(&fx.x1, n, fx.p[0]),
+            mat(&fx.x2, n, fx.p[1]),
+            mat(&fx.x3, n, fx.p[2]),
+            mat(&fx.x4, n, fx.p[3]),
+        ];
+        let penalties = [
+            Some(ShashPenalty {
+                s0: mat(&fx.s1, fx.p[0], fx.p[0]),
+                rank: fx.rank[0],
+            }),
+            Some(ShashPenalty {
+                s0: mat(&fx.s2, fx.p[1], fx.p[1]),
+                rank: fx.rank[1],
+            }),
+            None,
+            None,
+        ];
+        let y = Array1::from(fx.y.clone());
+        let problem = ShashProblem {
+            x: x.clone(),
+            y: y.clone(),
+            penalties,
+            b: fx.b,
+        };
+        let d = ShashDensity::default();
+
+        // Warm-start β from the phase-3 initialiser on mgcv's own designs.
+        let init = crate::gamlss::shash_init::shash_init(
+            x[0].view(),
+            x[1].view(),
+            x[2].view(),
+            x[3].view(),
+            y.view(),
+            0.0,
+        )
+        .expect("init");
+        let mut beta0 = Array1::<f64>::zeros(problem.total_p());
+        let off = [0, fx.p[0], fx.p[0] + fx.p[1], fx.p[0] + fx.p[1] + fx.p[2]];
+        beta0
+            .slice_mut(ndarray::s![off[0]..off[0] + fx.p[0]])
+            .assign(&init.beta_mu);
+        beta0
+            .slice_mut(ndarray::s![off[1]..off[1] + fx.p[1]])
+            .assign(&init.beta_tau);
+
+        let fit = fit_reml(
+            &d,
+            &problem,
+            &[0.0, 0.0],
+            beta0.view(),
+            ShashRemlOpts::default(),
+        )
+        .expect("fit_reml");
+        assert!(fit.converged, "outer REML did not converge (iters={})", fit.n_iter);
+        assert!(fit.eval.inner_converged, "inner solve did not converge at ρ̂");
+
+        // 1) Selected log-smoothing-params ≈ mgcv's. gamrs recovers these to
+        //    ~1e-5 here; 0.02 (sp within ~2%) is a tight bound with margin for
+        //    FD-Newton precision.
+        for k in 0..2 {
+            assert!(
+                (fit.rho[k] - fx.log_sp[k]).abs() < 0.02,
+                "log sp[{k}] = {} vs mgcv {} (sp ratio {:.4}x)",
+                fit.rho[k],
+                fx.log_sp[k],
+                (fit.rho[k] - fx.log_sp[k]).exp()
+            );
+        }
+
+        // 2) Total EDF ≈ mgcv's sum(edf) (same definition: p − tr(Hp⁻¹S));
+        //    matches to ~4 dp in practice.
+        assert!(
+            (fit.eval.edf - fx.edf_total).abs() < 0.05,
+            "EDF = {} vs mgcv {}",
+            fit.eval.edf,
+            fx.edf_total
+        );
+
+        // 3) Fitted linear predictors ηᵦ = Xᵦ·β̂ᵦ ≈ mgcv's (basis-invariant;
+        //    we fit in mgcv's own basis so they are directly comparable).
+        let eta_mgcv = mat(&fx.eta, n, 4); // n×4
+        let pblk = fx.p.clone();
+        for b in 0..4 {
+            let beta_b = fit
+                .eval
+                .beta
+                .slice(ndarray::s![off[b]..off[b] + pblk[b]])
+                .to_owned();
+            let eta_b = x[b].dot(&beta_b);
+            let mut max_abs = 0.0_f64;
+            for i in 0..n {
+                max_abs = max_abs.max((eta_b[i] - eta_mgcv[[i, b]]).abs());
+            }
+            assert!(
+                max_abs < 0.02,
+                "fitted η block {b}: max|gamrs − mgcv| = {max_abs}",
+            );
+        }
+    }
+
     #[test]
     fn edf_decreases_as_penalty_grows() {
         let (problem, beta0) = make_problem();
