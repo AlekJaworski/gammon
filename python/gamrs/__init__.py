@@ -53,6 +53,7 @@ from ._low_level import (
 from ._fitter import Gam, GAMFitter
 from ._predictor import GamPredictor
 from ._gaulss import GaulssFit, fit_gaulss
+from ._shash_gam import ShashGamFit, fit_shash
 from ._quantile import (
     QuantileLSSFit,
     fit_quantile,
@@ -88,4 +89,8 @@ __all__ = [
     # GAMLSS: Gaussian location-scale (joint fit).
     "fit_gaulss",
     "GaulssFit",
+    # GAMLSS: native sinh-arcsinh (joint fit) — distinct from the two-stage
+    # fit_quantile_lss(shape="shash").
+    "fit_shash",
+    "ShashGamFit",
 ]

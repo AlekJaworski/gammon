@@ -1664,12 +1664,181 @@ fn fit_gaulss<'py>(
     ))
 }
 
+// =============================================================================
+// PyShashGamFit — Python-visible wrapper around the Rust `ShashGamFit`.
+// =============================================================================
+
+/// A fitted sinh-arcsinh (`shash`) GAMLSS model: the NATIVE joint fit over four
+/// linear predictors (μ, log σ via the `logeb` link, skewness ε, log-kurtosis
+/// φ), fitted by the dense block-Newton inner solve under outer REML. Exposes
+/// `predict_eta` / `predict_params` / `predict_quantile` plus REML diagnostics.
+///
+/// Distinct from the two-stage per-residual `fit_quantile_lss(shape="shash")`
+/// helper (`gamrs._shash`): this is the genuine joint GAMLSS MLE.
+#[pyclass(name = "ShashGamFit", module = "gamrs._gamrs_native")]
+pub struct PyShashGamFit {
+    inner: crate::fit::ShashGamFit,
+}
+
+#[pymethods]
+impl PyShashGamFit {
+    /// The four fitted linear predictors on new `x`: an `(n, 4)` float64 ndarray
+    /// with columns `(η_μ, η_τ, η_ε, η_φ)`.
+    fn predict_eta<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let eta = self.inner.predict_eta(x.as_array()).map_err(map_err)?;
+        Ok(eta.into_pyarray(py))
+    }
+
+    /// The four fitted parameters on new `x` as a tuple of four 1-D float64
+    /// ndarrays `(μ, σ, ε, δ)` (σ = exp(τ) via the `logeb` link, δ = exp(φ)).
+    fn predict_params<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+    ) -> PyResult<(
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<f64>>,
+    )> {
+        let (mu, sigma, eps, del) = self.inner.predict_params(x.as_array()).map_err(map_err)?;
+        Ok((
+            mu.into_pyarray(py),
+            sigma.into_pyarray(py),
+            eps.into_pyarray(py),
+            del.into_pyarray(py),
+        ))
+    }
+
+    /// The fitted `p`-quantile per observation on new `x` (1-D float64 ndarray).
+    /// `p` must lie in the open interval `(0, 1)`; otherwise raises `ValueError`.
+    fn predict_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        p: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let q = self
+            .inner
+            .predict_quantile(x.as_array(), p)
+            .map_err(map_err)?;
+        Ok(q.into_pyarray(py))
+    }
+
+    /// Selected log-smoothing-parameters ρ̂ (one per penalised block, in block
+    /// order μ, τ, ε, φ). 1-D float64 ndarray; empty when no block is penalised.
+    #[getter]
+    fn rho<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.rho.clone().into_pyarray(py)
+    }
+
+    /// Per-block coefficient counts `[p_μ, p_τ, p_ε, p_φ]` as a length-4 tuple.
+    #[getter]
+    fn block_p(&self) -> (usize, usize, usize, usize) {
+        let bp = self.inner.block_p;
+        (bp[0], bp[1], bp[2], bp[3])
+    }
+
+    /// Total effective degrees of freedom `total_p − tr(Hp⁻¹ S_ρ)`.
+    #[getter]
+    fn edf(&self) -> f64 {
+        self.inner.edf
+    }
+
+    /// The LAML / REML criterion `V(ρ̂)` at the optimum.
+    #[getter]
+    fn laml(&self) -> f64 {
+        self.inner.laml
+    }
+
+    /// The `logeb` bound `b` used for the τ (log-scale) link.
+    #[getter]
+    fn b(&self) -> f64 {
+        self.inner.b
+    }
+
+    /// Whether the outer REML (smoothing-parameter) ascent converged.
+    #[getter]
+    fn converged(&self) -> bool {
+        self.inner.converged
+    }
+
+    /// Whether the inner penalised Newton converged at ρ̂.
+    #[getter]
+    fn inner_converged(&self) -> bool {
+        self.inner.inner_converged
+    }
+}
+
+/// Fit a sinh-arcsinh (`shash`) GAMLSS model end-to-end: four predictor term
+/// lists (μ, τ, ε, φ), a covariate matrix `x` (`n × d`) and response `y`. Each
+/// term list uses the SAME tuple form as `fit_additive` (parsed by
+/// `build_term_specs`); an EMPTY list is an intercept-only predictor (handled
+/// by `crate::fit::fit_shash`). `b` is the τ-link `logeb` bound (default 1e-2).
+/// Returns a `ShashGamFit`.
+#[pyfunction]
+#[pyo3(signature = (mu_terms, tau_terms, eps_terms, phi_terms, x, y, b=None))]
+fn fit_shash<'py>(
+    py: Python<'py>,
+    mu_terms: Bound<'py, pyo3::types::PyList>,
+    tau_terms: Bound<'py, pyo3::types::PyList>,
+    eps_terms: Bound<'py, pyo3::types::PyList>,
+    phi_terms: Bound<'py, pyo3::types::PyList>,
+    x: PyReadonlyArray2<'py, f64>,
+    y: PyReadonlyArray1<'py, f64>,
+    b: Option<f64>,
+) -> PyResult<PyShashGamFit> {
+    // Own the numpy inputs so the solve can release the GIL (see
+    // `fit_additive`). The four term lists are parsed under the GIL first (they
+    // read live Python objects); an empty list → an intercept-only predictor, so
+    // — unlike `build_term_specs`, which rejects empty lists — we map empty to an
+    // empty `Vec<TermSpec>` here.
+    let x_owned: Array2<f64> = x.as_array().to_owned();
+    let y_owned: Array1<f64> = y.as_array().to_owned();
+    let parse = |terms: &Bound<'py, pyo3::types::PyList>| -> PyResult<Vec<TermSpec>> {
+        if terms.is_empty() {
+            Ok(Vec::new())
+        } else {
+            build_term_specs(terms)
+        }
+    };
+    let mu_specs = parse(&mu_terms)?;
+    let tau_specs = parse(&tau_terms)?;
+    let eps_specs = parse(&eps_terms)?;
+    let phi_specs = parse(&phi_terms)?;
+
+    let opts = crate::fit::ShashGamOpts {
+        b: b.unwrap_or(1e-2),
+        ..crate::fit::ShashGamOpts::default()
+    };
+    let fit = py
+        .detach(move || {
+            crate::fit::fit_shash(
+                mu_specs,
+                tau_specs,
+                eps_specs,
+                phi_specs,
+                x_owned.view(),
+                y_owned.view(),
+                opts,
+            )
+        })
+        .map_err(map_err)?;
+    Ok(PyShashGamFit { inner: fit })
+}
+
 #[pymodule]
 fn _gamrs_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyFittedGam>()?;
+    m.add_class::<PyShashGamFit>()?;
     m.add_function(wrap_pyfunction!(fit, m)?)?;
     m.add_function(wrap_pyfunction!(fit_additive, m)?)?;
     m.add_function(wrap_pyfunction!(fit_gaulss, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_shash, m)?)?;
     m.add_function(wrap_pyfunction!(set_outer_tuning_override, m)?)?;
     m.add_function(wrap_pyfunction!(set_outer_algorithm, m)?)?;
     Ok(())
