@@ -47,6 +47,7 @@ pub mod design;
 pub mod error;
 pub mod family;
 pub mod fit;
+pub mod gamlss;
 pub mod inner;
 pub mod outer;
 pub mod profile;
@@ -66,8 +67,9 @@ pub use design::{
 pub use error::{GamrsError, Result};
 pub use family::{ocat_init_theta, OcatLoss, OcatVariance};
 pub use fit::{
-    fit, fit_gaulss, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver,
-    FitWithProfile, FittedGam, GaulssFit, GaulssOpts, LinkKind, PredictScale,
+    fit, fit_gaulss, fit_shash, fit_with, fit_with_design, fit_with_solver, FamilyFit,
+    FamilyFitWithSolver, FitWithProfile, FittedGam, GaulssFit, GaulssOpts, LinkKind, PredictScale,
+    ShashGamFit, ShashGamOpts,
 };
 pub use inner::{CholeskySolver, LinearSolver, LuSolver};
 pub use score::{FixedAtOneProfile, MgcvTwoSigmaProfile, OwnedByLossProfile, Profile};
