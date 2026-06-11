@@ -55,12 +55,14 @@ pub mod gaussian;
 mod persistence;
 pub(crate) mod profile_shape;
 pub mod quantile;
+pub mod shash;
 
 pub use canonical::{
     fit, fit_with, fit_with_design, fit_with_solver, FamilyFit, FamilyFitWithSolver, FitWithProfile,
 };
 pub use driver::{ExplicitInit, LambdaInit, SmartInit, ZeroInit};
 pub use gaulss::{fit_gaulss, GaulssFit, GaulssOpts};
+pub use shash::{fit_shash, ShashGamFit, ShashGamOpts};
 
 /// Link kind tag carried on the [`FittedGam`] so `predict_ci` /
 /// `predict_diff` can map between η (linear-predictor) and μ (response)
