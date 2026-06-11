@@ -33,12 +33,14 @@ is locked. Versions correspond to the published PyPI wheels.
   independent BFGS optimum); `l3` and the analytic REML gradient (vs FD, ~3e-8);
   and the **outer REML fed mgcv's own designs recovers its smoothing parameters
   to ~1e-5 and EDF exactly**. End-to-end (gamrs building its OWN CR designs vs a
-  2-smooth mgcv `shash` fit): fitted η within ~1.2e-2, total EDF 15.37 vs 15.46,
-  quantiles within ~1.3e-2. The residual is a small CR basis-construction
-  difference vs mgcv's `cr` (the shash *engine* is exact on shared designs);
-  tightening gamrs's CR basis to mgcv's is a tracked follow-up. Distinct from
-  the two-stage `fit_quantile_lss(shape="shash")` (a per-residual MLE with a
-  single global shape) — `fit_shash` is the genuine joint GAMLSS.
+  2-smooth mgcv `shash` fit with `bs="cr"`): fitted η, smoothing parameters,
+  total EDF and quantiles all match to **~1e-6**. (NB the reference smooths MUST
+  request `bs="cr"`: mgcv's default `s(x, k)` is a *thin-plate* spline — a
+  different basis — and comparing gamrs's `Cr` to it is apples-to-oranges; that
+  mismatch, not any deficiency, accounted for an early ~1e-2 discrepancy seen
+  during development.) Distinct from the two-stage
+  `fit_quantile_lss(shape="shash")` (a per-residual MLE with a single global
+  shape) — `fit_shash` is the genuine joint GAMLSS.
   Tests: `src/fit/shash.rs::fit_shash_matches_mgcv_two_smooth`,
   `tests/python/test_shash_gam.py`, `src/gamlss/*` unit suites (FD + mgcv).
 

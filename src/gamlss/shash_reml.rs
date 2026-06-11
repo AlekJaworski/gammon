@@ -1032,11 +1032,11 @@ mod tests {
         );
 
         // 1) Selected log-smoothing-params ≈ mgcv's. gamrs recovers these to
-        //    ~1e-5 here; 0.02 (sp within ~2%) is a tight bound with margin for
-        //    FD-Newton precision.
+        //    ~1e-5 here (the fixture is bs="cr", matching gamrs); 1e-3 leaves
+        //    margin for FD-Newton + cross-platform FP.
         for k in 0..2 {
             assert!(
-                (fit.rho[k] - fx.log_sp[k]).abs() < 0.02,
+                (fit.rho[k] - fx.log_sp[k]).abs() < 1e-3,
                 "log sp[{k}] = {} vs mgcv {} (sp ratio {:.4}x)",
                 fit.rho[k],
                 fx.log_sp[k],
@@ -1045,16 +1045,16 @@ mod tests {
         }
 
         // 2) Total EDF ≈ mgcv's sum(edf) (same definition: p − tr(Hp⁻¹S));
-        //    matches to ~4 dp in practice.
+        //    matches to ~5 dp in practice.
         assert!(
-            (fit.eval.edf - fx.edf_total).abs() < 0.05,
+            (fit.eval.edf - fx.edf_total).abs() < 1e-2,
             "EDF = {} vs mgcv {}",
             fit.eval.edf,
             fx.edf_total
         );
 
-        // 3) Fitted linear predictors ηᵦ = Xᵦ·β̂ᵦ ≈ mgcv's (basis-invariant;
-        //    we fit in mgcv's own basis so they are directly comparable).
+        // 3) Fitted linear predictors ηᵦ = Xᵦ·β̂ᵦ ≈ mgcv's (we fit in mgcv's own
+        //    extracted basis, so directly comparable; agrees to ~1e-6).
         let eta_mgcv = mat(&fx.eta, n, 4); // n×4
         let pblk = fx.p.clone();
         for b in 0..4 {
@@ -1069,7 +1069,7 @@ mod tests {
                 max_abs = max_abs.max((eta_b[i] - eta_mgcv[[i, b]]).abs());
             }
             assert!(
-                max_abs < 0.02,
+                max_abs < 1e-3,
                 "fitted η block {b}: max|gamrs − mgcv| = {max_abs}",
             );
         }

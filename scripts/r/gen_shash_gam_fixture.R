@@ -45,7 +45,11 @@ W <- rnorm(n)
 z <- sinh((asinh(W) + eps_t) / del_t)
 y <- mu_t + sig_t * del_t * z
 
-fit <- gam(list(y ~ s(x0, k = 10), ~ s(x1, k = 10), ~ 1, ~ 1),
+# bs="cr": cubic regression spline — MUST match gamrs's `Cr` term. (mgcv's
+# default `s(x, k)` is a THIN-PLATE spline `tprs`, a different basis; comparing
+# gamrs Cr to an mgcv thin-plate fit is apples-to-oranges and was the sole
+# source of the earlier ~1.2e-2 end-to-end gap.)
+fit <- gam(list(y ~ s(x0, k = 10, bs = "cr"), ~ s(x1, k = 10, bs = "cr"), ~ 1, ~ 1),
            family = shash(), method = "REML")
 
 b <- 1e-2

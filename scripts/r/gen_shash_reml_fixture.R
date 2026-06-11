@@ -38,7 +38,7 @@ W <- rnorm(n)
 z <- sinh((asinh(W) + eps_t) / del_t)
 y <- mu_t + sig_t * del_t * z
 
-fit <- gam(list(y ~ s(x0, k = 10), ~ s(x1, k = 10), ~ 1, ~ 1),
+fit <- gam(list(y ~ s(x0, k = 10, bs = "cr"), ~ s(x1, k = 10, bs = "cr"), ~ 1, ~ 1),
            family = shash(), method = "REML")
 
 # Full linear-predictor model matrix with the per-predictor column index list.

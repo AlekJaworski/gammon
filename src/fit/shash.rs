@@ -535,10 +535,14 @@ mod tests {
             }
         }
         eprintln!("fit_shash: max |η_gamrs − η_mgcv| = {max_eta:.3e}  per-block {per_block:?}");
+        // gamrs `Cr` vs the fixture's mgcv `bs="cr"` fit (SAME basis) — agrees to
+        // ~1e-6; 1e-4 leaves margin for cross-platform FP/BLAS + FD-Newton. (Note:
+        // mgcv's DEFAULT `s(x,k)` is a thin-plate spline — a different basis — so
+        // the fixture MUST request bs="cr" to match gamrs's Cr term.)
         assert!(
-            max_eta < 0.05,
-            "fitted η: max|gamrs − mgcv| = {max_eta} (>= 0.05 — likely a CR \
-             basis / intercept / constraint mismatch, NOT a tolerance issue)"
+            max_eta < 1e-4,
+            "fitted η: max|gamrs − mgcv| = {max_eta} (>= 1e-4 — basis-type mismatch \
+             (cr vs thin-plate?) or a real regression, NOT a tolerance issue)"
         );
 
         // (2) Total EDF vs mgcv.
@@ -548,7 +552,7 @@ mod tests {
             fit.edf, fx.edf_total
         );
         assert!(
-            edf_diff < 0.1,
+            edf_diff < 1e-3,
             "EDF = {} vs mgcv {} (diff {edf_diff})",
             fit.edf,
             fx.edf_total
@@ -563,8 +567,8 @@ mod tests {
             }
             eprintln!("fit_shash: p={p} max |q_gamrs − q_mgcv| = {max_q:.3e}");
             assert!(
-                max_q < 0.05,
-                "quantile p={p}: max|gamrs − mgcv| = {max_q} (>= 0.05)"
+                max_q < 1e-4,
+                "quantile p={p}: max|gamrs − mgcv| = {max_q} (>= 1e-4)"
             );
         }
     }

@@ -1,14 +1,16 @@
 """Parity tier — native sinh-arcsinh (`shash`) GAMLSS through the Python API.
 
-The Python ``fit_shash`` reproduces the Rust phase-6a result (which already
-matches mgcv ``gam(..., family=shash)`` to ~1e-2) at the FFI boundary the Rust
+The Python ``fit_shash`` reproduces the Rust phase-6a result (which matches mgcv
+``gam(..., family=shash, bs="cr")`` to ~1e-6) at the FFI boundary the Rust
 ``fit_shash_matches_mgcv_two_smooth`` test doesn't touch.
 
 Fixture ``shash_gam_mgcv.json`` (from ``scripts/r/gen_shash_gam_fixture.R``)
 holds the RAW covariates x0/x1, the response y, mgcv's fitted η (n×4 row-major),
-total EDF, and mgcv-derived quantiles at p ∈ {0.1, 0.5, 0.9}. gamrs builds its
+total EDF, and mgcv-derived quantiles at p ∈ {0.1, 0.5, 0.9}. The fixture fits
+``bs="cr"`` smooths so the reference basis MATCHES gamrs's ``Cr`` term (mgcv's
+default ``s(x,k)`` is a thin-plate spline — a different basis). gamrs builds its
 OWN CR designs — s(x0,k=10) for μ, s(x1,k=10) for τ, intercept-only ε and φ —
-and must recover mgcv's η, EDF and quantiles. Tolerances mirror the Rust test.
+and recovers mgcv's η, EDF and quantiles to ~1e-6. Tolerances mirror the Rust test.
 """
 
 from __future__ import annotations
@@ -54,12 +56,13 @@ def test_shash_gam_matches_mgcv_two_smooth():
     max_eta = float(np.abs(eta - eta_mgcv).max())
     per_block = np.abs(eta - eta_mgcv).max(axis=0)
     print(f"\n[shash-gam] max|η_gamrs − η_mgcv|={max_eta:.3e} per-block={per_block}")
-    assert max_eta < 0.05, f"fitted η: max|gamrs − mgcv|={max_eta:.3e} >= 0.05"
+    # gamrs Cr vs the fixture's mgcv bs="cr" fit (same basis) — agrees to ~1e-6.
+    assert max_eta < 1e-4, f"fitted η: max|gamrs − mgcv|={max_eta:.3e} >= 1e-4"
 
     # (2) Total EDF vs mgcv.
     edf_diff = abs(fit.edf_ - float(fx["edf_total"]))
     print(f"[shash-gam] EDF gamrs={fit.edf_:.4f} mgcv={fx['edf_total']:.4f} diff={edf_diff:.3e}")
-    assert edf_diff < 0.1, f"EDF={fit.edf_} vs mgcv {fx['edf_total']} (diff {edf_diff})"
+    assert edf_diff < 1e-3, f"EDF={fit.edf_} vs mgcv {fx['edf_total']} (diff {edf_diff})"
 
     # (3) Fitted quantiles at p ∈ {0.1, 0.5, 0.9} vs mgcv-derived quantiles.
     for p, key in [(0.1, "q10"), (0.5, "q50"), (0.9, "q90")]:
@@ -67,7 +70,7 @@ def test_shash_gam_matches_mgcv_two_smooth():
         q_mgcv = np.asarray(fx[key], dtype=np.float64)
         max_q = float(np.abs(q - q_mgcv).max())
         print(f"[shash-gam] p={p} max|q_gamrs − q_mgcv|={max_q:.3e}")
-        assert max_q < 0.05, f"quantile p={p}: max|gamrs − mgcv|={max_q:.3e} >= 0.05"
+        assert max_q < 1e-4, f"quantile p={p}: max|gamrs − mgcv|={max_q:.3e} >= 1e-4"
 
 
 @pytest.mark.smoke
