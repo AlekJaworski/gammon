@@ -199,14 +199,51 @@ pub struct ShashRemlEval {
     pub inner_converged: bool,
 }
 
+/// Cholesky-factorise the penalised Hessian `Hp = −∇²(penalised loglik)`,
+/// inflating its diagonal by a growing `τ` until it is SPD — mgcv's "ensure
+/// negative-definiteness" step for the Laplace approximation. Returns the
+/// factor and the `τ` used (0 when `Hp` was already SPD).
+///
+/// `Hp` is SPD at a clean penalised maximum, but the outer REML search probes
+/// ρ values (and warm-starts) where the *observed* Hessian can be indefinite or
+/// merely positive-semidefinite — most notably on near-Gaussian data, where the
+/// skewness/kurtosis directions are weakly identified and carry ~0 curvature.
+/// Erroring there would abort an otherwise-fine fit; a minimal perturbation
+/// (tiny `τ`, negligible effect on `log|Hp|`/EDF) lets the criterion stay finite
+/// so the outer optimiser can step away from / settle near such points.
+fn factorize_hp_spd(hp: Array2<f64>, tp: usize) -> Result<(Array2<f64>, f64)> {
+    let diag_max = (0..tp).map(|i| hp[[i, i]].abs()).fold(1.0_f64, f64::max);
+    let mut tau = 0.0_f64;
+    for _ in 0..40 {
+        let mut a = hp.clone();
+        if tau > 0.0 {
+            for i in 0..tp {
+                a[[i, i]] += tau;
+            }
+        }
+        if let Ok(fact) = CholeskySolver::factorize(a) {
+            return Ok((fact, tau));
+        }
+        tau = if tau == 0.0 {
+            1e-8 * diag_max
+        } else {
+            tau * 10.0
+        };
+    }
+    Err(GamrsError::SingularSystem(
+        "shash REML: −Hess (Hp) could not be stabilised to SPD even with a large \
+         diagonal perturbation"
+            .into(),
+    ))
+}
+
 /// Evaluate the REML / LAML criterion `V(ρ)` at a fixed ρ.
 ///
 /// Steps (mgcv `gam.fit4.r:1408-1414`):
 ///   1. build the four `S_ρ` blocks from ρ → [`ShashBlocks`];
 ///   2. `fit_inner` → β̂ (warm-started from `beta0`);
 ///   3. recompute `(grad, hess) = penalized_grad_hess` at β̂; form `Hp = −hess`;
-///   4. factorise `Hp` (SingularSystem error if not SPD — near the optimum it
-///      is, since `hess` is negative-definite there);
+///   4. factorise `Hp`, perturbing to SPD if needed ([`factorize_hp_spd`]);
 ///   5. `pen_quad = Σ_b β_bᵀ S_ρ_b β_b`,
 ///      `loglik = penalized_loglik(β̂) + ½ pen_quad`,
 ///      `ldetS_dep = Σ_b rank_b·ρ_b`, `Mp = total_p − Σ rank_b`,
@@ -232,13 +269,7 @@ pub fn reml_eval(
     let pen_loglik = penalized_loglik(density, &blocks, beta.view(), y);
     let (_grad, hess) = penalized_grad_hess(density, &blocks, beta.view(), y);
     let hp = hess.mapv(|v| -v);
-    let hp_fact = CholeskySolver::factorize(hp).map_err(|_| {
-        GamrsError::SingularSystem(
-            "shash REML: −Hess (Hp) is not SPD at β̂ — inner solve likely did not \
-             reach the penalised maximum"
-                .into(),
-        )
-    })?;
+    let (hp_fact, _tau) = factorize_hp_spd(hp, tp)?;
     let log_det_hp = CholeskySolver::logdet(&hp_fact);
 
     // Penalty quadratic ½ β̂ᵀ S_ρ β̂ → recover the unpenalised loglik.
@@ -337,16 +368,12 @@ pub fn reml_grad(
         blocks.offset(3),
     ];
 
-    // Hp = −∇²(penalised loglik) at β̂; SPD near the inner optimum.
+    // Hp = −∇²(penalised loglik) at β̂; SPD near the inner optimum, perturbed to
+    // SPD otherwise (matches `reml_eval` — the gradient must stay defined wherever
+    // the criterion is, e.g. near-Gaussian data with weakly-identified ε/φ).
     let (_grad, hess) = penalized_grad_hess(density, &blocks, beta_hat, y);
     let hp = hess.mapv(|v| -v);
-    let hp_fact = CholeskySolver::factorize(hp).map_err(|_| {
-        GamrsError::SingularSystem(
-            "shash reml_grad: −Hess (Hp) is not SPD at β̂ — pass the converged \
-             reml_eval β̂ at this ρ"
-                .into(),
-        )
-    })?;
+    let (hp_fact, _tau) = factorize_hp_spd(hp, tp)?;
 
     // Linear predictors at β̂ (shared across all smoothing parameters).
     let eta = blocks.eta(beta_hat);
@@ -662,12 +689,22 @@ pub fn fit_reml(
         let delta = solve_ascent_rho(&hess, grad.view(), d);
 
         // Step-halving line search: accept the first step that increases laml.
+        // ρ is CLAMPED to a sane range: beyond `RHO_ABS_MAX` the penalty
+        // `exp(ρ)·S0` overflows the penalised Hessian into finite garbage (a huge
+        // bogus `laml` the search would wrongly accept — the v0.12.0 over-
+        // smoothing-to-linear bug). exp(±30) already spans "no penalty" to
+        // "smooth fully collapsed to its null space (EDF→Mp)", so clamping there
+        // never excludes a meaningful optimum; mgcv likewise bounds sp.
+        const RHO_ABS_MAX: f64 = 30.0;
         let mut t = 1.0_f64;
         let mut accepted = false;
         for _ in 0..=opts.max_halvings {
-            let trial: Vec<f64> = (0..d).map(|i| rho[i] + delta[i] * t).collect();
+            let trial: Vec<f64> = (0..d)
+                .map(|i| (rho[i] + delta[i] * t).clamp(-RHO_ABS_MAX, RHO_ABS_MAX))
+                .collect();
             let e = reml_eval(density, problem, &trial, beta_warm.view(), opts.inner_opts)?;
-            if e.laml > v_cur {
+            // Reject non-finite criteria (overflow guard, belt-and-braces).
+            if e.laml.is_finite() && e.laml > v_cur {
                 let step = (0..d).map(|i| (delta[i] * t).abs()).fold(0.0_f64, f64::max);
                 rho = trial;
                 v_cur = e.laml;

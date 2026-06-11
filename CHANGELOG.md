@@ -7,6 +7,29 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-06-11
+
+### Fixed
+- **`fit_shash` robustness on near-Gaussian (and skewed / heavy-tailed) data.**
+  v0.12.0 errored `SingularSystem: −Hess (Hp) is not SPD` on data with little
+  skew/kurtosis (ε≈φ≈0) — common, and exactly where shash should reduce to a
+  Gaussian. Two causes, both fixed in the outer REML (`src/gamlss/shash_reml.rs`):
+  (1) `reml_eval`/`reml_grad` now perturb the penalised Hessian to SPD (mgcv's
+  "ensure negative-definiteness" step) instead of erroring when the weakly-
+  identified ε/φ directions carry ~0 curvature; (2) the smoothing-parameter
+  search now clamps `ρ` to a sane range and rejects non-finite criteria — at
+  absurd `ρ` the penalty `exp(ρ)·S0` overflowed the Hessian into a *finite
+  garbage* `laml` the line search wrongly accepted, driving the fit to
+  over-smooth μ all the way to linear (EDF→Mp). `fit_shash` now converges and
+  recovers mgcv's fit on Gaussian/skewed/heavy-tailed data (e.g. Gaussian:
+  μ̂ vs truth corr 0.999, EDF 12.1 vs mgcv 12.05, log-sp 4.90 vs 4.97).
+  Regression guard: `fit_shash_converges_on_{gaussian,skewed,heavy_tailed}_data`
+  unit tests (the earlier mgcv parity test only exercised shash-distributed
+  data, so it never caught this).
+
+### Docs
+- README: added the `fit_shash` (sinh-arcsinh GAMLSS) section.
+
 ## [0.12.0] — 2026-06-11
 
 ### Added

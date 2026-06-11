@@ -97,6 +97,23 @@ Unlike the two-stage `fit_quantile_lss`, μ is reweighted by 1/σ²(x) each pass
 the joint-MLE efficiency gain. This is the seam for the wider GAMLSS class
 (`shash`, `gevlss`): non-orthogonal families extend the same alternation.
 
+### GAMLSS — sinh-arcsinh (`shash`)
+
+`fit_shash(X, y, mu_terms=…, tau_terms=…, eps_terms=…, phi_terms=…)` fits the
+**first non-orthogonal** GAMLSS family — all four sinh-arcsinh parameters as
+smooths, *jointly*: location μ(x), log-scale τ(x) (`σ = exp τ`), skewness ε(x),
+and log-kurtosis φ(x). Because shash's Fisher information couples the predictors
+(unlike `gaulss`), β for all four is solved together by a **dense penalised
+block-Newton**, under **outer REML/LAML** with an **analytic gradient** (third
+derivatives → `d log|Hp|/dρ`). One fit yields every quantile
+(`predict_quantile`, the R `.shashQf` inverse-CDF) plus `predict_params` →
+(μ, σ, ε, δ). It recovers mgcv `gam(…, family=shash, bs="cr")` to **~1e-6** (η,
+smoothing params, EDF, quantiles) and fits Gaussian, skewed, and heavy-tailed
+data alike. Distinct from the two-stage `fit_quantile_lss(shape="shash")` (one
+global shape) — this is the genuine joint GAMLSS. *(v1: one smooth term per
+predictor.)* Term specs use the same form as `fit_additive`, e.g.
+`mu_terms=[CrTerm(0, k=10)]`, `tau_terms=[CrTerm(1, k=10)]`, `eps_terms=[]`.
+
 Multi-smooth Ocat now has an mgcv reference parity test
 (`tests/parity_additive_scat.rs`'s ocat sibling in
 `test_parity_multismooth.py::test_additive_ocat_parity`,
