@@ -20,3 +20,4 @@
 
 pub mod shash;
 pub mod shash_init;
+pub mod shash_inner;
