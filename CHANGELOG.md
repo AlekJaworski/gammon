@@ -7,6 +7,48 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-06-11
+
+### Added
+- **GAMLSS: sinh-arcsinh (`shash`) — the first NON-orthogonal multi-linear-
+  predictor family.** `gamrs.fit_shash(X, y, mu_terms=…, tau_terms=…,
+  eps_terms=…, phi_terms=…)` fits all four sinh-arcsinh parameters — location
+  μ(x), log-scale τ(x) (`logeb` link, σ = exp τ ≥ b), skewness ε(x), and
+  log-kurtosis φ(x) — as smooths, **jointly**, to the shash likelihood. Unlike
+  `gaulss`, shash's Fisher information is *not* block-diagonal, so it cannot
+  alternate single-predictor fits: β for all four predictors is solved together
+  by a **dense penalised block-Newton** inner solve (Levenberg-perturbed for
+  ascent + step-halving), under **outer REML/LAML** smoothing-parameter
+  selection driven by an **analytic gradient** (third derivatives `l3` →
+  `d log|Hp|/dρ` via the implicit `dβ̂/dρ`). One fit yields every quantile via
+  `ShashGamFit.predict_quantile` (the R `.shashQf` inverse-CDF); also
+  `predict_eta` and `predict_params` → (μ, σ, ε, δ). Native Rust driver
+  (`src/fit/shash.rs`, exported as `gamrs::fit_shash`); engine in
+  `src/gamlss/{shash,shash_init,shash_inner,shash_reml}.rs`.
+
+  Built component-by-component, each confronted with mgcv (1.9.4) **and** finite
+  differences: density/grad/Hessian + the `logeb` link chain (vs mgcv `l0` and
+  FD, ~1e-8); initialisation (bit-exact vs `pen.reg`); the joint inner Newton
+  (recovers mgcv's intercept-only shash MLE to <1e-5, cross-checked against an
+  independent BFGS optimum); `l3` and the analytic REML gradient (vs FD, ~3e-8);
+  and the **outer REML fed mgcv's own designs recovers its smoothing parameters
+  to ~1e-5 and EDF exactly**. End-to-end (gamrs building its OWN CR designs vs a
+  2-smooth mgcv `shash` fit): fitted η within ~1.2e-2, total EDF 15.37 vs 15.46,
+  quantiles within ~1.3e-2. The residual is a small CR basis-construction
+  difference vs mgcv's `cr` (the shash *engine* is exact on shared designs);
+  tightening gamrs's CR basis to mgcv's is a tracked follow-up. Distinct from
+  the two-stage `fit_quantile_lss(shape="shash")` (a per-residual MLE with a
+  single global shape) — `fit_shash` is the genuine joint GAMLSS.
+  Tests: `src/fit/shash.rs::fit_shash_matches_mgcv_two_smooth`,
+  `tests/python/test_shash_gam.py`, `src/gamlss/*` unit suites (FD + mgcv).
+
+### Known limitations
+- `fit_shash` v1 supports at most one smooth term per predictor (one penalty
+  per block); multi-smooth-per-predictor is a follow-up.
+- shash, like mgcv's, needs an identifiable scale/shape — near-deterministic
+  data can leave the penalised Hessian non-SPD, surfaced as a clear
+  `SingularSystem` error rather than a silently bad fit.
+
 ## [0.11.9] — 2026-06-10
 
 ### Added
