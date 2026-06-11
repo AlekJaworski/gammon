@@ -461,14 +461,23 @@ mod tests {
 
     #[test]
     fn predict_quantile_rejects_out_of_range_p() {
-        // Build a trivial fit on tiny data; only the p-validation path matters.
-        let n = 50usize;
+        // Only the p-validation path matters, but shash (like mgcv's) needs an
+        // identifiable scale/shape: near-deterministic data can leave the
+        // penalised Hessian non-SPD. So use a smooth signal + GENUINE Gaussian
+        // noise (golden-ratio Box-Muller, deterministic) so the fit converges.
+        let n = 200usize;
+        let frac = |v: f64| v - v.floor();
+        let pnormal = |u1: f64, u2: f64| {
+            (-2.0 * u1.max(1e-12).ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+        };
         let mut x = Array2::<f64>::zeros((n, 1));
         let mut y = Array1::<f64>::zeros(n);
         for i in 0..n {
             let t = (i as f64 + 0.5) / n as f64;
             x[[i, 0]] = t;
-            y[i] = 0.3 + t + 0.1 * ((i as f64 * 1.7).sin());
+            let u1 = frac((i as f64 + 0.5) * 0.7548776662466927 + 0.31);
+            let u2 = frac((i as f64 + 0.5) * 0.5698402909980532 + 0.59);
+            y[i] = (2.0 * std::f64::consts::PI * t).sin() + 0.4 * pnormal(u1, u2);
         }
         let fit = fit_shash(
             vec![TermSpec::Cr { col: 0, k: 6 }],
