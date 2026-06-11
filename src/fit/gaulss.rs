@@ -209,6 +209,10 @@ pub fn fit_gaulss(
 
 /// Standard-normal inverse CDF via Acklam's rational approximation
 /// (abs error < 1.15e-9 across (0, 1)) — dependency-free `Φ⁻¹` for quantiles.
+// Acklam's coefficients are mirrored verbatim from the reference; keep the
+// published digits (a newer clippy flags the last digit as excessive — it is
+// rounded to the nearest f64 either way, so this is provenance, not precision).
+#[allow(clippy::excessive_precision)]
 fn norm_ppf(p: f64) -> f64 {
     const A: [f64; 6] = [
         -3.969683028665376e+01,

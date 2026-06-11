@@ -56,9 +56,7 @@ fn run_scat_additive(name: &str, d: usize, bound: f64) {
     let n = fx.inputs.x_train.len();
     let mut x_flat: Vec<f64> = Vec::with_capacity(n * d);
     for row in &fx.inputs.x_train {
-        for j in 0..d {
-            x_flat.push(row[j]);
-        }
+        x_flat.extend_from_slice(&row[..d]);
     }
     let x = Array2::from_shape_vec((n, d), x_flat).unwrap();
     let y = Array1::from_vec(fx.inputs.y_train.clone());
