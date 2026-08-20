@@ -735,3 +735,52 @@ def test_subset_view_predict_ci(rng):
     # scale='deviation' without a subset view is also rejected
     with pytest.raises(ValueError, match="only meaningful on subset views"):
         g.predict_ci(X, level=0.95, scale="deviation")
+
+
+def test_all_parametric_design_fits_as_plain_least_squares():
+    """A design with no smooths is fitted, not refused.
+
+    Low-cardinality predictors (2-3 distinct values) are demoted to parametric, so refusing an
+    all-parametric design meant refusing the feature — mgcv fits these without complaint, and a
+    caller fitting one submodel per feature hits it on any binary column. With no smoothing
+    parameters there is nothing to optimise, so the answer is exactly weighted least squares.
+    """
+    rng = np.random.default_rng(4)
+    n = 300
+    binary = rng.integers(0, 2, n).astype(float)  # 2 distinct -> parametric
+    triple = rng.integers(1, 4, n).astype(float)  # 3 distinct -> k < 3, parametric
+    y = 5000.0 + 20000.0 * binary - 7000.0 * triple + rng.normal(0, 3000, n)
+    X = np.column_stack([binary, triple])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # the demotion warnings are the point, not a failure
+        gam = gamrs.Gam(predictors=["pool", "stories"], family="gaussian", k_default=6, min_k=2)
+        gam.fit(X, y)
+
+    design = np.column_stack([np.ones(n), binary, triple])
+    ols, *_ = np.linalg.lstsq(design, y, rcond=None)
+
+    assert np.allclose(np.asarray(gam.coef_), ols, atol=1e-6)
+    assert np.allclose(np.asarray(gam.predict(X)), design @ ols, atol=1e-6)
+    # No penalties, so no smoothing parameters and edf is exactly the coefficient count.
+    assert len(np.asarray(gam.get_lambdas())) == 0
+    assert gam.edf_total_ == pytest.approx(design.shape[1], abs=1e-6)
+    # sigma-hat is the residual variance on n - p, as an unpenalised gaussian fit's must be.
+    resid = y - design @ ols
+    assert gam.scale_ == pytest.approx(float(resid @ resid) / (n - design.shape[1]), rel=1e-8)
+    assert np.asarray(gam.get_vcov()).shape == (design.shape[1], design.shape[1])
+
+
+def test_all_parametric_design_still_refused_for_other_families():
+    """Only the gaussian fit has an unpenalised path; the rest keep an explicit refusal rather
+    than reaching the penalised PIRLS solvers and panicking."""
+    rng = np.random.default_rng(5)
+    n = 200
+    binary = rng.integers(0, 2, n).astype(float)
+    y = rng.integers(0, 2, n).astype(float)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        gam = gamrs.Gam(predictors=["flag"], family="bernoulli", k_default=6, min_k=2)
+        with pytest.raises(ValueError, match="only the gaussian fit supports"):
+            gam.fit(binary.reshape(-1, 1), y)

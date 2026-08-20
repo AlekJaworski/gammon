@@ -16,7 +16,7 @@ use crate::family::Gaussian;
 use crate::inner::{GaussianClosedFormInner, LinearSolver};
 use crate::outer::NewtonWithHalving;
 use crate::score::{EnvelopeScore, MgcvTwoSigmaProfile};
-use crate::traits::{InnerSolver, OuterSolver};
+use crate::traits::{InnerSolver, OuterFit, OuterSolver, ScoreDerivatives};
 
 use super::{compute_edf, compute_edf_per_term, compute_vcov, FittedGam, LinkKind};
 
@@ -49,9 +49,24 @@ pub(crate) fn fit_gaussian_from_prep<S: LinearSolver>(
             prep.mp,
             prep.log_pseudo_det_s_list.clone(),
         );
-    let outer_solver =
-        NewtonWithHalving::new(crate::outer::resolve_tuning(&score.loss).to_newton_opts());
-    let outer = outer_solver.minimize(&score, Array1::zeros(n_terms))?;
+    // An all-parametric design has no smoothing parameters, so there is nothing for the outer
+    // Newton to optimise — its search space is zero-dimensional. Skip it and take the single
+    // unpenalised inner fit, which is exactly weighted least squares: with `s_list` empty the
+    // penalty sum is zero, so `inner.fit(&[])` already IS the right answer. Reported as converged
+    // in 0 iterations because it is closed-form, not a search that happened to stop.
+    let outer = if n_terms == 0 {
+        OuterFit {
+            theta: Array1::zeros(0),
+            value: score.value(&Array1::zeros(0))?,
+            grad_norm: 0.0, // no parameters, so the gradient is empty and its norm is exactly 0
+            iterations: 0,
+            converged: true,
+        }
+    } else {
+        let outer_solver =
+            NewtonWithHalving::new(crate::outer::resolve_tuning(&score.loss).to_newton_opts());
+        outer_solver.minimize(&score, Array1::zeros(n_terms))?
+    };
 
     let rho_hat = outer.theta.clone();
     let lambda_hat: Array1<f64> = rho_hat.iter().map(|&r| r.exp()).collect();

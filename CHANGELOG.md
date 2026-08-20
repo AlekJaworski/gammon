@@ -7,6 +7,31 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-08-20
+
+### Fixed
+- **An all-parametric design is now fitted instead of refused (gaussian).** A
+  predictor with only 2–3 distinct values is demoted to a parametric term, so a
+  design made entirely of low-cardinality columns had no smooths at all —
+  and `fit` raised *"All terms are parametric; a gamrs fit needs at least one
+  smooth or random-effect term"*. That made gamrs unusable as a drop-in for
+  mgcv anywhere a caller fits one submodel per feature: mgcv fits such a design
+  without complaint, and any binary column (`pool`, a flag) hits it.
+
+  With no smoothing parameters there is nothing for the outer Newton to search
+  over, so `src/fit/gaussian.rs` skips it and takes the single unpenalised inner
+  fit, and `src/inner/closed_form.rs` assembles a zero penalty of the design's
+  own width (`combined_s` cannot infer that width from an empty `s_list`). The
+  result is exactly weighted least squares: coefficients and predictions match
+  `numpy.linalg.lstsq` to ~3e-7, `edf_total` equals the coefficient count,
+  `scale_` is the residual variance on `n − p`, and `get_lambdas()` is empty.
+  `n_iters` is 0 and `converged` is True because the answer is closed-form
+  rather than iterated.
+
+  **Gaussian only.** Every other family reaches the penalised PIRLS solvers,
+  which still assume a non-empty `s_list`, so they keep an explicit refusal
+  (now naming the family) rather than reaching a native panic.
+
 ## [0.12.1] — 2026-06-11
 
 ### Fixed

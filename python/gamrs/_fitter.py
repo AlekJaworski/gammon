@@ -555,19 +555,31 @@ class Gam:
         else:
             term_objs = self._build_terms_from_columns(X_arr, cols)
 
-        # All-parametric designs (zero smoothing parameters) currently
-        # blow up downstream — gamrs's penalty machinery assumes at
-        # least one entry in `s_list`. Catch and fail cleanly with a
-        # pointer at the sklearn alternative.
+        # All-parametric designs are fitted, not refused. With no smoothing
+        # parameters there is nothing for the outer Newton to search over, so
+        # the Gaussian driver skips it and takes the single unpenalised inner
+        # fit — which is exactly weighted least squares, since an empty
+        # `s_list` contributes no penalty. `lambda_`/`edf_` come back empty,
+        # `n_iters` is 0 and `converged` is True because the answer is
+        # closed-form rather than iterated.
+        #
+        # This matters for callers that fit one submodel per feature: a
+        # low-cardinality predictor (2-3 distinct values) is demoted to
+        # parametric, so refusing the design meant refusing the feature. mgcv
+        # fits these without complaint, and a drop-in replacement has to too.
+        #
+        # Gaussian only, so far. Every other family reaches the penalised PIRLS
+        # solvers, which still assume a non-empty `s_list`, so they keep the
+        # explicit refusal rather than a native panic.
         if term_objs and all(isinstance(t, ParametricTerm) for t in term_objs):
-            param_cols = [cols[t.col] if isinstance(t.col, int) else t.col for t in term_objs]
-            raise ValueError(
-                f"All terms are parametric ({param_cols!r}); a gamrs fit "
-                "needs at least one smooth or random-effect term. Use "
-                "sklearn.linear_model.LinearRegression for a pure linear "
-                "model, or add a smooth term (e.g. CrTerm) alongside the "
-                "parametric ones."
-            )
+            if str(self.family).lower() != "gaussian":
+                param_cols = [cols[t.col] if isinstance(t.col, int) else t.col for t in term_objs]
+                raise ValueError(
+                    f"All terms are parametric ({param_cols!r}) and family="
+                    f"{self.family!r}; only the gaussian fit supports an "
+                    "unpenalised design so far. Add a smooth term (e.g. "
+                    "CrTerm) alongside the parametric ones, or fit gaussian."
+                )
 
         # Capture per-parametric-term training means for subset-view
         # baseline substitution at predict time. When `gam[["x_smooth"]]`
