@@ -119,7 +119,27 @@ jobs:
       # For blas-static: openblas-src compiles from source, no brew openblas needed.
       # Only install the Fortran compiler.
       - name: Install build tools
-        run: brew install gcc  # provides gfortran
+        run: |
+          set -euo pipefail
+          brew install gcc  # provides gfortran
+          # Installing gfortran is not enough. OpenBLAS links `-lgfortran` while building its
+          # own test targets (test_sbgemv, test_bgemv), but Homebrew keeps libgfortran inside
+          # the gcc formula's versioned lib dir, which is not on the linker's default search
+          # path — so the link fails with `ld: library 'gfortran' not found` and openblas-src
+          # panics on a non-zero make. openblas-src has no knob to skip those tests, so the
+          # fix is to put the directory on the search path for every later step.
+          #
+          # `lib/gcc/current` is a Homebrew symlink that tracks the installed major version;
+          # fall back to locating the dylib if a future layout drops it, so this does not
+          # silently break again on a runner-image bump.
+          gcc_lib="$(brew --prefix gcc)/lib/gcc/current"
+          if [ ! -e "$gcc_lib/libgfortran.dylib" ]; then
+            found="$(find "$(brew --prefix gcc)/lib/gcc" -name 'libgfortran*.dylib' -print -quit)"
+            [ -n "$found" ] || { echo "libgfortran not found under $(brew --prefix gcc)/lib/gcc"; exit 1; }
+            gcc_lib="$(dirname "$found")"
+          fi
+          echo "libgfortran dir: $gcc_lib"
+          echo "LIBRARY_PATH=${gcc_lib}${LIBRARY_PATH:+:${LIBRARY_PATH}}" >> "$GITHUB_ENV"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         env:
