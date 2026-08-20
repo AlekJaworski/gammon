@@ -418,18 +418,26 @@ def test_predictors_path_warns_on_k_bump_and_cap(rng):
         gamrs.Gam(k_default=50).fit(df[["z"]], df.y)
 
 
-def test_all_parametric_design_raises(rng):
-    """A design composed entirely of parametric terms (zero smoothing
-    parameters) can't be fit by gamrs's penalty machinery — error with
-    a pointer at the sklearn linear-regression alternative."""
+def test_all_parametric_design_fits_from_a_dataframe(rng):
+    """A design of only parametric terms is fitted, through the DataFrame path too.
+
+    This asserted a refusal until 0.12.2. It fits now: with zero smoothing parameters there is
+    nothing to optimise, so the answer is plain least squares. Kept alongside the array-input
+    test because the column-name path resolves terms differently.
+    """
     pd = pytest.importorskip("pandas")
     n = 100
     df = pd.DataFrame({"is_promo": rng.integers(0, 2, n).astype(float)})
     df["y"] = 2.0 * df.is_promo + rng.normal(0, 0.3, n)
-    with pytest.raises(ValueError, match="All terms are parametric"):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            gamrs.Gam().fit(df[["is_promo"]], df.y)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        gam = gamrs.Gam().fit(df[["is_promo"]], df.y)
+
+    design = np.column_stack([np.ones(n), df.is_promo.to_numpy()])
+    ols, *_ = np.linalg.lstsq(design, df.y.to_numpy(), rcond=None)
+    assert np.allclose(np.asarray(gam.coef_), ols, atol=1e-6)
+    assert len(np.asarray(gam.get_lambdas())) == 0
 
 
 def test_n_unique_2_auto_promotes_to_parametric(rng):
