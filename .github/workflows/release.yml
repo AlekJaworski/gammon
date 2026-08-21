@@ -16,6 +16,18 @@ jobs:
         target: [x86_64]
     steps:
       - uses: actions/checkout@v6
+      - name: Build host CPU (the wheel's contents depend on it)
+        # Two release runs 18 minutes apart, same commit config and the same
+        # manylinux image digest, produced wheels with 0 and with many AVX-512
+        # instructions respectively (runs 32381555130 and 32383338377). The only
+        # uncontrolled input left is this runner's CPU: OpenBLAS's DYNAMIC_ARCH
+        # core list is decided by a build-time probe, so an AVX-512 build host
+        # compiles SKYLAKEX kernels in and a non-AVX-512 one does not. Printing
+        # it makes that correlation a record instead of an inference.
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          flags=$(grep -m1 -o 'avx512[a-z0-9_]*' /proc/cpuinfo | tr '\n' ' ')
+          echo "avx512 flags: ${flags:-(none)}"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         env:
@@ -87,6 +99,23 @@ jobs:
         uses: petarpetrovt/setup-sde@v5.0
         with:
           environmentVariableName: SDE_PATH
+      - name: Which kind of AVX-512 is it (dispatch vs unconditional)
+        # The guard below proves an AVX-512 instruction EXECUTED under emulated
+        # Haswell; it cannot say whether that was OpenBLAS's runtime dispatch
+        # picking a SKYLAKEX kernel (in which case CPUID emulation is the
+        # confound and real AVX2 hardware is fine) or code on the unconditional
+        # path (in which case the wheel genuinely SIGILLs for those users).
+        # `OPENBLAS_CORETYPE` forces the kernel choice regardless of detection,
+        # so: passes here + fails below => dispatch; fails here too =>
+        # unconditional, and the build must stop emitting AVX-512 at all.
+        # Non-fatal and ahead of the gate so the answer is always recorded.
+        continue-on-error: true
+        env:
+          OPENBLAS_CORETYPE: Haswell
+        run: |
+          set +e
+          "$SDE_PATH/sde64" -hsw -- python tools/portability_check.py
+          echo "coretype-forced exit: $?"
       - name: Portability guard (AVX2 emulation via Intel SDE)
         # Run a real fit under Intel SDE emulating a Haswell (AVX2-only) CPU.
         # SDE chip-check aborts on ANY instruction outside the Haswell ISA —
