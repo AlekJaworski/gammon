@@ -150,6 +150,19 @@ def _ocat_prob(eta: np.ndarray, theta: np.ndarray, r: int) -> np.ndarray:
     return prob
 
 
+def cap_k_at_distinct_values(n_unique: int, min_k: int, k_cap_offset: int) -> int:
+    """Largest CR basis dimension that `n_unique` distinct covariate values support.
+
+    mgcv's own limit is `n_unique` itself — `smooth.construct.cr.smooth.spec`
+    reduces k to the number of unique covariate values and warns — and that basis
+    is identifiable: the centering constraint leaves k-1 free coefficients against
+    n_unique distinct x. gamrs used to be one stricter, which silently cost a basis
+    column on low-cardinality predictors (a 5-value `garage_spaces` got k=4 where
+    mgcv fits k=5). `k_cap_offset=1` restores the old, more conservative cap.
+    """
+    return max(n_unique - k_cap_offset, min_k)
+
+
 def _resolve_col(col: Any, col_names: Sequence[str], term_name: str) -> int:
     """Resolve one column reference (int or string) to an int index.
 
@@ -256,6 +269,7 @@ class Gam:
         target: Optional[str] = None,
         min_k: int = 3,
         k_default: int = 10,
+        k_cap_offset: int = 0,
         k_index_margin: float = 0.05,
         max_k_auto: int = 50,
         auto_k_max_iter: int = 5,
@@ -291,6 +305,7 @@ class Gam:
         self.target: str = target or "y"
         self.min_k = int(min_k)
         self.k_default = int(k_default)
+        self.k_cap_offset = int(k_cap_offset)
         self.k_index_margin = float(k_index_margin)
         self.max_k_auto = int(max_k_auto)
         self.auto_k_max_iter = int(auto_k_max_iter)
@@ -674,7 +689,7 @@ class Gam:
         1. Compute residual k-index (see `_k_index`).
         2. If `k_index < 1 − k_index_margin`, grow
            `k_j ← ceil(k_j · knots_increase_ratio)`, capped at
-           `min(n_unique(x_j) − 1, max_k_auto)`.
+           `min(n_unique(x_j) − k_cap_offset, max_k_auto)`.
 
         Stops when no term grew, every term hit its cap, or
         `auto_k_max_iter` iterations have run.
@@ -684,13 +699,17 @@ class Gam:
         in the trace for diagnostics, never grown.
         """
         preds = self._effective_predictors or []
-        # Per-CR-term cap = min(n_unique − 1, max_k_auto), floored at min_k.
+        # Per-CR-term cap: the same distinct-value rule as the predictors path,
+        # then held under max_k_auto.
         caps: list[int] = []
         for t in term_objs:
             if isinstance(t, (CrTerm, CrStableTerm)):
                 col = t.col if isinstance(t.col, int) else preds.index(t.col)
                 n_unique = int(np.unique(x_2d[:, col]).size)
-                caps.append(min(max(n_unique - 1, self.min_k), self.max_k_auto))
+                caps.append(min(
+                    cap_k_at_distinct_values(n_unique, self.min_k, self.k_cap_offset),
+                    self.max_k_auto,
+                ))
             else:
                 caps.append(0)  # frozen (re / te) — never grown
 
@@ -878,7 +897,7 @@ class Gam:
                 )
                 out.append(ParametricTerm(col=col_idx))
                 continue
-            cap = max(n_unique - 1, self.min_k)
+            cap = cap_k_at_distinct_values(n_unique, self.min_k, self.k_cap_offset)
             k = max(self.min_k, min(requested_k, cap))
             # Warn whenever k was bumped or capped — silent clamping
             # makes "I set k=15 and got back edf=2.something" surprising.
@@ -901,8 +920,9 @@ class Gam:
                 else:  # k < requested_k → capped by n_unique
                     warnings.warn(
                         f"k for predictor {pname!r} capped from "
-                        f"{requested_k} to {k} (n_unique({pname})-1; "
-                        f"{source}). The basis can't exceed n_unique - 1.",
+                        f"{requested_k} to {k} (n_unique({pname})="
+                        f"{n_unique} minus k_cap_offset="
+                        f"{self.k_cap_offset}; {source}).",
                         UserWarning,
                         stacklevel=3,
                     )
@@ -1657,6 +1677,7 @@ class Gam:
             family="gaussian", link="identity", _gamrs_family="gaussian",
             method="REML", target="y", design="cr",
             term_k_mapping={}, term_pc_mapping={}, predictor_basis_map={},
+            min_k=3, k_default=10, k_cap_offset=0,
             consider_categorical=False, auto_k=False, discrete=False,
             df=None, tweedie_p=None, negbin_theta=None, r=None,
             terms=None, _subset_mask=None,

@@ -402,7 +402,12 @@ def test_typed_n_obs_lt_k_raises_clear_error(rng):
 
 def test_predictors_path_warns_on_k_bump_and_cap(rng):
     """`term_k_mapping={"x": 2}` bumps k to the min_k floor and warns;
-    `k_default=50` with n_unique=10 caps k and warns."""
+    `k_default=50` with n_unique=10 caps k and warns.
+
+    The cap lands at n_unique, which is where mgcv's own `smooth.construct.cr`
+    puts it; `k_cap_offset=1` is the older, one-stricter cap. Both are asserted
+    on the resulting basis dimension, not just on the warning text.
+    """
     pd = pytest.importorskip("pandas")
     n = 200
     df = pd.DataFrame({
@@ -414,8 +419,16 @@ def test_predictors_path_warns_on_k_bump_and_cap(rng):
     with pytest.warns(UserWarning, match="bumped from 2 to 3"):
         gamrs.Gam(term_k_mapping={"x": 2}).fit(df[["x"]], df.y)
 
+    with pytest.warns(UserWarning, match="capped from 50 to 10"):
+        capped = gamrs.Gam(k_default=50).fit(df[["z"]], df.y)
+    assert capped._k_used == [10]
+    # k basis functions, one absorbed by the intercept — same width mgcv reports
+    # as k' for s(z, k=10).
+    assert [b - a + 1 for _, a, b in capped.get_term_indices()] == [9]
+
     with pytest.warns(UserWarning, match="capped from 50 to 9"):
-        gamrs.Gam(k_default=50).fit(df[["z"]], df.y)
+        stricter = gamrs.Gam(k_default=50, k_cap_offset=1).fit(df[["z"]], df.y)
+    assert stricter._k_used == [9]
 
 
 def test_all_parametric_design_fits_from_a_dataframe(rng):
@@ -756,16 +769,19 @@ def test_all_parametric_design_fits_as_plain_least_squares():
     rng = np.random.default_rng(4)
     n = 300
     binary = rng.integers(0, 2, n).astype(float)  # 2 distinct -> parametric
-    triple = rng.integers(1, 4, n).astype(float)  # 3 distinct -> k < 3, parametric
-    y = 5000.0 + 20000.0 * binary - 7000.0 * triple + rng.normal(0, 3000, n)
-    X = np.column_stack([binary, triple])
+    # A second 2-distinct column, not a 3-distinct one: at the mgcv cap (k <= n_unique)
+    # three distinct values support a k=3 smooth, which is what mgcv fits for them, so a
+    # 3-value column no longer lands in an all-parametric design. Asserted below.
+    other = rng.integers(0, 2, n).astype(float)
+    y = 5000.0 + 20000.0 * binary - 7000.0 * other + rng.normal(0, 3000, n)
+    X = np.column_stack([binary, other])
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # the demotion warnings are the point, not a failure
         gam = gamrs.Gam(predictors=["pool", "stories"], family="gaussian", k_default=6, min_k=2)
         gam.fit(X, y)
 
-    design = np.column_stack([np.ones(n), binary, triple])
+    design = np.column_stack([np.ones(n), binary, other])
     ols, *_ = np.linalg.lstsq(design, y, rcond=None)
 
     assert np.allclose(np.asarray(gam.coef_), ols, atol=1e-6)
@@ -777,6 +793,17 @@ def test_all_parametric_design_fits_as_plain_least_squares():
     resid = y - design @ ols
     assert gam.scale_ == pytest.approx(float(resid @ resid) / (n - design.shape[1]), rel=1e-8)
     assert np.asarray(gam.get_vcov()).shape == (design.shape[1], design.shape[1])
+
+    # The 3-distinct case, for contrast: k resolves to n_unique = 3 and stays a smooth even
+    # at min_k=2, which is what `s(bathrooms, k=3, bs='cr')` does in mgcv on a 3-value column.
+    triple = rng.integers(1, 4, n).astype(float)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        smooth = gamrs.Gam(predictors=["baths"], k_default=6, min_k=2).fit(
+            triple.reshape(-1, 1), y
+        )
+    assert smooth._k_used == [3]
+    assert len(np.asarray(smooth.get_lambdas())) == 1
 
 
 def test_all_parametric_design_fits_for_a_non_gaussian_family():
