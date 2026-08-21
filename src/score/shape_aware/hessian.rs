@@ -293,7 +293,7 @@ where
                 .clone()
                 .unwrap_or_else(|| Array1::ones(fit.n));
             let rho_arr = Array1::from(rho_slice.clone());
-            let s_total = crate::design::combined_s(&self.s_list, &rho_arr);
+            let s_total = crate::design::combined_s(&self.s_list, &rho_arr, self.x_design.ncols());
             crate::inner::pirls::lazy_tk_kkt_inputs(
                 &family,
                 &self.y,
@@ -636,7 +636,7 @@ where
                 .clone()
                 .unwrap_or_else(|| Array1::ones(fit.n));
             let rho_arr = Array1::from(rho_slice.clone());
-            let s_total = crate::design::combined_s(&self.s_list, &rho_arr);
+            let s_total = crate::design::combined_s(&self.s_list, &rho_arr, self.x_design.ncols());
             crate::inner::pirls::lazy_tk_kkt_inputs(
                 family,
                 &self.y,
@@ -835,7 +835,7 @@ where
                 .clone()
                 .unwrap_or_else(|| Array1::ones(n));
             let rho_arr = Array1::from(rho_slice.clone());
-            let s_total = crate::design::combined_s(&self.s_list, &rho_arr);
+            let s_total = crate::design::combined_s(&self.s_list, &rho_arr, self.x_design.ncols());
             crate::inner::pirls::lazy_tk_kkt_inputs(
                 family,
                 &self.y,

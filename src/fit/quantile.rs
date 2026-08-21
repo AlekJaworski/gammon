@@ -39,7 +39,7 @@ fn qgam_warm_start(
     // zero rho of length `s_list.len()` yields `Σ_j S_j` (each `exp(0)=1`),
     // so this warm start is correct for both single- and multi-smooth.
     let rho_init: Array1<f64> = Array1::zeros(prep.s_list.len());
-    let s_total_init = crate::design::combined_s(&prep.s_list, &rho_init);
+    let s_total_init = crate::design::combined_s(&prep.s_list, &rho_init, prep.x_design.ncols());
     let mut a_gauss = &xtx + &s_total_init;
     let mut max_diag = 1.0_f64;
     for i in 0..p {

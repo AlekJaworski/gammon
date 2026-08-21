@@ -338,8 +338,11 @@ where
                 .prior_weights
                 .clone()
                 .unwrap_or_else(|| ndarray::Array1::ones(fit.n));
-            let s_total =
-                crate::design::combined_s(&self.s_list, &ndarray::Array1::from(rho_slice.to_vec()));
+            let s_total = crate::design::combined_s(
+                &self.s_list,
+                &ndarray::Array1::from(rho_slice.to_vec()),
+                self.x_design.ncols(),
+            );
             crate::inner::pirls::lazy_newton_log_det_h(
                 family,
                 &self.y,
@@ -446,7 +449,11 @@ where
                 .prior_weights
                 .clone()
                 .unwrap_or_else(|| Array1::ones(fit.n));
-            let s_total = crate::design::combined_s(&self.s_list, &Array1::from(rho_slice.clone()));
+            let s_total = crate::design::combined_s(
+                &self.s_list,
+                &Array1::from(rho_slice.clone()),
+                self.x_design.ncols(),
+            );
             crate::inner::pirls::lazy_newton_log_det_h(
                 &family,
                 &self.y,

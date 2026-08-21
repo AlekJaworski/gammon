@@ -24,7 +24,11 @@ fn score_value_at_fixed_sigma2(
     use gamrs::inner::{gaussian_inner_solve, CholeskySolver};
     use gamrs::traits::Loss;
     // Single-smooth test fixture — assemble S_total at this ρ.
-    let s_total = gamrs::combined_s(&score.s_list, &ndarray::Array1::from_vec(vec![rho]));
+    let s_total = gamrs::combined_s(
+        &score.s_list,
+        &ndarray::Array1::from_vec(vec![rho]),
+        score.inner.x_design.ncols(),
+    );
     let inner = gaussian_inner_solve::<CholeskySolver>(
         score.inner.x_design.view(),
         score.inner.y.view(),
@@ -76,7 +80,7 @@ fn envelope_gradient_matches_fixed_sigma2_fd() {
     // Phase-2b port: gradient envelope is at σ²_score = Dp/(n-Mp),
     // matching the score body's σ² convention exactly.
     let lambda = rho.exp();
-    let s_total = gamrs::combined_s(&score.s_list, &array![rho]);
+    let s_total = gamrs::combined_s(&score.s_list, &array![rho], score.inner.x_design.ncols());
     let inner = gamrs::inner::gaussian_inner_solve::<gamrs::inner::CholeskySolver>(
         score.inner.x_design.view(),
         score.inner.y.view(),

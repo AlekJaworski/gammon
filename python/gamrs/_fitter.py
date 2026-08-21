@@ -568,19 +568,9 @@ class Gam:
         # parametric, so refusing the design meant refusing the feature. mgcv
         # fits these without complaint, and a drop-in replacement has to too.
         #
-        # Gaussian only, so far. Every other family reaches the penalised PIRLS
-        # solvers, which still assume a non-empty `s_list`, so they keep the
-        # explicit refusal rather than a native panic.
-        if term_objs and all(isinstance(t, ParametricTerm) for t in term_objs):
-            if str(self.family).lower() != "gaussian":
-                param_cols = [cols[t.col] if isinstance(t.col, int) else t.col for t in term_objs]
-                raise ValueError(
-                    f"All terms are parametric ({param_cols!r}) and family="
-                    f"{self.family!r}; only the gaussian fit supports an "
-                    "unpenalised design so far. Add a smooth term (e.g. "
-                    "CrTerm) alongside the parametric ones, or fit gaussian."
-                )
-
+        # Every family now handles an empty penalty list: `combined_s` takes the design width
+        # as a parameter, so a design with no smooths assembles a zero penalty of the right
+        # shape instead of reading it off a penalty that does not exist. No family guard.
         # Capture per-parametric-term training means for subset-view
         # baseline substitution at predict time. When `gam[["x_smooth"]]`
         # masks the parametric column, naively zeroing it would lose the

@@ -7,6 +7,29 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.12.3] — 2026-08-21
+
+### Fixed
+- **All-parametric designs now fit for every family, not just gaussian.** 0.12.2
+  opened this path for gaussian only: the other families reach the penalised
+  PIRLS solvers, and those called `combined_s`, which read the design width off
+  `s_list[0]` — a penalty that does not exist when there are no smooths. So
+  `fit` kept an explicit refusal for them rather than panicking in native code.
+
+  `combined_s` now takes the design width as a parameter. Every caller already
+  holds the design, so each can answer it, and an empty `s_list` assembles a
+  zero penalty of the right shape instead of indexing into nothing. That turns
+  penalised PIRLS into plain unpenalised IRLS, which is what an unpenalised fit
+  of a non-gaussian family is — verified against closed form: a bernoulli fit of
+  a saturated 2x2 design returns the log-odds to ~1e-15, its fitted values are
+  the two group rates, `get_lambdas()` is empty and `edf_total` is the
+  coefficient count. The special case added to `src/inner/closed_form.rs` in
+  0.12.2 is gone, since the general path now covers it.
+
+  The lasting shape is a `Penalties` type owning the list and the width together,
+  so the width travels with the penalties instead of being passed alongside them
+  at eleven call sites; that refactor is deliberately deferred.
+
 ## [0.12.2] — 2026-08-20
 
 ### Fixed

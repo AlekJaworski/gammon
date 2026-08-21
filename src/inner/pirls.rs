@@ -404,7 +404,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
             rho.len(),
             self.s_list.len()
         );
-        let s_total = crate::design::combined_s(&self.s_list, rho);
+        let s_total = crate::design::combined_s(&self.s_list, rho, self.x_design.ncols());
         self.pirls_loop(s_total, rho, None)
     }
 
@@ -414,7 +414,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
     /// initial μ when a NoRefresh IFT propagation is available.
     fn fit_warm(&self, rho: &Array1<f64>, beta_warm: Option<&Array1<f64>>) -> Result<Self::Fit> {
         debug_assert_eq!(rho.len(), self.s_list.len());
-        let s_total = crate::design::combined_s(&self.s_list, rho);
+        let s_total = crate::design::combined_s(&self.s_list, rho, self.x_design.ncols());
         self.pirls_loop(s_total, rho, beta_warm)
     }
 
@@ -437,7 +437,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
         debug_assert_eq!(rho.len(), self.s_list.len());
         let n = self.x_design.nrows();
         let p = self.x_design.ncols();
-        let s_total = crate::design::combined_s(&self.s_list, rho);
+        let s_total = crate::design::combined_s(&self.s_list, rho, self.x_design.ncols());
         let prior_w: Array1<f64> = match &self.prior_weights {
             Some(w) => w.clone(),
             None => Array1::ones(n),
@@ -527,7 +527,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
             .prior_weights
             .clone()
             .unwrap_or_else(|| Array1::ones(n));
-        let s_total = crate::design::combined_s(&self.s_list, rho);
+        let s_total = crate::design::combined_s(&self.s_list, rho, self.x_design.ncols());
         lazy_newton_log_det_h(
             &self.family,
             &self.y,
@@ -549,7 +549,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
             .prior_weights
             .clone()
             .unwrap_or_else(|| Array1::ones(n));
-        let s_total = crate::design::combined_s(&self.s_list, rho);
+        let s_total = crate::design::combined_s(&self.s_list, rho, self.x_design.ncols());
         lazy_tk_kkt_inputs(
             &self.family,
             &self.y,

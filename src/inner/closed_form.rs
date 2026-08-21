@@ -105,16 +105,7 @@ impl<S: LinearSolver> InnerSolver for GaussianClosedFormInner<S> {
             rho.len(),
             self.s_list.len()
         );
-        // An all-parametric design has no penalties, so there is no Σ λ_j S_j to assemble —
-        // and `combined_s` cannot infer the design width from an empty list. A zero penalty of
-        // the right shape leaves the algebra below untouched and makes the solve plain weighted
-        // least squares, which is exactly what an unpenalised fit is.
-        let p = self.x_design.ncols();
-        let s_total = if self.s_list.is_empty() {
-            ndarray::Array2::<f64>::zeros((p, p))
-        } else {
-            crate::design::combined_s(&self.s_list, rho)
-        };
+        let s_total = crate::design::combined_s(&self.s_list, rho, self.x_design.ncols());
         gaussian_inner_solve_cached::<S>(
             self.x_design.view(),
             self.y.view(),

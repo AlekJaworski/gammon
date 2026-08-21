@@ -779,16 +779,31 @@ def test_all_parametric_design_fits_as_plain_least_squares():
     assert np.asarray(gam.get_vcov()).shape == (design.shape[1], design.shape[1])
 
 
-def test_all_parametric_design_still_refused_for_other_families():
-    """Only the gaussian fit has an unpenalised path; the rest keep an explicit refusal rather
-    than reaching the penalised PIRLS solvers and panicking."""
+def test_all_parametric_design_fits_for_a_non_gaussian_family():
+    """Every family fits an all-parametric design now, not just gaussian: `combined_s` takes the
+    design width, so an empty penalty list assembles a zero penalty of the right shape and the
+    penalised PIRLS path becomes plain unpenalised IRLS.
+
+    One binary predictor makes the answer exact rather than approximate: the logistic MLE for a
+    saturated 2x2 table IS the log-odds, so this pins the whole path — solver, weights, and
+    convergence — against closed form instead of asserting that nothing blew up.
+    """
     rng = np.random.default_rng(5)
-    n = 200
-    binary = rng.integers(0, 2, n).astype(float)
-    y = rng.integers(0, 2, n).astype(float)
+    n = 400
+    flag = rng.integers(0, 2, n).astype(float)
+    y = (rng.random(n) < np.where(flag > 0.5, 0.75, 0.30)).astype(float)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         gam = gamrs.Gam(predictors=["flag"], family="bernoulli", k_default=6, min_k=2)
-        with pytest.raises(ValueError, match="only the gaussian fit supports"):
-            gam.fit(binary.reshape(-1, 1), y)
+        gam.fit(flag.reshape(-1, 1), y)
+
+    rate_off, rate_on = y[flag < 0.5].mean(), y[flag > 0.5].mean()
+    log_odds = lambda q: np.log(q / (1 - q))  # noqa: E731
+    assert np.allclose(np.asarray(gam.coef_), [log_odds(rate_off), log_odds(rate_on) - log_odds(rate_off)], atol=1e-8)
+    # Fitted probabilities are the two group rates, which is what a saturated logistic fit gives.
+    assert np.allclose(np.unique(np.asarray(gam.predict(flag.reshape(-1, 1)))), sorted([rate_off, rate_on]), atol=1e-8)
+    # No penalties, so no smoothing parameters and edf is the coefficient count.
+    assert len(np.asarray(gam.get_lambdas())) == 0
+    assert gam.edf_total_ == pytest.approx(2.0, abs=1e-5)
+    assert np.asarray(gam.get_vcov()).shape == (2, 2)

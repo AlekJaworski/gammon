@@ -251,13 +251,20 @@ pub(crate) fn rank_and_log_pseudo_det(s: ArrayView2<f64>) -> Result<(usize, f64)
 
 /// Assemble `S_total(ρ) = Σ_j exp(ρ_j) · s_list[j]`. The hot path inside
 /// every inner solver — single allocation, sequential add.
-pub fn combined_s(s_list: &[Array2<f64>], rho: &Array1<f64>) -> Array2<f64> {
+///
+/// `p` is the design width, and is a parameter rather than `s_list[0].nrows()` because an
+/// all-parametric design has NO penalties: the width cannot be read off a penalty that does not
+/// exist, and an empty `s_list` must yield a zero penalty of the right shape rather than panic.
+/// Callers all hold the design, so they can answer this; the alternative — a
+/// `s_list.is_empty()` guard at each of the eleven call sites — is the same fix paid for eleven
+/// times. The lasting shape is a `Penalties` type owning both the list and the width; see the
+/// design note.
+pub fn combined_s(s_list: &[Array2<f64>], rho: &Array1<f64>, p: usize) -> Array2<f64> {
     debug_assert_eq!(
         s_list.len(),
         rho.len(),
         "combined_s: s_list and rho length mismatch"
     );
-    let p = s_list[0].nrows();
     let mut s_total = Array2::<f64>::zeros((p, p));
     for (j, s_j) in s_list.iter().enumerate() {
         let lambda = rho[j].exp();

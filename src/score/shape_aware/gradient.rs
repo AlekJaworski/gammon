@@ -300,7 +300,7 @@ where
         let wz: Array1<f64> = w.iter().zip(z.iter()).map(|(&wi, &zi)| wi * zi).collect();
         let xtwz: Array1<f64> = self.x_design.t().dot(&wz);
         let lambda_arr = Array1::from(rho_slice.clone());
-        let s_total = crate::design::combined_s(&self.s_list, &lambda_arr);
+        let s_total = crate::design::combined_s(&self.s_list, &lambda_arr, self.x_design.ncols());
         let p_dim = xtwx.nrows();
         let mut a_wls = xtwx;
         for i in 0..p_dim {
@@ -590,7 +590,7 @@ where
                 .clone()
                 .unwrap_or_else(|| Array1::ones(fit.n));
             let rho_arr = Array1::from(rho_slice.to_vec());
-            let s_total = crate::design::combined_s(&self.s_list, &rho_arr);
+            let s_total = crate::design::combined_s(&self.s_list, &rho_arr, self.x_design.ncols());
             crate::inner::pirls::lazy_tk_kkt_inputs(
                 family,
                 &self.y,

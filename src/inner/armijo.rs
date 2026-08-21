@@ -93,7 +93,7 @@ impl<S: LinearSolver> InnerSolver for ArmijoElfInner<S> {
             rho.len(),
             self.s_list.len()
         );
-        let s_total = crate::design::combined_s(&self.s_list, rho);
+        let s_total = crate::design::combined_s(&self.s_list, rho, self.x_design.ncols());
         self.armijo_loop(s_total)
     }
 }

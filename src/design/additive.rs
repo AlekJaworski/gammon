@@ -607,7 +607,7 @@ mod tests {
         s1[[2, 2]] = 2.0;
         let s_list = vec![s0, s1];
         let rho = Array1::from_vec(vec![0.0_f64, (3.0_f64).ln()]);
-        let s_total = super::super::combined_s(&s_list, &rho);
+        let s_total = super::super::combined_s(&s_list, &rho, p);
         assert!((s_total[[1, 1]] - 1.0).abs() < 1e-15);
         // exp(ln 3) * 2.0 = 6.0
         assert!((s_total[[2, 2]] - 6.0).abs() < 1e-13);
