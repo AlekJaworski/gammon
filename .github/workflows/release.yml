@@ -249,6 +249,10 @@ jobs:
           python3 -m pip install --no-index --find-links dist/ gamrs
           python3 -c "import gamrs; print('macos wheel imported OK')"
       - uses: actions/upload-artifact@v7
+        # always(): maturin builds the interpreters in one invocation, so a
+        # failure on one still leaves the earlier wheels in dist/. Retain them
+        # rather than losing a 20-minute build to the last interpreter.
+        if: always()
         with:
           name: wheels-macos-${{ matrix.target }}
           path: dist
