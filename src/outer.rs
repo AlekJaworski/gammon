@@ -181,7 +181,10 @@ pub fn reject_unsupported_algorithm(path: &str) -> crate::error::Result<()> {
     match resolved_algorithm() {
         OuterAlgorithm::Newton => Ok(()),
         OuterAlgorithm::FellnerSchall => Err(crate::error::GamrsError::InvalidParameter(format!(
-            "method='fREML' (Fellner-Schall) is not implemented for the {path} fit path;              it runs damped Newton on the REML score. Pass method='REML'. Both optimise the              same REML criterion, so this is an optimiser restriction, not a model change."
+            "method='fREML' (Fellner-Schall) is not implemented for the {path} fit \
+             path; it runs damped Newton on the REML score. Pass method='REML'. \
+             Both optimise the same REML criterion, so this is an optimiser \
+             restriction, not a model change."
         ))),
     }
 }
