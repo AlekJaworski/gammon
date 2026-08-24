@@ -148,9 +148,12 @@ fn tf9963_garage_spaces_scat_lands_on_mgcv_optimum() {
 ///
 /// The shape-parameter driver runs damped Newton over `[ρ, log σ², log(ν−3)]`
 /// and has no Fellner-Schall branch, so a fREML request used to be dropped and
-/// REML/fREML came out bit-identical. It now errors. This lives beside the
-/// parity lock because scat is the family that defaulted to `"fREML"` in the
-/// Python wrapper, which made every scat fit declare an optimiser it never ran.
+/// REML/fREML came out bit-identical. The Rust API now says so; the Python
+/// wrapper catches this same error, warns, and refits on REML, so callers keep
+/// working while the running optimiser stops diverging from the declared one.
+/// This lives beside the parity lock because scat is the family that defaulted
+/// to `"fREML"` in the Python wrapper, which made every scat fit ever made
+/// declare an optimiser it never ran.
 #[test]
 fn tf9963_scat_refuses_fellner_schall_instead_of_ignoring_it() {
     let fx = load();

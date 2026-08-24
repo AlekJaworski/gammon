@@ -112,6 +112,7 @@ where
         "profile-θ driver requires at least 1 shape axis"
     );
 
+    crate::outer::reject_unsupported_algorithm("profile-shape (rho-Newton + profile theta)")?;
     let solver = ProfileShapeNewton::new(
         crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts(),
     );

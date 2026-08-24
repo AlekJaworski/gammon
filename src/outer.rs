@@ -160,31 +160,40 @@ pub fn resolved_algorithm() -> OuterAlgorithm {
         .unwrap_or(OuterAlgorithm::Newton)
 }
 
-/// Fail loudly when a driver that has no Fellner-Schall branch is asked for
-/// one, instead of running Newton and letting the caller believe otherwise.
+/// The text every Fellner-Schall refusal starts with. The Python wrapper
+/// matches on it to turn the refusal into a REML fallback — keep it in step
+/// with `python/gamrs/_fitter.py::FS_UNAVAILABLE_MARKER`. The unit test at
+/// the bottom of this module fails if the rendered message stops carrying it.
+pub const FS_UNAVAILABLE_MARKER: &str =
+    "method='fREML' (Fellner-Schall) is not implemented for the";
+
+/// Say so when a driver that has no Fellner-Schall branch is asked for one,
+/// instead of running Newton and letting the caller believe otherwise.
 ///
-/// Only [`crate::fit::driver::fit_pirls_envelope`] dispatches on
-/// [`resolved_algorithm`]. The gaussian closed-form path, the quantile path
-/// and both shape-parameter paths (scat, ocat, negbin, tweedie) call
-/// `NewtonWithHalving` unconditionally, so `method="fREML"` on those was a
-/// silent no-op — REML and fREML came out bit-identical, which is the worst
-/// of the three possible behaviours because nothing tells the caller.
+/// Fellner-Schall is a real, released solver (0.6.0) and is honoured wherever
+/// it was ported: [`crate::fit::driver::fit_pirls_envelope`], the GLM envelope
+/// driver, dispatches on [`resolved_algorithm`] and runs it. The port never
+/// reached four other drivers — the gaussian closed-form path, the quantile
+/// path, the profile-shape path (negbin) and the joint shape-parameter path
+/// (scat, tweedie, ocat) — and those called `NewtonWithHalving` regardless, so
+/// `method="fREML"` on them was a silent no-op. This is the loud version.
 ///
-/// Note what fREML does and does not mean. gamrs' `fREML` is the Fellner-
-/// Schall optimiser (Wood & Fasiolo 2017) — a cheaper route to the *same*
-/// REML criterion, not a different objective. mgcv's `bam(method="fREML")`
-/// is likewise the REML criterion computed the fast way: score both mgcv sp
-/// vectors with `sp` pinned and `bam`'s fREML and REML criteria return
-/// identical numbers. So being refused fREML costs a caller nothing
-/// statistical; it only costs the cheaper iteration.
+/// Direct Rust callers get the error. The Python wrapper catches it, warns,
+/// and refits on REML, because a library that raises on a parameter it used
+/// to accept breaks callers for no statistical gain: gamrs' `fREML` is the
+/// Fellner-Schall optimiser (Wood & Fasiolo 2017) and mgcv's
+/// `bam(method="fREML")` is the REML criterion computed the fast way — score
+/// two sp vectors with `sp` pinned and bam's fREML and REML criteria return
+/// identical numbers. Both are routes to the same criterion, and damped
+/// Newton on the REML score is the stronger route of the two here.
 pub fn reject_unsupported_algorithm(path: &str) -> crate::error::Result<()> {
     match resolved_algorithm() {
         OuterAlgorithm::Newton => Ok(()),
         OuterAlgorithm::FellnerSchall => Err(crate::error::GamrsError::InvalidParameter(format!(
-            "method='fREML' (Fellner-Schall) is not implemented for the {path} fit \
-             path; it runs damped Newton on the REML score. Pass method='REML'. \
-             Both optimise the same REML criterion, so this is an optimiser \
-             restriction, not a model change."
+            "{FS_UNAVAILABLE_MARKER} {path} fit path, which runs damped Newton on \
+             the REML score instead. Pass method='REML'. Both optimise the same \
+             REML criterion and Newton is generally the stronger optimiser here, \
+             so this is an optimiser restriction, not a model change."
         ))),
     }
 }
@@ -947,5 +956,23 @@ mod tests {
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
         assert!((sorted[0] - 1e-8).abs() < 1e-12, "small eig {}", sorted[0]);
         assert!((sorted[1] - 2.0).abs() < 1e-12, "large eig {}", sorted[1]);
+    }
+
+    #[test]
+    fn fellner_schall_refusal_carries_the_marker_python_matches_on() {
+        // `python/gamrs/_fitter.py::FS_UNAVAILABLE_MARKER` is this same
+        // string, and the wrapper turns a message carrying it into a warned
+        // REML refit. Reword the message freely; drop the marker and the
+        // Python fallback silently stops firing, which is why this asserts it.
+        set_algorithm_override(OuterAlgorithm::FellnerSchall);
+        let err = reject_unsupported_algorithm("test")
+            .unwrap_err()
+            .to_string();
+        clear_algorithm_override();
+        assert!(
+            err.contains(FS_UNAVAILABLE_MARKER),
+            "refusal lost the marker: {err}"
+        );
+        assert!(!err.contains("  "), "message has a run of spaces: {err}");
     }
 }

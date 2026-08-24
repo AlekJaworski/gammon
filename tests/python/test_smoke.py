@@ -837,28 +837,57 @@ def test_all_parametric_design_fits_for_a_non_gaussian_family():
 
 
 # --------------------------------------------------------------------------- #
-# method= is honoured or refused, never silently dropped                      #
+# method= is honoured, or substituted out loud — never silently dropped       #
 # --------------------------------------------------------------------------- #
-def test_freml_is_refused_where_it_is_not_implemented():
+def test_freml_falls_back_to_reml_where_fellner_schall_was_never_ported():
     """`method="fREML"` used to be a silent no-op on most fit paths.
 
-    Only the GLM envelope driver has a Fellner-Schall branch. The gaussian
+    Fellner-Schall reached the GLM envelope driver only. The gaussian
     closed-form path, the quantile path and the shape-parameter families
-    (scat / ocat / negbin / tweedie) ran damped Newton regardless, so REML and
-    fREML came out bit-identical and nothing told the caller. They now raise.
+    (scat / negbin / tweedie / ocat) ran damped Newton regardless, so REML and
+    fREML came out bit-identical and nothing told the caller. They now warn and
+    fit on REML — same criterion, and Newton is the stronger optimiser here, so
+    the substitution costs nothing but has to be visible.
 
     scat additionally used to *default* to `method="fREML"`, so every scat fit
     ever made declared an optimiser it did not run.
     """
     rng = np.random.default_rng(0)
-    x = np.linspace(0.0, 1.0, 120)
+    x = np.linspace(0.0, 1.0, 300)
     y = np.sin(2 * np.pi * x) + rng.normal(scale=0.2, size=x.size)
 
     assert gamrs.Gam(family="t-dist").method == "REML", "scat must declare what it runs"
 
-    for family in ("gaussian", "t-dist"):
-        with pytest.raises(ValueError, match="fREML"):
-            gamrs.Gam(family=family, method="fREML", k_default=6).fit(x, y)
+    for family in ("gaussian", "t-dist", "nb"):
+        y_fam = np.abs(y) * 3.0 if family == "nb" else y
+        reml = gamrs.Gam(family=family, method="REML", k_default=6).fit(x, y_fam)
+        with pytest.warns(UserWarning, match="not available for this fit path"):
+            fell = gamrs.Gam(family=family, method="fREML", k_default=6).fit(x, y_fam)
+        # Fell back, so it must be the REML answer itself, not a near miss.
+        assert np.allclose(fell.predict(x), reml.predict(x), rtol=0, atol=1e-12), family
 
-    # REML on the same call is fine — the refusal is about the optimiser only.
-    gamrs.Gam(family="t-dist", method="REML", k_default=6).fit(x, y)
+
+def test_freml_still_runs_fellner_schall_where_it_was_ported():
+    """The fallback must not have swallowed the solver it falls back from.
+
+    Poisson goes through the GLM envelope driver, the one path Fellner-Schall
+    was ported to. Asserting "does not raise" would still pass if `fREML` had
+    become an alias for REML, so this asserts the two optimisers leave
+    different tracks: FS takes a different iteration count to reach the same
+    criterion, and warns about nothing.
+    """
+    rng = np.random.default_rng(0)
+    x = np.linspace(0.0, 1.0, 300)
+    y = rng.poisson(np.exp(1.0 + np.sin(2 * np.pi * x))).astype(float)
+
+    reml = gamrs.Gam(family="poisson", method="REML", k_default=10).fit(x, y)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        fell = gamrs.Gam(family="poisson", method="fREML", k_default=10).fit(x, y)
+
+    assert fell.n_iters_ != reml.n_iters_, (
+        f"fREML took the same {reml.n_iters_} iterations as REML — "
+        "Fellner-Schall looks aliased away, not run"
+    )
+    # Different route, same criterion: the smoothing parameters still agree.
+    assert np.allclose(fell.get_lambdas(), reml.get_lambdas(), rtol=1e-4)

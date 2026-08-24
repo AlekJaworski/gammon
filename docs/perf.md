@@ -6,10 +6,16 @@ When `gamrs` is fast, when it isn't, and what to do about it.
 
 - **`n ≤ 50_000`** — defaults are fine. `gamrs` matches or beats
   `mgcv_rust` on every family.
-- **`n > 50_000` and family in {Gaussian, Poisson, Bernoulli, Gamma}**
-  — pass `method="fREML"`. Shaves 30-60% off wall time.
-- **NegBin / Tweedie / TDist** — defaults are fine, fREML doesn't apply
-  (these use bespoke joint-θ outer solvers).
+- **`n > 50_000` and family in {Poisson, Bernoulli, Gamma, InvGauss,
+  QuasiPoisson, QuasiBinomial}** — pass `method="fREML"`. Shaves 30-60%
+  off wall time. These go through the GLM envelope driver, the one the
+  Fellner-Schall solver was ported to.
+- **Gaussian / NegBin / Tweedie / TDist / Ocat / quantile** — defaults are
+  fine and `method="fREML"` does not apply: gaussian is closed-form and the
+  rest use bespoke joint- or profile-θ outer solvers. Passing it there fits
+  on REML and warns, rather than running an optimiser you did not ask for.
+  Nothing statistical is lost — both optimise the same REML criterion, and
+  damped Newton is the stronger route to it.
 - **Shape-aware quantile (ELF)** — only the σ search is in Python; the
   inner GAM is the same fast Rust core. Speed depends on `K_folds` and
   the Brent tolerance (`xatol`).
@@ -19,7 +25,7 @@ When `gamrs` is fast, when it isn't, and what to do about it.
 | `method=`       | Algorithm                                  | Inner step                         | When to use                        |
 | --------------- | ------------------------------------------ | ---------------------------------- | ---------------------------------- |
 | `"REML"` (def)  | Damped Newton on REML score                | Full PIRLS to convergence per iter | Default; small/medium n            |
-| `"fREML"`       | Fellner-Schall multiplicative λ updates    | Single IRLS step per iter          | Large n; Gaussian-ish GLM families |
+| `"fREML"`       | Fellner-Schall multiplicative λ updates    | Single IRLS step per iter          | Large n; GLM envelope families     |
 
 `"fREML"` is the algorithm R's `bam()` uses. Wood & Fasiolo (2017) showed
 the multiplicative update is equivalent to a fixed-point iteration with

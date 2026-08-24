@@ -30,6 +30,12 @@ from ._low_level import (
 )
 from ._stubs import GamSummary, TermContributions  # noqa: F401
 
+# The prefix every native Fellner-Schall refusal carries. Defined in
+# `src/outer.rs::FS_UNAVAILABLE_MARKER`, which has a unit test asserting the
+# rendered message still contains it; matching on it here is what turns a
+# refusal into the warned REML fallback in `Gam.fit`.
+FS_UNAVAILABLE_MARKER = "method='fREML' (Fellner-Schall) is not implemented for the"
+
 ArrayLike = Any  # avoid hard dep on pandas/polars typing
 
 
@@ -256,9 +262,15 @@ class Gam:
     cheaper route to the *same* REML criterion, not a different objective —
     the same is true of mgcv's own ``bam(method="fREML")``, whose criterion
     returns numbers identical to its REML when both are evaluated at a pinned
-    ``sp``. Paths with no Fellner-Schall branch (gaussian closed-form,
-    quantile, and the shape-parameter families scat / ocat / negbin /
-    tweedie) raise ``ValueError`` rather than silently running Newton.
+    ``sp``.
+
+    Fellner-Schall was only ever ported to the GLM envelope driver, so
+    ``method="fREML"`` on the gaussian closed-form path, the quantile path,
+    or a shape-parameter family (scat / negbin / tweedie / ocat) fits on
+    REML instead and warns. Same criterion either way, and damped Newton on
+    the REML score is the stronger optimiser of the two here, so the
+    fallback is not a downgrade — the warning exists so the running
+    optimiser is never a different one from the declared optimiser.
 
     Compatible with the v0.x ``mgcv_rust.Gam`` API surface; a textual
     substitution of ``from mgcv_rust import Gam`` → ``from gamrs import Gam``
@@ -341,8 +353,9 @@ class Gam:
         # "fREML", which was never honoured: the shape-parameter fit path
         # (joint Newton over [rho, log sigma^2, log(nu - min.df)]) has no
         # Fellner-Schall branch, so the declared method and the running
-        # optimiser disagreed on every scat fit. That path now raises rather
-        # than quietly running Newton, so the default has to name what runs.
+        # optimiser disagreed on every scat fit. `fit` now warns and falls
+        # back there, so the default names what actually runs and no scat
+        # user is warned about an optimiser they never asked for.
         if method is None:
             method = "REML"
         self.method = method
@@ -489,7 +502,8 @@ class Gam:
         ``"REML"`` / ``None`` (default) → damped Newton on the REML
         score; ``"fREML"`` → Wood & Fasiolo (2017) Fellner-Schall
         multiplicative updates (mgcv R ``bam()`` equivalent; cheaper
-        per-iter, wins on GLM families at large n).
+        per-iter, wins on GLM families at large n). On a fit path with no
+        Fellner-Schall branch, ``"fREML"`` warns and fits on REML.
         """
         # Set/restore the outer-algorithm override for this fit only.
         # Only touches the thread-local when method != "REML" (gamrs's
@@ -506,7 +520,31 @@ class Gam:
                     f"supported: 'REML' (default), 'fREML'"
                 ) from e
         try:
-            return self._fit_impl(X, y, sample_weight)
+            try:
+                return self._fit_impl(X, y, sample_weight)
+            except ValueError as e:
+                if not (wants_override and FS_UNAVAILABLE_MARKER in str(e)):
+                    raise
+                # Fellner-Schall reached only the GLM envelope driver; the
+                # native side says so rather than running Newton behind the
+                # caller's back. Refit on REML instead of propagating: both
+                # optimise the same criterion, damped Newton is the stronger
+                # of the two here, and callers that have passed fREML for
+                # years should not start failing over an optimiser word. The
+                # refusal fires before the outer solve, so the retry repeats
+                # design assembly, not a fit.
+                _gamrs_native.set_outer_algorithm(None)
+                warnings.warn(
+                    f"method={self.method!r} is not available for this fit "
+                    f"path (family={self.family!r}); fitting on REML instead. "
+                    f"Fellner-Schall and REML optimise the same criterion, "
+                    f"and damped Newton on the REML score is generally the "
+                    f"stronger optimiser here, so the result is not a "
+                    f"downgrade. Pass method='REML' to silence this. "
+                    f"Native message: {e}",
+                    stacklevel=2,
+                )
+                return self._fit_impl(X, y, sample_weight)
         finally:
             if wants_override:
                 _gamrs_native.set_outer_algorithm(None)
