@@ -140,11 +140,42 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Two per-arch wheels, each built on its NATIVE runner, rather than one
+        # universal2 fat wheel. universal2 would need a single link step to
+        # produce both slices, but `blas-static` has openblas-src COMPILE
+        # OpenBLAS from source for the host arch — there is no fat libopenblas
+        # to lipo into, and the two arches need different portability pins
+        # (OPENBLAS_TARGET=PRESCOTT vs ARMV8). Per-arch also halves what a user
+        # downloads, and pip prefers an exact-arch wheel over universal2 anyway.
         include:
           - target: aarch64
-            runner: macos-latest
+            runner: macos-latest       # macos-latest is Apple Silicon
+            openblas_target: ARMV8
+            # aarch64-apple-darwin's rustc baseline is already the oldest Apple
+            # Silicon, so there is nothing to pin down to.
+            rustflags: ""
+          - target: x86_64
+            runner: macos-13           # the last Intel-hosted runner image
+            openblas_target: PRESCOTT
+            rustflags: "-C target-cpu=x86-64"
     steps:
       - uses: actions/checkout@v6
+      # macos-latest (arm64) ships only CPython 3.11+ — there are no
+      # darwin-arm64 builds below 3.11 to install — so the arm64 wheel set
+      # starts at cp311 by necessity. The Intel image can go back to 3.9, which
+      # is where linux starts, so pin the list instead of taking whatever the
+      # runner image happens to preinstall.
+      - name: Set up Python interpreters
+        if: matrix.target == 'x86_64'
+        uses: actions/setup-python@v6
+        with:
+          python-version: |
+            3.9
+            3.10
+            3.11
+            3.12
+            3.13
+            3.14
       # For blas-static: openblas-src compiles from source, no brew openblas needed.
       # Only install the Fortran compiler.
       - name: Install build tools
@@ -176,11 +207,13 @@ jobs:
           OPENBLAS_STATIC: "1"
           # Same two-knob portability as the linux job (see its comment):
           # DYNAMIC_ARCH dispatches kernels; TARGET pins the common/driver code
-          # to a baseline ISA so an Apple-Silicon build runner can't bake a
-          # newer-uarch instruction into code that must run on older Apple chips.
-          # ARMV8 is the aarch64 baseline (all Apple Silicon is ARMv8.x+).
+          # to a baseline ISA so the build runner's own CPU can't bake a
+          # newer-uarch instruction into code that must run everywhere.
+          # ARMV8 is the aarch64 baseline (all Apple Silicon is ARMv8.x+);
+          # PRESCOTT the x86-64 one, matching linux.
           OPENBLAS_DYNAMIC_ARCH: "1"
-          OPENBLAS_TARGET: "ARMV8"
+          OPENBLAS_TARGET: ${{ matrix.openblas_target }}
+          RUSTFLAGS: ${{ matrix.rustflags }}
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static
