@@ -157,6 +157,22 @@ impl Loss for TDist {
         1.0e-8
     }
 
+    // NOTE on `score_rank_adjustment`: TDist keeps the trait default `0` —
+    // the mathematically correct positive-eigenvalue count from
+    // `rank_and_log_pseudo_det`. An `-1` override rode in on an unrelated
+    // tensor-dispatch commit (`fa3df55`, labelled EXPERIMENTAL) and stayed
+    // for three months. It is not a free constant: `log|λS|₊` contributes
+    // `-½·rank·ρ` to the score, so dropping the rank by one tilts the whole
+    // REML surface by `+ρ/2` per smooth and the outer Newton converges
+    // under-penalised. Measured on the TF-9963 `garage_spaces` term (620
+    // rows, 5 distinct x, k=5, so the basis is saturated): mgcv's own
+    // fixed-sp REML sweep bottoms out at edf 2.37, gamrs with the `-1`
+    // landed on edf 4.02 — mgcv's own answer at ~30× less penalty — and
+    // adding ½ρ back to gamrs' sweep moved its minimum onto mgcv's to
+    // within 0.04 REML units. Every scat parity fixture tightened 8-16×
+    // when it came out. Do not reintroduce it without a fixed-sp sweep
+    // showing mgcv agrees.
+
     /// mgcv `scat` initialize starts μ at the response (`mustart <- y`,
     /// `efam.r:1430`), so the first PIRLS residuals are ~0 — the natural
     /// saturated start for the location-scale t. The trait default `(y+ȳ)/2`
@@ -250,13 +266,6 @@ impl Loss for TDist {
             }
         }
         Some((w, z))
-    }
-
-    /// EXPERIMENTAL — diagnostic toggle for the mgcv-style rank heuristic
-    /// (centered CR(k) treated as rank k−2 by mgcv vs gamrs's k−1). Empirical
-    /// check for scat parallel to ocat (commit `d91b710`).
-    fn score_rank_adjustment(&self) -> i32 {
-        -1
     }
 
     /// `Σᵢ wt_i · ∂ls_i/∂θ_k` for the two scat shape axes

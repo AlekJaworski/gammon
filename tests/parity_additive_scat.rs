@@ -6,7 +6,8 @@
 //! are pending" gap. scat is the hardest convergence regime in the battery
 //! (joint Newton over `[log λ…, log σ², log(ν−min.df)]`), so the bound is
 //! relaxed relative to the GLM families — but it is a *measured*, locked
-//! bound, not a smoke test.
+//! bound, not a smoke test. Both bounds tightened ~16× and ~8× when
+//! `TDist::score_rank_adjustment`'s −1 came out (see `parity_scat.rs`).
 
 use std::path::PathBuf;
 
@@ -97,12 +98,12 @@ fn run_scat_additive(name: &str, d: usize, bound: f64) {
 
 #[test]
 fn additive_2d_scat_n600_k8_cr() {
-    // Bar 1.5e-2: observed ~9.1e-3 (σ̂²=0.250 vs mgcv σ²=0.25, converged).
-    run_scat_additive("2d_scat_identity_n600_k8_cr", 2, 1.5e-2);
+    // Bar 1e-3: observed 5.7e-4 (σ̂²=0.251 vs mgcv σ²=0.25, converged).
+    run_scat_additive("2d_scat_identity_n600_k8_cr", 2, 1e-3);
 }
 
 #[test]
 fn additive_3d_scat_n800_k8_cr() {
-    // Bar 3e-2: observed ~1.7e-2 (σ̂²=0.163 vs mgcv σ²=0.162, converged).
-    run_scat_additive("3d_scat_identity_n800_k8_cr", 3, 3e-2);
+    // Bar 4e-3: observed 2.2e-3 (σ̂²=0.162 vs mgcv σ²=0.162, converged).
+    run_scat_additive("3d_scat_identity_n800_k8_cr", 3, 4e-3);
 }

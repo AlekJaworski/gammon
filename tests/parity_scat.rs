@@ -2,11 +2,15 @@
 //! joint outer Newton over `[log λ, log σ², log(ν-2)]`) vs mgcv on the
 //! `1d_scat_unweighted_n300_k10_cr` fixture.
 //!
-//! Bound is intentionally relaxed (~5e-2 on μ) — the joint shape-param
-//! outer is the hardest convergence regime in the gamrs battery, and
-//! mgcv's fixture doesn't expose its internal ν/σ² so we can't seed
-//! gamrs from the truth. We're asserting "the trait stack composes and
-//! produces a sensible scat fit", not "byte-equivalent to mgcv".
+//! The bound is 1e-3 on μ relative, and it is a measured lock, not a smoke
+//! test. It used to be 5e-2 because `TDist::score_rank_adjustment` returned
+//! −1, which subtracted one from the penalty null-space rank inside the
+//! score's `log|λS|₊`. That tilts the REML surface by ρ/2 per smooth, so the
+//! outer Newton converged to a genuinely under-penalised λ — mgcv's own
+//! fixed-sp REML sweep on the TF-9963 `garage_spaces` term put gamrs' answer
+//! ~30× under-penalised (edf 4.02 against mgcv's 2.37). Dropping the
+//! adjustment moved every scat fixture ~8-16× closer to mgcv; this fixture
+//! went 4.1e-3 → 3.8e-4.
 
 use std::path::PathBuf;
 
@@ -97,11 +101,9 @@ fn scat_unweighted_n300_k10_cr() {
         fit.rho[0], fit.scale, fit.n_iters, fit.edf_total,
     );
 
-    // Phase-2 bound: 5e-2 on μ relative — scat predictions are on the
-    // identity scale, range is roughly ±1.5 (sin signal + noise). Mean
-    // absolute prediction is ~0.3 so 5e-2 rel ≈ 0.015 absolute, which
-    // is the wobble we'd expect from imperfect ν/σ² seeding.
-    assert!(rel < 5e-2, "scat μ rel error {rel:.3e} exceeds 5e-2");
+    // Bar 1e-3: observed 3.8e-4 (ρ̂ = 4.804, edf 8.84 against mgcv's fixture).
+    // The residual is the ν/σ² seed, which mgcv's fixture doesn't expose.
+    assert!(rel < 1e-3, "scat μ rel error {rel:.3e} exceeds 1e-3");
 }
 
 /// Raw-scale robustness via the **Rust API** (no Python-layer standardization).
@@ -144,7 +146,7 @@ fn scat_raw_scale_via_rust_api() {
 
     let pred = fit.predict(x.view()).expect("predict should not fail");
     // Equivariance: μ̂(S·y) = S·μ̂(y), so pred/S must match the unit-scale
-    // mgcv reference within the same Phase-2 bound.
+    // mgcv reference within the same bound as the unit-scale fit.
     let pred_unscaled: Vec<f64> = pred.iter().map(|p| p / S).collect();
     let rel = max_rel_err(&pred_unscaled, &fx.mgcv_output.predictions_train);
     println!(
@@ -152,9 +154,11 @@ fn scat_raw_scale_via_rust_api() {
          σ̂² = {:.4e}; iters = {}",
         fit.scale, fit.n_iters,
     );
+    // Bar 1e-3: observed 3.8e-4 — the same figure as the unit-scale fit, which
+    // is the point of the test.
     assert!(
-        rel < 5e-2,
-        "raw-scale scat μ rel error {rel:.3e} exceeds 5e-2 (conditioning?)"
+        rel < 1e-3,
+        "raw-scale scat μ rel error {rel:.3e} exceeds 1e-3 (conditioning?)"
     );
 }
 
