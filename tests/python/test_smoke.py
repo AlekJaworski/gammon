@@ -834,3 +834,31 @@ def test_all_parametric_design_fits_for_a_non_gaussian_family():
     assert len(np.asarray(gam.get_lambdas())) == 0
     assert gam.edf_total_ == pytest.approx(2.0, abs=1e-5)
     assert np.asarray(gam.get_vcov()).shape == (2, 2)
+
+
+# --------------------------------------------------------------------------- #
+# method= is honoured or refused, never silently dropped                      #
+# --------------------------------------------------------------------------- #
+def test_freml_is_refused_where_it_is_not_implemented():
+    """`method="fREML"` used to be a silent no-op on most fit paths.
+
+    Only the GLM envelope driver has a Fellner-Schall branch. The gaussian
+    closed-form path, the quantile path and the shape-parameter families
+    (scat / ocat / negbin / tweedie) ran damped Newton regardless, so REML and
+    fREML came out bit-identical and nothing told the caller. They now raise.
+
+    scat additionally used to *default* to `method="fREML"`, so every scat fit
+    ever made declared an optimiser it did not run.
+    """
+    rng = np.random.default_rng(0)
+    x = np.linspace(0.0, 1.0, 120)
+    y = np.sin(2 * np.pi * x) + rng.normal(scale=0.2, size=x.size)
+
+    assert gamrs.Gam(family="t-dist").method == "REML", "scat must declare what it runs"
+
+    for family in ("gaussian", "t-dist"):
+        with pytest.raises(ValueError, match="fREML"):
+            gamrs.Gam(family=family, method="fREML", k_default=6).fit(x, y)
+
+    # REML on the same call is fine — the refusal is about the optimiser only.
+    gamrs.Gam(family="t-dist", method="REML", k_default=6).fit(x, y)

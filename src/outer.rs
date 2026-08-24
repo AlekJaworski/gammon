@@ -160,6 +160,32 @@ pub fn resolved_algorithm() -> OuterAlgorithm {
         .unwrap_or(OuterAlgorithm::Newton)
 }
 
+/// Fail loudly when a driver that has no Fellner-Schall branch is asked for
+/// one, instead of running Newton and letting the caller believe otherwise.
+///
+/// Only [`crate::fit::driver::fit_pirls_envelope`] dispatches on
+/// [`resolved_algorithm`]. The gaussian closed-form path, the quantile path
+/// and both shape-parameter paths (scat, ocat, negbin, tweedie) call
+/// `NewtonWithHalving` unconditionally, so `method="fREML"` on those was a
+/// silent no-op — REML and fREML came out bit-identical, which is the worst
+/// of the three possible behaviours because nothing tells the caller.
+///
+/// Note what fREML does and does not mean. gamrs' `fREML` is the Fellner-
+/// Schall optimiser (Wood & Fasiolo 2017) — a cheaper route to the *same*
+/// REML criterion, not a different objective. mgcv's `bam(method="fREML")`
+/// is likewise the REML criterion computed the fast way: score both mgcv sp
+/// vectors with `sp` pinned and `bam`'s fREML and REML criteria return
+/// identical numbers. So being refused fREML costs a caller nothing
+/// statistical; it only costs the cheaper iteration.
+pub fn reject_unsupported_algorithm(path: &str) -> crate::error::Result<()> {
+    match resolved_algorithm() {
+        OuterAlgorithm::Newton => Ok(()),
+        OuterAlgorithm::FellnerSchall => Err(crate::error::GamrsError::InvalidParameter(format!(
+            "method='fREML' (Fellner-Schall) is not implemented for the {path} fit path;              it runs damped Newton on the REML score. Pass method='REML'. Both optimise the              same REML criterion, so this is an optimiser restriction, not a model change."
+        ))),
+    }
+}
+
 impl Default for NewtonOpts {
     fn default() -> Self {
         // Tolerances match mgcv's `gam.fit3.r:1644` defaults — `conv.tol=1e-7`

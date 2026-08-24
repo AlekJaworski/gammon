@@ -63,6 +63,7 @@ pub(crate) fn fit_gaussian_from_prep<S: LinearSolver>(
             converged: true,
         }
     } else {
+        crate::outer::reject_unsupported_algorithm("gaussian closed-form")?;
         let outer_solver =
             NewtonWithHalving::new(crate::outer::resolve_tuning(&score.loss).to_newton_opts());
         outer_solver.minimize(&score, Array1::zeros(n_terms))?

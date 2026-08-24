@@ -674,6 +674,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         // so `converged_=False` is common. Probabilities (via predict_proba)
         // are scale-invariant under the ridge, so the model is still
         // usable. See README.
+        crate::outer::reject_unsupported_algorithm("ocat")?;
         let outer_solver = NewtonWithHalving::new(
             crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts(),
         );

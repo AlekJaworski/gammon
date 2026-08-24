@@ -252,7 +252,13 @@ class Gam:
 
     For GLM families at large n, pass ``method="fREML"`` for the
     mgcv R ``bam()`` optimiser (Fellner-Schall multiplicative λ updates
-    with single-step IRLS). See ``docs/perf.md`` for the trade-off.
+    with single-step IRLS). See ``docs/perf.md`` for the trade-off. It is a
+    cheaper route to the *same* REML criterion, not a different objective —
+    the same is true of mgcv's own ``bam(method="fREML")``, whose criterion
+    returns numbers identical to its REML when both are evaluated at a pinned
+    ``sp``. Paths with no Fellner-Schall branch (gaussian closed-form,
+    quantile, and the shape-parameter families scat / ocat / negbin /
+    tweedie) raise ``ValueError`` rather than silently running Newton.
 
     Compatible with the v0.x ``mgcv_rust.Gam`` API surface; a textual
     substitution of ``from mgcv_rust import Gam`` → ``from gamrs import Gam``
@@ -331,8 +337,14 @@ class Gam:
                 f"r= is only meaningful for family='ocat'; got family={family!r}"
             )
 
+        # Every family defaults to REML. scat/t-dist used to default to
+        # "fREML", which was never honoured: the shape-parameter fit path
+        # (joint Newton over [rho, log sigma^2, log(nu - min.df)]) has no
+        # Fellner-Schall branch, so the declared method and the running
+        # optimiser disagreed on every scat fit. That path now raises rather
+        # than quietly running Newton, so the default has to name what runs.
         if method is None:
-            method = "fREML" if family in ("scat", "t-dist") else "REML"
+            method = "REML"
         self.method = method
         self.family = family
         gamrs_family, canonical_link = FAMILY_TO_GAMRS[family]
@@ -348,7 +360,18 @@ class Gam:
             self.link = canonical_link
 
         # df validation for tdist. mgcv scat() uses min.df=3 and the shape
-        # transform θ₁ = log(ν − 3), so a fixed df must exceed 3.
+        # transform θ₁ = log(ν − 3), so df must exceed 3.
+        #
+        # NOTE — `df` is an INITIAL VALUE, not a constraint, and that differs
+        # from mgcv: `mgcv::scat(theta=)` pins ν, while gamrs seeds the outer
+        # Newton's `log(ν − 3)` axis and then re-estimates it alongside λ and
+        # σ². On the TF-9963 garage_spaces term, sweeping df 3.5 → 100 left
+        # the fitted shape and λ unchanged to 4 significant figures, which is
+        # what "seed, not constraint" looks like. The bounds below are
+        # therefore a sanity check on the seed, not the range of achievable ν.
+        # Pinning would need a fixed-shape-axis mechanism in the shape-aware
+        # outer that no family has today (negbin `theta` and tweedie `p` are
+        # seeds too).
         if df is not None and family in ("t-dist", "scat"):
             if df <= 3.0:
                 raise ValueError(

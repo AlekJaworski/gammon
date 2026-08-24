@@ -351,6 +351,7 @@ where
         stats: crate::stats::FitStats::new(),
     };
 
+    crate::outer::reject_unsupported_algorithm("shape-parameter (joint Newton over [rho, theta])")?;
     let outer_solver = NewtonWithHalving::new(
         crate::outer::resolve_tuning(&score.family_base.loss).to_newton_opts(),
     );

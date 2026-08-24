@@ -143,3 +143,41 @@ fn tf9963_garage_spaces_scat_lands_on_mgcv_optimum() {
         fit.edf_total
     );
 }
+
+/// `method="fREML"` must not be a silent no-op on the scat path.
+///
+/// The shape-parameter driver runs damped Newton over `[ρ, log σ², log(ν−3)]`
+/// and has no Fellner-Schall branch, so a fREML request used to be dropped and
+/// REML/fREML came out bit-identical. It now errors. This lives beside the
+/// parity lock because scat is the family that defaulted to `"fREML"` in the
+/// Python wrapper, which made every scat fit declare an optimiser it never ran.
+#[test]
+fn tf9963_scat_refuses_fellner_schall_instead_of_ignoring_it() {
+    let fx = load();
+    let n = fx.inputs.y_train.len();
+    let x = Array2::from_shape_vec(
+        (n, 1),
+        fx.inputs.x_train.iter().map(|r| r[0]).collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let y = Array1::from_vec(fx.inputs.y_train.clone());
+
+    gamrs::outer::set_algorithm_override(gamrs::outer::OuterAlgorithm::FellnerSchall);
+    let res = gamrs::fit(
+        gamrs::family::tdist_identity(5.0, 1.0e9),
+        x.view(),
+        y.view(),
+        None,
+        fx.inputs.k[0],
+    );
+    gamrs::outer::clear_algorithm_override();
+
+    let msg = match res {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("scat + Fellner-Schall must be refused, not silently ignored"),
+    };
+    assert!(
+        msg.contains("fREML") && msg.contains("shape-parameter"),
+        "error should name the parameter and the path; got {msg:?}"
+    );
+}
