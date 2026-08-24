@@ -7,6 +7,88 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-24
+
+### Fixed
+- **`scat` / `t-dist` numerical results change — every fit, not just edge
+  cases.** `TDist::score_rank_adjustment` returned `-1`, subtracting one from
+  the penalty null-space rank inside the REML score's `log|λS|₊`. That term
+  contributes `−½·rank·ρ`, so dropping the rank tilted the whole REML surface
+  by `+ρ/2` per smooth and the outer Newton converged **under-penalised**. The
+  override arrived labelled EXPERIMENTAL on an unrelated tensor-dispatch commit
+  (`fa3df55`) and sat for three months; `rank_and_log_pseudo_det` was already
+  returning the count mgcv uses.
+
+  **If you fit `family="scat"` / `"t-dist"`, expect different smoothing
+  parameters, different edf and different fitted values after upgrading.** They
+  move toward mgcv, not away: on the real 620-row `garage_spaces` term (5
+  distinct x, k=5, saturated basis) mgcv's own fixed-`sp` REML sweep bottoms out
+  at edf 2.37, and gamrs went from edf 4.018 — mgcv's own answer at ~30× less
+  penalty, 0.54 REML units worse — to edf 2.398. Agreement with mgcv's fitted
+  values on that term went 3.32% → 0.034%. Every scat parity fixture tightened
+  8–16×, so the test bounds came down with them:
+
+      1d_scat_unweighted_n300   4.1e-3 → 3.8e-4   bound 5e-2  → 1e-3
+      scat_raw_scale_via_rust   4.1e-3 → 3.8e-4   bound 5e-2  → 1e-3
+      additive_2d_scat_n600     9.1e-3 → 5.7e-4   bound 1.5e-2 → 1e-3
+      additive_3d_scat_n800     1.7e-2 → 2.2e-3   bound 3e-2  → 4e-3
+
+  `tests/parity_scat.rs` no longer says "not byte-equivalent to mgcv" — it is a
+  measured 1e-3 lock. New `tests/parity_scat_tf9963.rs` carries the real
+  `garage_spaces` pair with mgcv's answer from all three arms it can produce
+  (`gam`+REML, `bam`+REML, `bam`+fREML, which agree to 0.04% with each other);
+  gamrs lands within 5.8e-4 / 3.7e-4 / 2.0e-4. The three synthetic fixtures all
+  passed at 5e-2 throughout the defect's life, so that real case is the
+  detector.
+
+### Changed
+- **`method="fREML"` now fits on REML — and says so — where Fellner-Schall was
+  never ported.** Fellner-Schall is a real solver (shipped in 0.6.0) and is
+  still honoured on the GLM envelope driver: bernoulli, poisson, gamma,
+  inverse-gaussian, quasipoisson, quasibinomial. It never reached four other
+  drivers — the gaussian closed-form path, the quantile path, the profile-shape
+  path (negbin), and the joint shape-parameter path (scat / tweedie / ocat) —
+  and those ran damped Newton regardless, so on them `method="fREML"` was a
+  **silent no-op**: REML and fREML came out bit-identical with nothing telling
+  the caller.
+
+  Those paths now emit a `UserWarning` naming the parameter, the family and the
+  substitution, and fit on REML. Nothing statistical is lost and in general
+  something is gained: gamrs' fREML is Fellner-Schall (Wood & Fasiolo 2017) and
+  mgcv's `bam(method="fREML")` is the REML criterion computed the fast way —
+  score two `sp` vectors with `sp` pinned and bam's fREML and REML criteria
+  return identical numbers — so both are routes to the same criterion, and
+  damped Newton on the REML score is the stronger route. Measured the same day:
+  on a 620-row 7-smooth production design `bam`+fREML stalls **5.57 REML units**
+  short of the converged answer and returns to it when started there, while
+  gamrs' REML matches mgcv's REML per-term smoothing parameters to five
+  significant figures.
+
+  `method="fREML"` therefore keeps working everywhere it worked before; the
+  only new thing a caller sees is the warning. The Rust API is the exception
+  and raises `GamrsError::InvalidParameter` on those four drivers — a direct
+  Rust caller is not the compatibility surface, and the Python wrapper is built
+  on that error.
+- **The Python constructor no longer defaults `scat`/`t-dist` to
+  `method="fREML"`.** Every family now defaults to `"REML"`. This is a no-op on
+  results — the fREML default was one of the silent no-ops above — but it means
+  the declared optimiser is the running one, and no scat user is warned about
+  an optimiser they never asked for.
+
+### Docs
+- `df=` / `nu=` for `scat` is documented as a **seed, not a constraint**, which
+  is where it differs from `mgcv::scat(theta=)`: gamrs seeds the outer Newton's
+  `log(ν − 3)` axis and then re-estimates it alongside λ and σ². Sweeping
+  `df` 3.5 → 100 on the `garage_spaces` term leaves the fitted shape and λ
+  unchanged to 4 significant figures. Pinning would need a fixed-shape-axis
+  mechanism the shape-aware outer does not have for any family (negbin `theta`
+  and tweedie `p` are seeds too), so this release states the behaviour rather
+  than half-changing it.
+- `docs/perf.md` no longer advises `method="fREML"` for gaussian at large n —
+  gaussian is the closed-form path and never ran Fellner-Schall.
+- README: scat parity figures updated to the post-fix bounds; the versioning
+  note tracks 0.13.x.
+
 ## [0.12.3] — 2026-08-21
 
 ### Fixed
@@ -284,7 +366,12 @@ is locked. Versions correspond to the published PyPI wheels.
 - First beta. Multi-smooth additive, tensor products, and the ten-family
   parity battery.
 
-[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.11.9...HEAD
+[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.13.0
+[0.12.3]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.12.3
+[0.12.2]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.12.2
+[0.12.1]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.12.1
+[0.12.0]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.12.0
 [0.11.9]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.9
 [0.11.8]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.8
 [0.11.7]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.11.7

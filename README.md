@@ -38,7 +38,8 @@ g = Gam(terms=[CrTerm("x0", k=10), CrTerm("x1", k=15)]).fit(df, df["y"])
 # Tensor product
 g = Gam(terms=[TeTerm(cols=("x0", "x1"), k=(5, 5))]).fit(df, df["y"])
 
-# Large-n GLM — switch to the bam()-style fREML optimiser
+# Large-n GLM — switch to the bam()-style fREML optimiser. Ported to the
+# GLM envelope driver only; elsewhere it warns and fits on REML instead.
 g = Gam(family="poisson", method="fREML").fit(X_big, y_big)
 ```
 
@@ -60,16 +61,19 @@ All ten families land 1-D parity against `mgcv`:
 | InverseGaussian | log      | PIRLS        | 1-D Newton (prof φ) | ~3e-4              |
 | NegBin          | log      | PIRLS        | ρ-Newton + profile-θ | ~9e-7             |
 | Tweedie         | log      | PIRLS        | 3-D joint Newton    | ~5e-3              |
-| TDist (`scat`)  | identity | PIRLS        | 3-D joint Newton    | ~2e-2              |
+| TDist (`scat`)  | identity | PIRLS        | 3-D joint Newton    | ~4e-4              |
 | Ocat            | logit    | gam.fit5     | joint β + threshold | smoke              |
 | Quantile (ELF)  | identity | Armijo BT    | ρ-Newton (per term) | qgam OOS ~1.00×    |
 
 Multi-smooth (`s(x0) + s(x1) + …`) ships with `mgcv` R parity tests for
 Gaussian / Bernoulli / Poisson / QuasiPoisson / QuasiBinomial / Gamma /
 InvGauss / NegBin / Tweedie / scat. scat / TDist multi-smooth now has mgcv
-reference parity tests too — 2-D µ rel-err ~9e-3, 3-D ~1.7e-2, with σ̂²
+reference parity tests too — 2-D µ rel-err ~5.7e-4, 3-D ~2.2e-3, with σ̂²
 matching mgcv to ~0.1% (`tests/parity_additive_scat.rs`,
-`scripts/r/gen_scat_multismooth_fixtures.R`). Quantile/ELF now fits
+`scripts/r/gen_scat_multismooth_fixtures.R`). Those bounds tightened 8-16× in
+0.13.0 when a spurious rank adjustment came out of scat's REML score; the same
+release adds `tests/parity_scat_tf9963.rs`, a real-data lock against all three
+mgcv arms (`gam`+REML, `bam`+REML, `bam`+fREML). Quantile/ELF now fits
 multi-smooth additive too (`y ~ s(x0) + s(x1) + …` via the `terms=` arg of
 `fit_quantile`): on a 2-D additive heteroskedastic split its out-of-sample
 pinball loss matches `qgam` to within ±0.6% at τ ∈ {0.1, 0.5, 0.9}
@@ -196,6 +200,12 @@ For GLM families at large n, set `method="fREML"` (mgcv R's `bam()`
 equivalent — Wood & Fasiolo 2017 Fellner-Schall multiplicative updates
 with single-step IRLS per outer iteration). The defaults are sensible
 at small/medium n; the [perf guide](docs/perf.md) covers when to switch.
+Fellner-Schall reached the GLM envelope driver only — on the gaussian
+closed-form path, the quantile path and the shape-parameter families
+(scat / negbin / tweedie / ocat), `method="fREML"` warns and fits on REML.
+Both optimise the same REML criterion and damped Newton is the stronger
+route to it, so the substitution costs nothing; it is warned about because
+until 0.13.0 it happened silently.
 
 ### Parallel fits across threads
 
@@ -204,8 +214,8 @@ solve, so independent `Gam.fit(...)` / `fit_quantile(...)` calls run truly
 concurrently on a `ThreadPoolExecutor` — no process pool, no pickling of
 inputs. When fanning many fits across a thread pool, set
 `OPENBLAS_NUM_THREADS=1` so the BLAS backend doesn't oversubscribe cores
-against your own threads: on a 6K-row scat/fREML fit that turns the
-pre-0.11.7 0.58× (GIL-bound, serialised) into ~1.95× on 4 worker threads.
+against your own threads: on a 6K-row scat fit that turns the pre-0.11.7
+0.58× (GIL-bound, serialised) into ~1.95× on 4 worker threads.
 
 ## Rust API
 
@@ -266,7 +276,7 @@ so adding a family is a `Loss` impl, not a fork of the optimiser.
 
 ## Versioning
 
-Beta (`0.11.x`). The API is stabilising; minor bumps may carry breaking
+Beta (`0.13.x`). The API is stabilising; minor bumps may carry breaking
 changes until the 1.0 surface is locked. All ten families plus Ocat and
 Quantile/ELF now fit multi-smooth additive designs.
 
