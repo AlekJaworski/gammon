@@ -154,10 +154,29 @@ jobs:
             # aarch64-apple-darwin's rustc baseline is already the oldest Apple
             # Silicon, so there is nothing to pin down to.
             rustflags: ""
+            # 11.0 is the oldest macOS that runs on Apple Silicon at all, and
+            # is what this job already emitted implicitly. Stated so both arms
+            # get their floor from the matrix rather than from whatever the
+            # interpreter was compiled against.
+            deployment_target: "11.0"
           - target: x86_64
-            runner: macos-13           # the last Intel-hosted runner image
+            # macos-13 was the last Intel image on the `macos-N` line and was
+            # retired on 2025-12-04; jobs asking for it do not fail, they queue
+            # until they time out (run 32759779924 sat unassigned for 20+ min).
+            # macos-15-intel is its replacement and is still a standard runner,
+            # so it stays free on this public repo. It is scheduled to go away
+            # in August 2027, which is when this wheel needs a cross-build or a
+            # new home.
+            runner: macos-15-intel
             openblas_target: PRESCOTT
             rustflags: "-C target-cpu=x86-64"
+            # Without this the wheel's platform tag comes from the deployment
+            # target the interpreter was built with, so building on a macOS 15
+            # host can emit `macosx_15_0_x86_64` — a tag that excludes exactly
+            # the older Intel Macs this wheel exists for. 10.13 is the floor
+            # cibuildwheel uses for x86_64 and is above rustc's own 10.12
+            # minimum for x86_64-apple-darwin.
+            deployment_target: "10.13"
     steps:
       - uses: actions/checkout@v6
       # macos-latest (arm64) ships only CPython 3.11+ — there are no
@@ -214,10 +233,16 @@ jobs:
           OPENBLAS_DYNAMIC_ARCH: "1"
           OPENBLAS_TARGET: ${{ matrix.openblas_target }}
           RUSTFLAGS: ${{ matrix.rustflags }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static
           sccache: "true"
+      - name: List built wheels
+        # The point of the x86_64 arm is the platform tag, so print it. A tag
+        # that is not macosx_*_x86_64, or a missing interpreter, is the failure
+        # this job exists to catch and it is invisible in the maturin log.
+        run: ls -l dist/
       - name: Validate wheel
         run: |
           python3 -m pip install numpy pytest
