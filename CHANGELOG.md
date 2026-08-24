@@ -7,6 +7,42 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-08-24
+
+Wheels only. No library code changed; `pip install gamrs` returns the same
+numbers on every platform that already had a wheel.
+
+### Added
+- **macOS Intel (x86_64) wheels.** Every release up to and including 0.13.0
+  shipped macOS wheels for arm64 only — `macosx_11_0_arm64`, cp311–cp314 — so
+  an Intel Mac matched no wheel, fell through to the sdist, and `pip install
+  gamrs` turned into a from-source build needing a Rust toolchain and a
+  compile of OpenBLAS. Intel was never dropped; it was never built. The
+  release matrix now has a second macOS arm building `macosx_10_13_x86_64`
+  for cp39–cp314, the same interpreter range the linux wheels cover.
+
+  It is a per-arch wheel, not a `universal2` fat one: `blas-static` has
+  openblas-src compile OpenBLAS from source for the host arch, so there is no
+  fat `libopenblas` to `lipo` together, and the two arches need different
+  portability pins anyway (`OPENBLAS_TARGET=PRESCOTT` vs `ARMV8`). pip prefers
+  an exact-arch wheel over `universal2`, so nothing is lost.
+
+  The Intel wheel gets the same two-knob OpenBLAS portability treatment as the
+  linux one — `DYNAMIC_ARCH=1` for runtime kernel dispatch, `TARGET=PRESCOTT`
+  to keep the common/driver code at the x86-64 baseline — plus
+  `RUSTFLAGS=-C target-cpu=x86-64`, so a newer build host cannot bake an
+  instruction into code that has to run on every Mac. The deployment target is
+  pinned to 10.13 rather than inherited from the build interpreter, because an
+  inherited one tracks the runner's macOS version and would tag the wheel
+  `macosx_15_0_x86_64` — excluding the older machines the wheel exists for.
+
+### Fixed
+- The Intel job's runner label. `macos-13` was the last Intel image on the
+  `macos-N` line and was retired on 2025-12-04. A retired GitHub-hosted label
+  does not fail a job, it leaves it unassigned, so the arm queued indefinitely
+  instead of building. It now asks for `macos-15-intel`, which GitHub supports
+  until August 2027.
+
 ## [0.13.0] — 2026-08-24
 
 ### Fixed
@@ -366,7 +402,8 @@ is locked. Versions correspond to the published PyPI wheels.
 - First beta. Multi-smooth additive, tensor products, and the ten-family
   parity battery.
 
-[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.13.1
 [0.13.0]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.13.0
 [0.12.3]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.12.3
 [0.12.2]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.12.2
