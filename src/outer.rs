@@ -271,7 +271,35 @@ impl OuterSolver for NewtonWithHalving {
             let score_scale = v.abs() + 1.0;
             let grad_tol_abs = opts.grad_tol * score_scale;
             let grad_norm = inf_norm(&g);
-            if grad_norm < grad_tol_abs {
+            let grad_converged = grad_norm < grad_tol_abs;
+            // Score-change test — a VETO on convergence, never a trigger for
+            // it. mgcv `fast-REML.r:1587-1603` sets `converged <- TRUE`, clears
+            // it if any |grad| exceeds tolerance, and then clears it AGAIN if
+            // the REML value is still moving (re-enabling every axis so it
+            // "can't progress" otherwise). It never concludes convergence FROM
+            // a small score change.
+            //
+            // This code had the test inverted: a small `|ΔREML|` returned
+            // `converged: true`, so the loop stopped wherever the steps went
+            // quiet — which on a flat λ ridge is far from the argmin. Measured
+            // on the synthetic flat-ridge fixture: the criterion's argmin is at
+            // ρ ≈ 21.92 and the loop was stopping at ρ ≈ 16.77, leaving 3.6e-4
+            // REML units and a systematic edf overshoot on every real adjuster
+            // term. The gradient test below is the one that decides.
+            //
+            // NB: this only helps once the criterion is right. With the
+            // shipped `log|A|`, running the optimiser further makes the fit
+            // WORSE (garage_spaces $577 → $807) because it converges harder
+            // onto the wrong function; with the observed `log|H|` the same
+            // change gives $183 → $21.
+            let reml_still_moving = if iter >= 3 {
+                let denom = v.abs().max(1.0);
+                ((v - prev_v) / denom).abs() > opts.reml_tol
+            } else {
+                true
+            };
+
+            if grad_converged && !reml_still_moving {
                 return Ok(OuterFit {
                     theta,
                     value: v,
@@ -279,20 +307,6 @@ impl OuterSolver for NewtonWithHalving {
                     iterations: iter,
                     converged: true,
                 });
-            }
-            // REML-change tolerance (active iter ≥ 3, mgcv-style).
-            if iter >= 3 {
-                let denom = v.abs().max(1.0);
-                let reml_change = ((v - prev_v) / denom).abs();
-                if reml_change < opts.reml_tol {
-                    return Ok(OuterFit {
-                        theta,
-                        value: v,
-                        grad_norm,
-                        iterations: iter,
-                        converged: true,
-                    });
-                }
             }
 
             // Newton step with mgcv R's `gam.fit3.r:~1380-1643` stack:
