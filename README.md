@@ -72,8 +72,9 @@ reference parity tests too — 2-D µ rel-err ~5.7e-4, 3-D ~2.2e-3, with σ̂²
 matching mgcv to ~0.1% (`tests/parity_additive_scat.rs`,
 `scripts/r/gen_scat_multismooth_fixtures.R`). Those bounds tightened 8-16× in
 0.13.0 when a spurious rank adjustment came out of scat's REML score; the same
-release adds `tests/parity_scat_tf9963.rs`, a real-data lock against all three
-mgcv arms (`gam`+REML, `bam`+REML, `bam`+fREML). Quantile/ELF now fits
+release adds `tests/parity_scat_tf9963.rs`, a saturated-basis lock (5 distinct
+x against k = 5, the geometry that exposed the defect) against all three mgcv
+arms (`gam`+REML, `bam`+REML, `bam`+fREML). Quantile/ELF now fits
 multi-smooth additive too (`y ~ s(x0) + s(x1) + …` via the `terms=` arg of
 `fit_quantile`): on a 2-D additive heteroskedastic split its out-of-sample
 pinball loss matches `qgam` to within ±0.6% at τ ∈ {0.1, 0.5, 0.9}
