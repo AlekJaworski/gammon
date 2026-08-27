@@ -220,7 +220,7 @@ where
 
     // Reuse the score's inner solver for the final fit (closes audit §B4).
     let final_fit: GaussianInnerFit<S> = score.inner.fit(&outer.theta)?;
-    let edf = compute_edf(&prep.x_design, &final_fit.working_weights, &final_fit);
+    let edf = compute_edf(&prep.x_design, &final_fit.a_weights, &final_fit);
     let scale = scale_fn(&final_fit, edf);
     let vcov = compute_vcov(&final_fit, scale);
     let rho_hat = outer.theta.clone();
@@ -374,7 +374,7 @@ where
     );
     let final_fit: GaussianInnerFit<S> = final_inner.fit(&rho_hat)?;
 
-    let edf = compute_edf(&prep.x_design, &final_fit.working_weights, &final_fit);
+    let edf = compute_edf(&prep.x_design, &final_fit.a_weights, &final_fit);
     let scale = scale_fn(&family_final, &final_fit, &outer.theta);
     let vcov = compute_vcov(&final_fit, scale);
     let lambda_vec: Array1<f64> = rho_hat.iter().map(|&r| r.exp()).collect();

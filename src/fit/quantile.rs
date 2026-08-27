@@ -168,7 +168,7 @@ pub(crate) fn fit_quantile_from_prep<S: LinearSolver>(
     let outer = outer_solver.minimize(&score, Array1::<f64>::zeros(n_terms))?;
 
     let final_fit: GaussianInnerFit<S> = score.inner.fit(&outer.theta)?;
-    let edf = compute_edf(&prep.x_design, &final_fit.working_weights, &final_fit);
+    let edf = compute_edf(&prep.x_design, &final_fit.a_weights, &final_fit);
 
     // scale = σ (the ELF likelihood scale). Quantile users want it for
     // diagnostics; mgcv reports `scale = 1`, we deliberately diverge.

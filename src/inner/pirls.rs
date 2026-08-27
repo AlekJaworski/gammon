@@ -620,6 +620,8 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
             beta,
             eta: eta_new,
             mu: mu_new,
+            // Factor and its weights travel together — see `a_weights`.
+            a_weights: working_weights.clone(),
             working_weights,
             working_response,
             deviance: dev_new,
@@ -986,18 +988,21 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         // `X'WX + E'E` stays PD (`gdi.c`'s `pls_fit1` returns `n < 0`
         // otherwise and `gam.fit4.r` retries with Fisher). On failure we keep
         // the loop's factor, which is that same fallback.
-        let a_factor = match family_observed_score_weights(&self.family, &self.y, &eta, &prior_w) {
-            Some(w_score) => {
-                let xtw = weighted_xt(&self.x_design, &w_score);
-                let mut a = xtw.dot(&self.x_design);
-                add_penalty(&mut a, &s_total, lambda);
-                match S::factorize(a) {
-                    Ok(f) => f,
-                    Err(_) => a_factor,
+        // Keep the factor and the weights it was built from together — see
+        // `GaussianInnerFit::a_weights`.
+        let (a_factor, a_weights) =
+            match family_observed_score_weights(&self.family, &self.y, &eta, &prior_w) {
+                Some(w_score) => {
+                    let xtw = weighted_xt(&self.x_design, &w_score);
+                    let mut a = xtw.dot(&self.x_design);
+                    add_penalty(&mut a, &s_total, lambda);
+                    match S::factorize(a) {
+                        Ok(f) => (f, w_score),
+                        Err(_) => (a_factor, working_weights.clone()),
+                    }
                 }
-            }
-            None => a_factor,
-        };
+                None => (a_factor, working_weights.clone()),
+            };
 
         // For PIRLS at convergence: rss-like quantity for downstream code is
         // the working-RSS `Σ W·(z - X·β)²`, which mgcv calls `dev_num` (it
@@ -1069,6 +1074,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             iterations: iters_used,
             converged,
             a_factor,
+            a_weights,
             log_det_h_override,
             tk_kkt_inputs,
             dw_deta: Some(dw_deta),

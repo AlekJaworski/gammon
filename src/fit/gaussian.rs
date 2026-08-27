@@ -72,7 +72,7 @@ pub(crate) fn fit_gaussian_from_prep<S: LinearSolver>(
     let rho_hat = outer.theta.clone();
     let lambda_hat: Array1<f64> = rho_hat.iter().map(|&r| r.exp()).collect();
     let final_fit = score.inner.fit(&rho_hat)?;
-    let edf = compute_edf(&prep.x_design, &final_fit.working_weights, &final_fit);
+    let edf = compute_edf(&prep.x_design, &final_fit.a_weights, &final_fit);
     let edf_per_term =
         compute_edf_per_term(&prep.s_list, &rho_hat, prep.x_design.ncols(), &final_fit);
 

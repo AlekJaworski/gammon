@@ -497,6 +497,14 @@ pub(crate) fn compute_vcov<S: crate::inner::LinearSolver>(
 /// `LinearSolver` backend the fit was produced with — closes audit
 /// finding #4 (was duplicated as `trace_a_inv_s` here + `trace_solve` in
 /// the score module + the elementwise pattern inline).
+/// `edf = tr(A⁻¹·X'WX)`.
+///
+/// `W` MUST be the weights `fit.a_factor` was built from, not the IRLS working
+/// weights — for an observed→expected switch family those differ on the outlier
+/// rows, and mixing them inflates the trace (`A⁻¹` from the smaller observed
+/// matrix against a larger `X'WX`), overshooting edf. Callers should pass
+/// `fit.a_weights`; the parameter is kept explicit because the ocat path feeds
+/// a ridged factor whose weights are its own.
 pub(crate) fn compute_edf<S: crate::inner::LinearSolver>(
     x_design: &ndarray::Array2<f64>,
     working_weights: &Array1<f64>,

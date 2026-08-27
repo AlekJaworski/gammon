@@ -81,6 +81,18 @@ pub struct GaussianInnerFit<S: LinearSolver = CholeskySolver> {
     /// score-derivative layer through [`GaussianInnerFit::log_det_a`] /
     /// [`GaussianInnerFit::trace_a_inv`] — never re-form `A` explicitly.
     pub a_factor: S::Factorization,
+    /// The per-row weights `a_factor` was actually built from.
+    ///
+    /// `a_factor` and this vector are ONE pair and must never be mixed with a
+    /// different `W`. `compute_edf` forms `tr(A⁻¹·X'WX)`, so pairing this
+    /// factor with `working_weights` instead — which for an observed→expected
+    /// switch family carries the substituted positive curvature — inflates the
+    /// trace and overshoots edf. Same class of bug as a score whose gradient
+    /// differentiates a different matrix than its value: if two quantities
+    /// have to agree, carry them together rather than re-deriving one.
+    ///
+    /// Equal to `working_weights` on every path that does not substitute.
+    pub a_weights: Array1<f64>,
     /// Optional `log|H|` override for the REML score body. Defaults to
     /// `None`, which makes the score body read `2·Σ log L_ii` off
     /// `a_factor` (the Fisher-W A). PIRLS solvers fill this with the

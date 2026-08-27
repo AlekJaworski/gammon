@@ -695,7 +695,7 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
         );
         let final_fit: GaussianInnerFit<S> = final_inner.fit(&rho_hat)?;
 
-        let edf = compute_edf(&prep.x_design, &final_fit.working_weights, &final_fit);
+        let edf = compute_edf(&prep.x_design, &final_fit.a_weights, &final_fit);
         let vcov = compute_vcov(&final_fit, 1.0);
         let lambda_vec: Array1<f64> = rho_hat.iter().map(|&r| r.exp()).collect();
         let edf_per_term =

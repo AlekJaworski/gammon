@@ -262,6 +262,8 @@ impl<S: LinearSolver> OcatInner<S> {
             beta,
             eta,
             mu,
+            // Factor and its weights travel together — see `a_weights`.
+            a_weights: working_weights.clone(),
             working_weights,
             working_response,
             deviance: dev_total,
