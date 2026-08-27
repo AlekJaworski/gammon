@@ -56,6 +56,101 @@ where
 ///
 /// Returns `None` if neither path produces finite output (caller falls back
 /// to the Fisher H's log|H|).
+/// Opt-in: build the score's `log|H|` from the family's **observed**
+/// curvature (`Loss::observed_curvature_weights`) rather than from the
+/// working weight `A` was factorised with.
+///
+/// Why this exists. For a family with a per-row observed → expected switch
+/// (scat), `A = X'WX + λS` carries the positive *expected* curvature wherever
+/// observed `½·D_μμ ≤ 0`. mgcv does not do that: `gam.fit4.r:367` keeps the
+/// observed weight, negatives and all (`gdi.c`'s `pls_fit1` handles them via
+/// `sqrt(|w|)` with sign tracking), and only retries with Fisher if
+/// `X'WX + E'E` comes back indefinite. So gamrs's `log|A|` is a *different
+/// function of (λ, ν, σ²)* than mgcv's `log|H|` on any data with outlier rows
+/// — measured at ~0.1 apart and, decisively, **ρ-dependent**, so it moves the
+/// argmin. That is a criterion difference no gradient fix can reach.
+///
+/// `None` when the family supplies no observed curvature, when the matrix is
+/// not usable, or when the opt-in is off — caller falls back to `log|A|`.
+///
+/// Gated by `GAMRS_OBSERVED_LOG_DET_H=1` while the change is being measured
+/// against mgcv on real data. It is a migration switch, not a supported knob:
+/// it changes what the fitted numbers *are*, so it must not survive as a mode.
+pub(crate) fn observed_log_det_h<L, K, V>(
+    family: &Family<L, K, V>,
+    y: &Array1<f64>,
+    eta: &Array1<f64>,
+    prior_w: &Array1<f64>,
+    x_design: &Array2<f64>,
+    s_total: &Array2<f64>,
+) -> Option<f64>
+where
+    L: Loss + Clone,
+    K: Link + Clone,
+    V: VarianceFn + Clone,
+{
+    use ndarray_linalg::{Cholesky, Eigh, UPLO};
+    if !observed_log_det_h_enabled() {
+        return None;
+    }
+    let w_obs =
+        family
+            .loss
+            .observed_curvature_weights(y.view(), eta.view(), Some(prior_w.view()))?;
+    if w_obs.iter().any(|w| !w.is_finite()) {
+        return None;
+    }
+    let n = x_design.nrows();
+    let p = x_design.ncols();
+    let mut wx = x_design.clone();
+    for i in 0..n {
+        let wi = w_obs[i];
+        for j in 0..p {
+            wx[[i, j]] *= wi;
+        }
+    }
+    let mut h: Array2<f64> = x_design.t().dot(&wx);
+    h += s_total;
+    // Symmetrise — the row-scaled product drifts in the last bits.
+    for j in 0..p {
+        for l in (j + 1)..p {
+            let avg = 0.5 * (h[[j, l]] + h[[l, j]]);
+            h[[j, l]] = avg;
+            h[[l, j]] = avg;
+        }
+    }
+    // PD path — mgcv's own requirement (negative w_i allowed, PD overall).
+    if let Ok(l) = h.cholesky(UPLO::Lower) {
+        let mut log_det = 0.0_f64;
+        for i in 0..p {
+            let lii = l[[i, i]];
+            if !lii.is_finite() || lii.abs() < 1e-300 {
+                return None;
+            }
+            log_det += lii.ln();
+        }
+        return Some(2.0 * log_det);
+    }
+    // Not PD. mgcv retries the step with Fisher weights here; the caller's
+    // fallback to `log|A|` is the same choice, so bail rather than take
+    // |eigenvalues|, which would be a third criterion nobody asked for.
+    let _ = h.eigh(UPLO::Lower);
+    None
+}
+
+/// Read once — this is on the score's hot path. Public within the crate so
+/// callers can keep their fast path: when this is off and the family is not on
+/// the Newton path, they must not pay for building `s_total` at all.
+pub(crate) fn observed_log_det_h_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("GAMRS_OBSERVED_LOG_DET_H")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
 pub(crate) fn lazy_newton_log_det_h<L, K, V>(
     family: &Family<L, K, V>,
     y: &Array1<f64>,

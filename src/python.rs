@@ -551,7 +551,24 @@ impl PyFittedGam {
             log_det_lambda_s += adj_rank_j * rho_slice[j] + prep.log_pseudo_det_s_list[j];
         }
         let dp = fit.deviance + bsb_total;
-        let log_det_h = fit.log_det_a();
+        // Same `log|H|` precedence as `ShapeAwareEnvelopeScore` — this
+        // diagnostic has to evaluate the SAME criterion the fitter optimises,
+        // or a profile taken with it is a profile of a different function.
+        let prior_w_ones = Array1::<f64>::ones(fit.n);
+        let s_total_eval = crate::design::combined_s(
+            &prep.s_list,
+            &Array1::from(rho_slice.to_vec()),
+            prep.x_design.ncols(),
+        );
+        let log_det_h = crate::inner::pirls::observed_log_det_h(
+            &family,
+            &y_arr,
+            &fit.eta,
+            &prior_w_ones,
+            &prep.x_design,
+            &s_total_eval,
+        )
+        .unwrap_or_else(|| fit.log_det_a());
         let mp = prep.mp;
 
         // FixedAtOneProfile sets φ=1 for scat — σ² lives inside the loss.

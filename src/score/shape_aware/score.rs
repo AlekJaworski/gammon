@@ -333,7 +333,13 @@ where
         // eigh that previously ran per inner fit. Falls back to the
         // Fisher A factor's `log|H|` for canonical-link families and
         // when the Newton path bails out.
-        let log_det_h = if family.loss.use_newton_irls() {
+        // `observed_log_det_h` first: for a family with an observed→expected
+        // weight switch, `A` is not the matrix mgcv takes `log|H|` off, and
+        // that difference is ρ-dependent so it moves the argmin. Falls through
+        // to the Newton path, then to `log|A|`. The `||` keeps the fast path
+        // free for everyone else — no `s_total` built when neither applies.
+        let want_observed = crate::inner::pirls::observed_log_det_h_enabled();
+        let log_det_h = if family.loss.use_newton_irls() || want_observed {
             let prior_w = self
                 .prior_weights
                 .clone()
@@ -343,14 +349,28 @@ where
                 &ndarray::Array1::from(rho_slice.to_vec()),
                 self.x_design.ncols(),
             );
-            crate::inner::pirls::lazy_newton_log_det_h(
+            crate::inner::pirls::observed_log_det_h(
                 family,
                 &self.y,
-                &fit.mu,
+                &fit.eta,
                 &prior_w,
                 &self.x_design,
                 &s_total,
             )
+            .or_else(|| {
+                if family.loss.use_newton_irls() {
+                    crate::inner::pirls::lazy_newton_log_det_h(
+                        family,
+                        &self.y,
+                        &fit.mu,
+                        &prior_w,
+                        &self.x_design,
+                        &s_total,
+                    )
+                } else {
+                    None
+                }
+            })
             .unwrap_or_else(|| fit.log_det_a())
         } else {
             fit.log_det_a()
@@ -444,7 +464,9 @@ where
         // (V(μ; θ) shifts → W shifts). For canonical-link families this
         // returns the same value as the Fisher-W path; for NegBin (Newton
         // IRLS = true) the recompute is essential.
-        let log_det_h = if family.loss.use_newton_irls() {
+        // Same precedence as the non-frozen path above — see the comment there.
+        let want_observed = crate::inner::pirls::observed_log_det_h_enabled();
+        let log_det_h = if family.loss.use_newton_irls() || want_observed {
             let prior_w = self
                 .prior_weights
                 .clone()
@@ -454,14 +476,28 @@ where
                 &Array1::from(rho_slice.clone()),
                 self.x_design.ncols(),
             );
-            crate::inner::pirls::lazy_newton_log_det_h(
+            crate::inner::pirls::observed_log_det_h(
                 &family,
                 &self.y,
-                &fit.mu,
+                &fit.eta,
                 &prior_w,
                 &self.x_design,
                 &s_total,
             )
+            .or_else(|| {
+                if family.loss.use_newton_irls() {
+                    crate::inner::pirls::lazy_newton_log_det_h(
+                        &family,
+                        &self.y,
+                        &fit.mu,
+                        &prior_w,
+                        &self.x_design,
+                        &s_total,
+                    )
+                } else {
+                    None
+                }
+            })
             .unwrap_or_else(|| fit.log_det_a())
         } else {
             fit.log_det_a()
