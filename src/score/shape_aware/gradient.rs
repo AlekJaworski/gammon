@@ -1275,6 +1275,27 @@ mod ift_ladder {
                     h_true[[a, b]] = acc + lambda * score.s_list[0][[a, b]];
                 }
             }
+            // Is the observed penalised Hessian POSITIVE DEFINITE? mgcv permits
+            // negative w_i but still needs `X'WX + E'E` PD overall (gdi.c:2892
+            // returns n < 0 otherwise, and gam.fit4.r retries with Fisher). If
+            // it is PD here, `log|H_obs|` is well defined and reproducing
+            // mgcv's criterion needs no special machinery.
+            let chol = <CholeskySolver as LinearSolver>::factorize(h_true.clone()).ok();
+            let log_det_a = fit.log_det_a();
+            match chol.as_ref() {
+                Some(f) => {
+                    let ld = <CholeskySolver as LinearSolver>::logdet(f);
+                    println!(
+                        "    H_obs is POSITIVE DEFINITE   log|A| = {log_det_a:.6}   \
+                         log|H_obs| = {ld:.6}   diff = {:.3e}",
+                        ld - log_det_a
+                    );
+                }
+                None => println!(
+                    "    H_obs is NOT positive definite (mgcv would retry Fisher here)   \
+                     log|A| = {log_det_a:.6}"
+                ),
+            }
             let fac = <LuSolver as LinearSolver>::factorize(h_true).unwrap();
             let obs_analytic: Array1<f64> = <LuSolver as LinearSolver>::solve(&fac, rhs.view());
 
