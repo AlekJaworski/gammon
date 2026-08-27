@@ -587,8 +587,54 @@ impl PyFittedGam {
             - 0.5 * log_det_lambda_s
             - ls_sum;
 
+        // Analytic gradient from the SAME score type the outer Newton drives,
+        // so a diagnostic FD compares against what the optimiser is actually
+        // handed rather than a re-derivation. Needed because the shape axes are
+        // a catastrophic cancellation: on the real sale_date term the log-sigma2
+        // gradient is 310.000 - 306.534 - 3.467 = -8.7e-4, a residual 3e-6 the
+        // size of its own terms, so nothing but the real gradient will do.
+        let grad_vec: crate::error::Result<Vec<f64>> = {
+            use crate::score::{FixedAtOneProfile, PirlsInnerBuilder, ShapeAwareEnvelopeScore};
+            use crate::traits::{CoordsKind, ScoreDerivatives};
+            let holder = ShapeAwareEnvelopeScore::<
+                crate::family::TDist,
+                crate::family::IdentityLink,
+                crate::family::TVariance,
+                PirlsInnerBuilder,
+                FixedAtOneProfile,
+                CholeskySolver,
+            > {
+                x_design: prep.x_design.clone(),
+                y: y_arr.clone(),
+                prior_weights: None,
+                s_list: prep.s_list.clone(),
+                family_base: tdist_identity(5.0, 1.0),
+                rank_s_list: prep.rank_s_list.clone(),
+                mp: prep.mp,
+                log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
+                coords: CoordsKind::Identity,
+                pirls_opts: PirlsOpts {
+                    dev_rel_tol: family.loss.pirls_dev_rel_tol(),
+                    ..PirlsOpts::default()
+                },
+                inner_builder: PirlsInnerBuilder,
+                profile: FixedAtOneProfile,
+                _solver: PhantomData,
+                accepted_state: std::cell::RefCell::new(None),
+                last_eta: std::cell::RefCell::new(None),
+                stats: crate::stats::FitStats::new(),
+            };
+            holder.value_and_grad(&theta_arr).map(|(_v, g)| g.to_vec())
+        };
+
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("score", score)?;
+        // Report the failure instead of omitting the key: a caller defaulting a
+        // missing `grad` to NaN cannot tell "not computed" from "computed NaN".
+        match grad_vec {
+            Ok(g) => dict.set_item("grad", g)?,
+            Err(e) => dict.set_item("grad_error", format!("{e}"))?,
+        }
         dict.set_item("beta", fit.beta.clone().into_pyarray(py))?;
         dict.set_item("eta", fit.eta.clone().into_pyarray(py))?;
         dict.set_item("mu", fit.mu.clone().into_pyarray(py))?;
