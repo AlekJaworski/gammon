@@ -393,6 +393,38 @@ impl Loss for TDist {
         })
     }
 
+    /// Observed curvature `½·D_μμ` on EVERY row, negatives included — the
+    /// bracket in `∂β/∂ρ_j = −λ_j·[X'diag(½·D_μμ)X + Σλ_kS_k]⁻¹·S_j·β`.
+    ///
+    /// Deliberately WITHOUT `irls_observed_pair`'s expected-curvature
+    /// substitution: that substitution keeps `X'WX + λS` factorisable and
+    /// preserves β̂, but it makes `A` not the Hessian of the penalised
+    /// deviance on the outlier rows, and the IFT bracket must be that
+    /// Hessian. Same `Dmu2` expression as `irls_observed_pair`, so the two
+    /// agree exactly on core rows.
+    fn observed_curvature_weights(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        eta: ndarray::ArrayView1<f64>,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<ndarray::Array1<f64>> {
+        use ndarray::Array1;
+        let n = y.len();
+        let nu = self.nu;
+        let q = nu * self.sigma2;
+        let mut w = Array1::<f64>::zeros(n);
+        for i in 0..n {
+            // Identity link → μ = η, dμ/dη = 1, so the η-coordinate weight
+            // collapses to ½·Dmu2 (mgcv `gam.fit4.r:367`: `w = dd$Deta2 * .5`).
+            let r = y[i] - eta[i];
+            let s = q + r * r;
+            let dmu2 = 2.0 * (nu + 1.0) * (q - r * r) / (s * s);
+            let pw = prior_w.map(|p| p[i]).unwrap_or(1.0);
+            w[i] = pw * 0.5 * dmu2;
+        }
+        Some(w)
+    }
+
     /// Trace-term weight derivatives consistent with `irls_observed_pair`'s
     /// observed/expected weight switch (see `Loss::ift_trace_weight_derivs`).
     ///

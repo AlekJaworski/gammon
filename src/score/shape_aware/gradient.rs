@@ -158,12 +158,53 @@ where
             // tk_kkt[j] = Σᵢ ∂W_i/∂μ_i · η1_j[i] · h_diag[i]  (broadcast sum),
             // where η1_j = X·∂β/∂ρ_j and ∂β/∂ρ_j = −λ_j·A⁻¹·S_j·β (IFT on the
             // PIRLS score equation). The caller applies the outer ½.
+            // The IFT bracket is the OBSERVED penalised Hessian, which is not
+            // `fit.a_factor` for a family with an observed→expected weight
+            // switch: `A` carries the positive expected curvature wherever
+            // observed ½·D_μμ ≤ 0, so it is not the Hessian of the penalised
+            // deviance on those rows. Measured on the scat FD probe at ρ = 0,
+            // solving against `A` puts a 2.6% error in ∂β/∂ρ (stable across
+            // h); against the observed Hessian it is 2e-8. Indefinite by
+            // construction — negative rows are the point — so it needs LU,
+            // not Cholesky. `None` ⇒ no switch, and `A` already is the
+            // observed Hessian, so reuse its factor.
+            let obs_factor = family
+                .loss
+                .observed_curvature_weights(
+                    self.y.view(),
+                    fit.eta.view(),
+                    self.prior_weights.as_ref().map(|w| w.view()),
+                )
+                .and_then(|w_obs| {
+                    let mut h = Array2::<f64>::zeros((p, p));
+                    for c in 0..p {
+                        let xc = self.x_design.column(c);
+                        for d in c..p {
+                            let v = (&xc * &self.x_design.column(d) * &w_obs).sum();
+                            h[[c, d]] = v;
+                            h[[d, c]] = v;
+                        }
+                    }
+                    for j in 0..n_terms {
+                        let lambda_j = rho_slice[j].exp();
+                        for c in 0..p {
+                            for d in 0..p {
+                                h[[c, d]] += lambda_j * self.s_list[j][[c, d]];
+                            }
+                        }
+                    }
+                    crate::inner::LuSolver::factorize(h).ok()
+                });
+
             let mut tk_kkt = vec![0.0_f64; n_terms];
             for j in 0..n_terms {
                 let lambda_j = rho_slice[j].exp();
                 let s_beta = self.s_list[j].dot(&fit.beta);
                 let rhs = s_beta.mapv(|v| -lambda_j * v);
-                let dbeta_drho_j: Array1<f64> = S::solve(&fit.a_factor, rhs.view());
+                let dbeta_drho_j: Array1<f64> = match obs_factor.as_ref() {
+                    Some(f) => <crate::inner::LuSolver as LinearSolver>::solve(f, rhs.view()),
+                    None => S::solve(&fit.a_factor, rhs.view()),
+                };
                 let eta1_j = self.x_design.dot(&dbeta_drho_j);
                 tk_kkt[j] = (&dw_dmu * &eta1_j * &h_diag).sum();
             }
@@ -1065,5 +1106,240 @@ where
             }
         }
         Ok(g)
+    }
+}
+
+/// First-divergence dissection of the residual ρ-gradient error.
+///
+/// After the `score_ridge_scale` fix the scat ρ-gradient still sits ~9.5e-4
+/// relative from a Richardson FD of its own score, stable across `h`, so it is
+/// not FD noise. The gradient is a chain, and this walks it in execution order
+/// so the FIRST stage that disagrees is the one to fix:
+///
+///   (a) β̂(ρ)          — the inner PIRLS solve
+///   (b) ∂β/∂ρ         — analytic IFT `−λ_j·A⁻¹·S_jβ` vs FD of β̂ from (a)
+///   (c) η₁ = X·∂β/∂ρ  — mechanical, no independent error
+///   (d) Tk·KK'        — `Σ ∂W/∂μ · η₁ · h_diag`
+///
+/// The standing hypothesis is (b): `A = X'WX + λS` uses scat's *expected*
+/// curvature on the outlier rows, so `A` is not the Hessian of the penalised
+/// deviance there and the implicit-function solve is against the wrong matrix.
+/// If (b) agrees, the hypothesis is dead and the error is in (d).
+#[cfg(test)]
+mod ift_ladder {
+    use super::*;
+    use crate::basis::CrSpline;
+    use crate::family::tdist_identity;
+    use crate::inner::{CholeskySolver, LuSolver, PirlsOpts};
+    use crate::score::profile::FixedAtOneProfile;
+    use crate::score::shape_aware::builder::PirlsInnerBuilder;
+    use crate::traits::{Basis, CoordsKind};
+    use std::cell::RefCell;
+
+    /// Locks the IFT bracket: `∂β/∂ρ` must match a central FD of β̂ itself.
+    /// Asserted at ρ = 0, where PIRLS stationarity is ~1e-8 so the FD is a
+    /// trustworthy oracle; the higher probes print for diagnosis but are
+    /// bounded by the inner solve's own convergence, not by this formula.
+    /// Solving against `fit.a_factor` instead of the observed Hessian fails
+    /// this at 2.6e-2 — 2600× the bound.
+    #[test]
+    fn ift_dbeta_drho_matches_fd_of_beta_hat() {
+        // Same construction as `score_tests::tdist_analytic_rho_grad_matches_fd`,
+        // so the ladder is walked on the exact problem that shows the residual.
+        let n = 90;
+        let xs: Vec<f64> = (0..n).map(|i| (i as f64) / (n as f64)).collect();
+        let mut ys = Vec::with_capacity(n);
+        for (i, &xi) in xs.iter().enumerate() {
+            let base = (2.0 * std::f64::consts::PI * xi).sin();
+            let r = ((i as f64) * 12.9898 + 78.233).sin() * 43758.5453;
+            let frac = r - r.floor();
+            let noise = if frac > 0.9 {
+                6.0 * (frac - 0.5)
+            } else {
+                0.3 * (frac - 0.5)
+            };
+            ys.push(base + noise);
+        }
+        let y = Array1::from_vec(ys);
+        let x = Array1::from_vec(xs);
+        let cr = CrSpline::with_quantile_knots(x.view(), 8).unwrap();
+        let x2d = x.view().insert_axis(ndarray::Axis(1));
+        let x_design = cr.evaluate(x2d.view());
+        let s = cr.penalties()[0].clone();
+        let rank = x_design.ncols() - 2;
+
+        let score = ShapeAwareEnvelopeScore {
+            x_design,
+            y,
+            prior_weights: None,
+            s_list: vec![s],
+            family_base: tdist_identity(5.0, 1.0),
+            rank_s_list: vec![rank],
+            mp: 2,
+            log_pseudo_det_s_list: vec![0.0],
+            coords: CoordsKind::Identity,
+            pirls_opts: PirlsOpts::default(),
+            inner_builder: PirlsInnerBuilder,
+            profile: FixedAtOneProfile,
+            _solver: std::marker::PhantomData::<CholeskySolver>,
+            accepted_state: RefCell::new(None),
+            last_eta: RefCell::new(None),
+            stats: crate::stats::FitStats::new(),
+        };
+
+        // Clear the warm-start cells before every fit: `fit_inner_at` seeds
+        // PIRLS from the last converged η̂, which would make an FD of β̂
+        // path-dependent and quietly contaminate the comparison.
+        let cold = |sc: &ShapeAwareEnvelopeScore<_, _, _, _, _, CholeskySolver>,
+                    th: &Array1<f64>| {
+            *sc.last_eta.borrow_mut() = None;
+            *sc.accepted_state.borrow_mut() = None;
+            sc.fit_inner_at(th).unwrap().0
+        };
+
+        let ln = |nu: f64| (nu - 2.0_f64).ln();
+        for &rho0 in &[0.0_f64, 4.0, 8.0] {
+            let theta = Array1::from_vec(vec![rho0, 0.0, ln(5.0)]);
+            let (fit, fam) = {
+                *score.last_eta.borrow_mut() = None;
+                *score.accepted_state.borrow_mut() = None;
+                score.fit_inner_at(&theta).unwrap()
+            };
+
+            // (b) analytic ∂β/∂ρ — exactly the expression the gradient uses.
+            let lambda = rho0.exp();
+            let s_beta = score.s_list[0].dot(&fit.beta);
+            let rhs = s_beta.mapv(|v| -lambda * v);
+            let analytic: Array1<f64> =
+                <CholeskySolver as LinearSolver>::solve(&fit.a_factor, rhs.view());
+
+            println!(
+                "\n  rho = {rho0:.1}   (converged={}, iters={})",
+                fit.converged, fit.iterations
+            );
+            for &h in &[1e-3_f64, 1e-4, 1e-5] {
+                let mut tp = theta.clone();
+                let mut tm = theta.clone();
+                tp[0] += h;
+                tm[0] -= h;
+                let fp = cold(&score, &tp);
+                let fm = cold(&score, &tm);
+                let fd: Array1<f64> = (&fp.beta - &fm.beta).mapv(|v| v / (2.0 * h));
+                let num = (&analytic - &fd)
+                    .mapv(f64::abs)
+                    .fold(0.0_f64, |a: f64, &b: &f64| a.max(b));
+                let den = fd
+                    .mapv(f64::abs)
+                    .fold(1e-300_f64, |a: f64, &b: &f64| a.max(b));
+                println!(
+                    "    h={h:.0e}  max|analytic-fd| = {num:.6e}   rel = {:.3e}",
+                    num / den
+                );
+            }
+
+            // (b') The hypothesis, tested directly. `A` carries scat's
+            // EXPECTED curvature on the outlier rows (`irls_observed_pair`
+            // substitutes `w_exp` wherever observed `½·Dmu2 <= 0`), so `A` is
+            // not the Hessian of the penalised deviance there. Rebuild the
+            // true Hessian with OBSERVED curvature on every row — negative
+            // entries and all — and re-solve `dβ/dρ` against that.
+            // Read ν and σ² off the family the inner solve actually used.
+            // Hardcoding them is a trap: the θ parameterisation is
+            // `ν = MIN_DF + exp(θ₁)` with `MIN_DF = 3`, so the probe's
+            // `ln(5) = ln(3)` gives ν = 6, not 5.
+            let nu = fam.loss.nu;
+            let sigma2 = fam.loss.sigma2;
+            let q = nu * sigma2;
+            let n_rows = score.y.len();
+            let mut w_obs = Array1::<f64>::zeros(n_rows);
+            let mut n_outlier = 0usize;
+            for i in 0..n_rows {
+                let r = score.y[i] - fit.mu[i];
+                let s = q + r * r;
+                let dmu2 = 2.0 * (nu + 1.0) * (q - r * r) / (s * s);
+                w_obs[i] = 0.5 * dmu2;
+                // Same branch `irls_observed_pair` takes: non-positive or
+                // non-finite observed curvature is where it substitutes.
+                if w_obs[i] <= 1e-12 || !w_obs[i].is_finite() {
+                    n_outlier += 1;
+                }
+            }
+            let p_cols = score.x_design.ncols();
+            let mut h_true = Array2::<f64>::zeros((p_cols, p_cols));
+            for a in 0..p_cols {
+                for b in 0..p_cols {
+                    let mut acc = 0.0;
+                    for i in 0..n_rows {
+                        acc += score.x_design[[i, a]] * w_obs[i] * score.x_design[[i, b]];
+                    }
+                    h_true[[a, b]] = acc + lambda * score.s_list[0][[a, b]];
+                }
+            }
+            let fac = <LuSolver as LinearSolver>::factorize(h_true).unwrap();
+            let obs_analytic: Array1<f64> = <LuSolver as LinearSolver>::solve(&fac, rhs.view());
+
+            let h = 1e-4_f64;
+            let mut tp = theta.clone();
+            let mut tm = theta.clone();
+            tp[0] += h;
+            tm[0] -= h;
+            let fd: Array1<f64> =
+                (&cold(&score, &tp).beta - &cold(&score, &tm).beta).mapv(|v| v / (2.0 * h));
+            let den = fd
+                .mapv(f64::abs)
+                .fold(1e-300_f64, |a: f64, &b: &f64| a.max(b));
+            let e_exp = (&analytic - &fd)
+                .mapv(f64::abs)
+                .fold(0.0_f64, |a: f64, &b: &f64| a.max(b));
+            let e_obs = (&obs_analytic - &fd)
+                .mapv(f64::abs)
+                .fold(0.0_f64, |a: f64, &b: &f64| a.max(b));
+            // Is the leftover ~0.7% real, or is the FD reading PIRLS's own
+            // convergence slack? Check the stationarity residual the IFT is
+            // differentiating: ||X'·(−½Dmu) − λSβ||. If that is ~1e-9 the fit
+            // is tight and the residual is a genuine second term.
+            let mut u = Array1::<f64>::zeros(n_rows);
+            for i in 0..n_rows {
+                let r = score.y[i] - fit.mu[i];
+                let s = q + r * r;
+                let dmu = -2.0 * (nu + 1.0) * r / s;
+                u[i] = -0.5 * dmu;
+            }
+            let stat =
+                score.x_design.t().dot(&u) - score.s_list[0].dot(&fit.beta).mapv(|v| lambda * v);
+            let stat_norm = stat
+                .mapv(f64::abs)
+                .fold(0.0_f64, |a: f64, &b: &f64| a.max(b));
+            let beta_scale = fit
+                .beta
+                .mapv(f64::abs)
+                .fold(1e-300_f64, |a: f64, &b: &f64| a.max(b));
+
+            println!(
+                "    outlier rows = {n_outlier}/{n_rows}   \
+                 stationarity |X'u - lam.S.beta|_inf = {stat_norm:.3e} \
+                 (|beta|_inf = {beta_scale:.3e})\n\
+                 \x20   dbeta/drho vs FD:  expected-W A  rel = {:.3e}   \
+                 observed-W H  rel = {:.3e}",
+                e_exp / den,
+                e_obs / den
+            );
+
+            if rho0 == 0.0 {
+                assert!(
+                    stat_norm < 1e-6,
+                    "PIRLS is not at its fixed point ({stat_norm:.3e}), so the FD of \
+                     beta-hat is not a valid oracle and this test proves nothing"
+                );
+                assert!(
+                    e_obs / den < 1e-5,
+                    "IFT dbeta/drho disagrees with FD of beta-hat by {:.3e} relative \
+                     (expected-W A gives {:.3e}) — the IFT bracket is not the observed \
+                     penalised Hessian",
+                    e_obs / den,
+                    e_exp / den
+                );
+            }
+        }
     }
 }

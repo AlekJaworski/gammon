@@ -281,6 +281,41 @@ pub trait Loss {
         None
     }
 
+    /// Per-row **observed** curvature `½·d²D/dμ²`, on every row, including
+    /// where it is negative.
+    ///
+    /// This is NOT the working weight `A` is built from. Families with a
+    /// per-row observed → expected switch (`irls_observed_pair`) substitute
+    /// the positive expected curvature wherever observed ≤ 0, so that
+    /// `X'WX + λS` stays factorisable. That substitution preserves β̂ — the
+    /// working response is built to keep `W(z − η) = −½·D_μ` regardless of
+    /// the weight, so the fixed point is still `λSβ = X'(−½·D_μ)` — but it
+    /// means `A` is **not** the Hessian of the penalised deviance on those
+    /// rows.
+    ///
+    /// The implicit-function derivative is where that bites. Differentiating
+    /// the stationarity condition gives
+    /// `∂β/∂ρ_j = −λ_j·[X'diag(½·D_μμ)X + Σλ_kS_k]⁻¹·S_j·β`, and the bracket
+    /// is the observed Hessian — not `A`. Solving against `A` instead is a
+    /// measured 2.6% error in `∂β/∂ρ` on the scat FD probe at ρ = 0 (stable
+    /// across `h`), against 2e-8 when solved against the observed Hessian.
+    /// mgcv does not have this problem because `gam.fit4.r:367` keeps the
+    /// observed weight (`w <- dd$Deta2 * .5`, negatives and all) and only
+    /// zeroes rows if the factorisation comes back indefinite.
+    ///
+    /// Includes the per-row prior weight, and is in working-weight
+    /// coordinates (identity link assumed, as for scat). `None` ⇒ the family
+    /// has no observed/expected switch, so `A` already *is* the observed
+    /// penalised Hessian and the IFT can reuse its factor.
+    fn observed_curvature_weights(
+        &self,
+        _y: ndarray::ArrayView1<f64>,
+        _eta: ndarray::ArrayView1<f64>,
+        _prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<ndarray::Array1<f64>> {
+        None
+    }
+
     /// Per-observation Level-2 shape derivatives feeding the **full
     /// analytic** REML/LAML Hessian path (port of mgcv_rust
     /// `src/reml/mod.rs::tdist_gdi2_native`'s `gdi2`-style assembly,
