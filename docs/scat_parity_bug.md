@@ -70,3 +70,9 @@ again.
   cosmetic; the fitted `(ν, σ², curve)` match mgcv.
 - Multi-smooth scat reference parity tests against mgcv are still pending
   (single-smooth + the directional/raw-scale guards are in place).
+- **A separate, still-open scat disagreement was measured on 2026-08-26**, on the
+  single-term refits the TrueFootage adjuster publishes from: curves up to $1,349
+  apart on one term where the same two fitters agree to $1.60 on the joint
+  Gaussian model. Not this bug (the direction fix is in and its regression test
+  passes) and not the 0.13.0 rank fix (A/B: max |Δ| = 0.0). See
+  [`scat_adjuster_parity_2026-08.md`](./scat_adjuster_parity_2026-08.md).

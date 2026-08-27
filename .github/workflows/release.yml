@@ -238,11 +238,52 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist --find-interpreter --no-default-features --features python,blas,blas-static
           sccache: "true"
-      - name: List built wheels
-        # The point of the x86_64 arm is the platform tag, so print it. A tag
+      - name: List built wheels, and check the tag is not a lie
+        # The point of the x86_64 arm is the platform tag, so print it: a tag
         # that is not macosx_*_x86_64, or a missing interpreter, is the failure
         # this job exists to catch and it is invisible in the maturin log.
-        run: ls -l dist/
+        #
+        # The tag is also a CLAIM this runner cannot otherwise test. It is
+        # macOS 15, so a wheel labelled macosx_10_13_x86_64 that actually links
+        # against newer symbols installs and imports here perfectly, and fails
+        # only on the old Mac the tag promised. MACOSX_DEPLOYMENT_TARGET feeds
+        # both the filename and the Mach-O build-version load command, so
+        # reading `minos` back out of the extension module proves the two agree
+        # instead of trusting that the env var was honoured.
+        run: |
+          set -euo pipefail
+          ls -l dist/
+          want="${{ matrix.deployment_target }}"
+          case "${{ matrix.target }}" in
+            x86_64)  arch_tag=x86_64 ;;
+            aarch64) arch_tag=arm64 ;;
+            *) echo "no arch tag mapped for ${{ matrix.target }}"; exit 1 ;;
+          esac
+          tag_ver="${want//./_}"
+          tmp="$(mktemp -d)"
+          n=0
+          for whl in dist/*.whl; do
+            base="$(basename "$whl")"
+            case "$base" in
+              *macosx_${tag_ver}_${arch_tag}.whl) ;;
+              *) echo "FAIL: $base is not tagged macosx_${tag_ver}_${arch_tag}"; exit 1 ;;
+            esac
+            rm -rf "${tmp:?}"/*
+            unzip -q "$whl" -d "$tmp"
+            so="$(find "$tmp" -name '_gamrs_native*.so' -print -quit)"
+            [ -n "$so" ] || { echo "FAIL: no extension module inside $base"; exit 1; }
+            # Newer linkers emit LC_BUILD_VERSION (`minos`); older ones emit
+            # LC_VERSION_MIN_MACOSX (`version`). Accept either.
+            minos="$(otool -l "$so" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')"
+            if [ -z "$minos" ]; then
+              minos="$(otool -l "$so" | awk '/LC_VERSION_MIN_MACOSX/{f=1} f&&/version/{print $2; exit}')"
+            fi
+            echo "$base -> minos ${minos:-(none)}"
+            [ "$minos" = "$want" ] || { echo "FAIL: $base is tagged $want but links minos ${minos:-(none)}"; exit 1; }
+            n=$((n + 1))
+          done
+          [ "$n" -gt 0 ] || { echo "FAIL: no wheels in dist/"; exit 1; }
+          echo "$n wheel(s), all tagged macosx_${tag_ver}_${arch_tag} and all linking minos $want"
       - name: Validate wheel
         run: |
           python3 -m pip install numpy pytest
