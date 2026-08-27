@@ -333,13 +333,10 @@ where
         // eigh that previously ran per inner fit. Falls back to the
         // Fisher A factor's `log|H|` for canonical-link families and
         // when the Newton path bails out.
-        // `observed_log_det_h` first: for a family with an observed→expected
-        // weight switch, `A` is not the matrix mgcv takes `log|H|` off, and
-        // that difference is ρ-dependent so it moves the argmin. Falls through
-        // to the Newton path, then to `log|A|`. The `||` keeps the fast path
-        // free for everyone else — no `s_total` built when neither applies.
-        let want_observed = crate::inner::pirls::observed_log_det_h_enabled();
-        let log_det_h = if family.loss.use_newton_irls() || want_observed {
+        // One definition of the `log|H|` precedence — see
+        // `pirls::score_log_det_h`. The gate keeps the fast path free: no
+        // `s_total` built when neither the observed nor the Newton path applies.
+        let log_det_h = if crate::inner::pirls::score_log_det_h_applies(&family.loss) {
             let prior_w = self
                 .prior_weights
                 .clone()
@@ -349,29 +346,16 @@ where
                 &ndarray::Array1::from(rho_slice.to_vec()),
                 self.x_design.ncols(),
             );
-            crate::inner::pirls::observed_log_det_h(
+            crate::inner::pirls::score_log_det_h(
                 family,
                 &self.y,
                 &fit.eta,
+                &fit.mu,
                 &prior_w,
                 &self.x_design,
                 &s_total,
+                fit,
             )
-            .or_else(|| {
-                if family.loss.use_newton_irls() {
-                    crate::inner::pirls::lazy_newton_log_det_h(
-                        family,
-                        &self.y,
-                        &fit.mu,
-                        &prior_w,
-                        &self.x_design,
-                        &s_total,
-                    )
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| fit.log_det_a())
         } else {
             fit.log_det_a()
         };
@@ -380,11 +364,7 @@ where
             .iter()
             .map(|&yi| family.loss.saturated_log_lik(yi, phi))
             .sum();
-        let two_pi = 2.0 * std::f64::consts::PI;
-        let mp = self.mp as f64;
-        dp / (2.0 * phi) - 0.5 * mp * (two_pi * phi).ln() + 0.5 * log_det_h
-            - 0.5 * log_det_lambda_s
-            - ls_sum
+        crate::score::reml_score_from_parts(dp, phi, self.mp, log_det_h, log_det_lambda_s, ls_sum)
     }
 
     /// Evaluate the REML score at `theta` using a **FROZEN inner fit**
@@ -464,9 +444,10 @@ where
         // (V(μ; θ) shifts → W shifts). For canonical-link families this
         // returns the same value as the Fisher-W path; for NegBin (Newton
         // IRLS = true) the recompute is essential.
-        // Same precedence as the non-frozen path above — see the comment there.
-        let want_observed = crate::inner::pirls::observed_log_det_h_enabled();
-        let log_det_h = if family.loss.use_newton_irls() || want_observed {
+        // One definition of the `log|H|` precedence — see
+        // `pirls::score_log_det_h`. The gate keeps the fast path free: no
+        // `s_total` built when neither the observed nor the Newton path applies.
+        let log_det_h = if crate::inner::pirls::score_log_det_h_applies(&family.loss) {
             let prior_w = self
                 .prior_weights
                 .clone()
@@ -476,29 +457,16 @@ where
                 &Array1::from(rho_slice.clone()),
                 self.x_design.ncols(),
             );
-            crate::inner::pirls::observed_log_det_h(
+            crate::inner::pirls::score_log_det_h(
                 &family,
                 &self.y,
                 &fit.eta,
+                &fit.mu,
                 &prior_w,
                 &self.x_design,
                 &s_total,
+                fit,
             )
-            .or_else(|| {
-                if family.loss.use_newton_irls() {
-                    crate::inner::pirls::lazy_newton_log_det_h(
-                        &family,
-                        &self.y,
-                        &fit.mu,
-                        &prior_w,
-                        &self.x_design,
-                        &s_total,
-                    )
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| fit.log_det_a())
         } else {
             fit.log_det_a()
         };
@@ -507,10 +475,6 @@ where
             .iter()
             .map(|&yi| family.loss.saturated_log_lik(yi, phi))
             .sum();
-        let two_pi = 2.0 * std::f64::consts::PI;
-        let mp = self.mp as f64;
-        dp / (2.0 * phi) - 0.5 * mp * (two_pi * phi).ln() + 0.5 * log_det_h
-            - 0.5 * log_det_lambda_s
-            - ls_sum
+        crate::score::reml_score_from_parts(dp, phi, self.mp, log_det_h, log_det_lambda_s, ls_sum)
     }
 }

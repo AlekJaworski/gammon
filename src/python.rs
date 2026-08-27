@@ -434,10 +434,10 @@ impl PyFittedGam {
             .map(|&yi| family.loss.saturated_log_lik(yi, phi))
             .sum();
 
-        let two_pi = 2.0 * std::f64::consts::PI;
-        let score = dp / (2.0 * phi) - 0.5 * (mp as f64) * (two_pi * phi).ln() + 0.5 * log_det_h
-            - 0.5 * log_det_lambda_s
-            - ls_sum;
+        // One definition of the score, shared with the fitter — a diagnostic
+        // that re-derives it is not a diagnostic of it.
+        let score =
+            crate::score::reml_score_from_parts(dp, phi, mp, log_det_h, log_det_lambda_s, ls_sum);
 
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("score", score)?;
@@ -560,15 +560,16 @@ impl PyFittedGam {
             &Array1::from(rho_slice.to_vec()),
             prep.x_design.ncols(),
         );
-        let log_det_h = crate::inner::pirls::observed_log_det_h(
+        let log_det_h = crate::inner::pirls::score_log_det_h(
             &family,
             &y_arr,
             &fit.eta,
+            &fit.mu,
             &prior_w_ones,
             &prep.x_design,
             &s_total_eval,
-        )
-        .unwrap_or_else(|| fit.log_det_a());
+            &fit,
+        );
         let mp = prep.mp;
 
         // FixedAtOneProfile sets φ=1 for scat — σ² lives inside the loss.
@@ -582,10 +583,10 @@ impl PyFittedGam {
             .map(|&yi| family.loss.saturated_log_lik(yi, phi))
             .sum();
 
-        let two_pi = 2.0 * std::f64::consts::PI;
-        let score = dp / (2.0 * phi) - 0.5 * (mp as f64) * (two_pi * phi).ln() + 0.5 * log_det_h
-            - 0.5 * log_det_lambda_s
-            - ls_sum;
+        // One definition of the score, shared with the fitter — a diagnostic
+        // that re-derives it is not a diagnostic of it.
+        let score =
+            crate::score::reml_score_from_parts(dp, phi, mp, log_det_h, log_det_lambda_s, ls_sum);
 
         // Analytic gradient from the SAME score type the outer Newton drives,
         // so a diagnostic FD compares against what the optimiser is actually
@@ -770,10 +771,10 @@ impl PyFittedGam {
             .map(|&yi| family.loss.saturated_log_lik(yi, phi))
             .sum();
 
-        let two_pi = 2.0 * std::f64::consts::PI;
-        let score = dp / (2.0 * phi) - 0.5 * (mp as f64) * (two_pi * phi).ln() + 0.5 * log_det_h
-            - 0.5 * log_det_lambda_s
-            - ls_sum;
+        // One definition of the score, shared with the fitter — a diagnostic
+        // that re-derives it is not a diagnostic of it.
+        let score =
+            crate::score::reml_score_from_parts(dp, phi, mp, log_det_h, log_det_lambda_s, ls_sum);
 
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("score", score)?;

@@ -528,12 +528,15 @@ where
             .iter()
             .map(|&yi| family.loss.saturated_log_lik(yi, phi))
             .sum();
-        let two_pi = 2.0 * std::f64::consts::PI;
-        let mp = self.mp as f64;
         let dp = deviance_ls + bsb_total;
-        let reml = dp / (2.0 * phi) - 0.5 * mp * (two_pi * phi).ln() + 0.5 * log_det_h
-            - 0.5 * log_det_lambda_s
-            - ls_sum;
+        let reml = crate::score::reml_score_from_parts(
+            dp,
+            phi,
+            self.mp,
+            log_det_h,
+            log_det_lambda_s,
+            ls_sum,
+        );
         if !reml.is_finite() {
             return None;
         }

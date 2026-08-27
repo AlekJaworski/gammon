@@ -56,6 +56,47 @@ where
 ///
 /// Returns `None` if neither path produces finite output (caller falls back
 /// to the Fisher H's log|H|).
+/// **The** `log|H|` the score differentiates. One definition of the precedence.
+///
+/// observed curvature (families with an observed→expected switch) → Newton-A
+/// (`use_newton_irls`) → the fit's own factor. This sequence was written out at
+/// three sites — twice in `shape_aware/score.rs` and once in the scat Python
+/// diagnostic — and the diagnostic's copy had drifted to a bare
+/// `fit.log_det_a()`, so a profile taken with it measured a different function
+/// than the fitter optimised. That is the whole bug class this collapse closes.
+pub(crate) fn score_log_det_h<L, K, V, S>(
+    family: &Family<L, K, V>,
+    y: &Array1<f64>,
+    eta: &Array1<f64>,
+    mu: &Array1<f64>,
+    prior_w: &Array1<f64>,
+    x_design: &Array2<f64>,
+    s_total: &Array2<f64>,
+    fit: &crate::inner::GaussianInnerFit<S>,
+) -> f64
+where
+    L: Loss + Clone,
+    K: Link + Clone,
+    V: VarianceFn + Clone,
+    S: crate::inner::LinearSolver,
+{
+    observed_log_det_h(family, y, eta, prior_w, x_design, s_total)
+        .or_else(|| {
+            if family.loss.use_newton_irls() {
+                lazy_newton_log_det_h(family, y, mu, prior_w, x_design, s_total)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| fit.log_det_a())
+}
+
+/// Cheap precondition for [`score_log_det_h`]: when this is false the caller
+/// must skip it entirely rather than pay to build `s_total` for nothing.
+pub(crate) fn score_log_det_h_applies<L: Loss + Clone>(loss: &L) -> bool {
+    loss.use_newton_irls() || observed_log_det_h_enabled()
+}
+
 /// Opt-in: build the score's `log|H|` from the family's **observed**
 /// curvature (`Loss::observed_curvature_weights`) rather than from the
 /// working weight `A` was factorised with.
