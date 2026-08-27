@@ -46,7 +46,19 @@ pub struct NewtonOpts {
 #[derive(Debug, Clone, Copy)]
 pub struct OuterTuning {
     /// Score-relative gradient tolerance: converge when
-    /// `|grad|_∞ < grad_tol · (|REML| + 1)`. mgcv default 5e-7.
+    /// `|grad|_∞ < grad_tol · (|REML| + 1)`.
+    ///
+    /// mgcv's extended-family outer Newton uses
+    /// `conv.tol = .Machine$double.eps^.5` ≈ 1.49e-8 (`fast-REML.r:1481`),
+    /// which is what `scat` goes through. The 5e-7 this used to carry was
+    /// sourced from mgcv_rust (`smooth.rs:2545-2569`) — the port, not mgcv —
+    /// and is 34× looser. Because the bound is scaled by the SCORE and the
+    /// score is O(10²-10³) while the λ ridge can be flat to 1e-5, 5e-7 made
+    /// the stopping ball wide enough to hold a real curve difference: on the
+    /// real saturated-basis term the optimiser halted at |g|∞ = 3.84e-4
+    /// against a bound of 4.31e-4, at a point whose score was 8.6e-6 WORSE
+    /// than mgcv's. Measured against mgcv on the same (standardized) problem,
+    /// tightening to `sqrt(eps)` moves the worst term from 1.09e-4 to 3.81e-5.
     pub grad_tol: f64,
     /// Score-relative REML-change tolerance: converge when
     /// `|ΔREML| / max(|REML|, 1) < reml_tol`. Active after iter ≥ 3.
@@ -66,7 +78,7 @@ impl OuterTuning {
     /// `smooth.rs:2545-2569 reml.tol`.
     pub fn mgcv_default() -> Self {
         Self {
-            grad_tol: 5.0e-7,
+            grad_tol: f64::EPSILON.sqrt(),
             reml_tol: 1.0e-7,
             max_iters: 200,
             max_step: 5.0,
@@ -217,7 +229,7 @@ impl Default for NewtonOpts {
             // which produces ρ̂ differences of 1-2 units vs v0.x on the
             // saturated axis. See parity report 2026-05-27.
             max_iters: 200,
-            grad_tol: 5.0e-7,
+            grad_tol: f64::EPSILON.sqrt(),
             reml_tol: 1.0e-7,
             step_min: 1e-3,
             hess_floor: 1e-8,
