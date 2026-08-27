@@ -1,6 +1,6 @@
 # `scat` vs mgcv on the adjuster refits — open, measured 2026-08-26
 
-**Status: OPEN, cause characterised 2026-08-27 — a gamrs defect.** Not a reproduction of
+**Status: FIXED 2026-08-27 — a gamrs defect, root-caused to one term.** Not a reproduction of
 [`scat_parity_bug.md`](./scat_parity_bug.md) (resolved in 0.11.2, direction-of-robustness);
 that fix is in and its regression test still passes. This is a *magnitude* disagreement on
 single-smooth `scat` refits, and it lands squarely on that note's last caveat:
@@ -193,6 +193,68 @@ adjustment.
 | the wrong gradient | `src/score/shape_aware/gradient.rs` — the assembled REML gradient; `g[0]` (the ρ axis) is the component that fails |
 | mgcv's side | `mgcv` R `gam.fit5` / `newton()` in `R/mgcv.r`; `scat` in `R/efam.r:1248` |
 
+## The root cause, to a line — 2026-08-27
+
+`src/score/shape_aware/gradient.rs::compute_rho_envelope_gradient` carried a term for the
+derivative of a ridge that is not in the matrix the score differentiates.
+
+The shape-aware score reads `log|A|` and `tr(A⁻¹S_j)` off the factor the inner solver hands back.
+Two inner solvers feed it:
+
+- `OcatInner` (`src/inner/gam_fit5.rs:246-256`) builds its final-pass factor as
+  `A = X'WX + Σλ_jS_j + c·max|diag(A_post_pen)|·I` with `c = 1e-5·(1 + √n_pen)`. That ridge depends
+  on λ, so the ρ-gradient genuinely owes a `∂ridge/∂ρ_j · tr(A⁻¹)/2` term.
+- `PirlsInner` — what scat, NegBin and Tweedie use — hands back the **unridged** factor. Its ridge
+  is `1e-12·max_diag` and is applied to a *copy* used only for the β̂ solve
+  (`src/inner/linalg.rs:353-364`, which factors `a` twice on purpose and returns the unridged one).
+
+`compute_rho_envelope_gradient` is shared by both and hard-coded ocat's `c`. For every PIRLS-path
+family it therefore added `½·c·λ_j·S_j[i*,i*]·tr(A⁻¹)` — a term proportional to λ — to a gradient
+whose true value decays like 1/λ. Measured on `score_tests.rs::tdist_analytic_rho_grad_matches_fd`,
+the error was exactly proportional to λ:
+
+| ρ | analytic − FD, before | after |
+|---|---|---|
+| 0 | 1.13e-2 | 1.44e-4 |
+| 4 | 5.65e-1 | 1.40e-6 |
+| 8 | 3.08e1 | 6.93e-6 |
+| 12 | 1.68e3 | 1.19e-5 |
+| 16 | 9.18e4 | analytic decayed to −2.5e-8 |
+
+Each +4 in ρ multiplied it by e⁴. That is the "λ-envelope derivative term that fails to cancel in
+the over-penalised limit" the first pass guessed at — it does not fail to cancel, it should never
+have been there.
+
+**The fix** (`ShapeInnerBuilder::score_ridge_scale`, `src/score/shape_aware/builder.rs`): the
+builder declares the ridge coefficient actually baked into the factor it returns — `0.0` by
+default, ocat's `1e-5·(1 + √n_pen)` for `OcatInnerBuilder` — and the gradient differentiates that.
+
+A second, much smaller correction went in beside it: the β-chain term in `log|H|` now prefers
+`Loss::ift_trace_weight_derivs`' `dw_dmu` over `½·Dmu3` where the family supplies it. For scat the
+two differ on the outlier rows, where the working weight is the μ-independent *expected* curvature
+and so contributes nothing to `∂W/∂μ`.
+
+### What it moved
+
+| | before | after | mgcv |
+|---|---|---|---|
+| `parity_scat_flat_ridge` edf | 2.1316 | 2.0015 | 2.0102 |
+| `parity_scat_flat_ridge` curve gap | $291.2 | $22.3 | — |
+| `3d_scat_identity_n800` μ rel-err | 2.2e-3 | 5.7e-4 | — |
+| `2d_scat_identity_n600` μ rel-err | 5.7e-4 | 1.08e-3 | — |
+| Tweedie ρ-axis rel-err (first probe) | 2.78e-2 | 2.42e-3 | — |
+
+The 2-D scat fixture is the one that moved the wrong way, and it is not a regression in the fit:
+gamrs's ρ̂ went `[3.809, 10.012]` → `[3.799, 10.077]` against mgcv's log `sp` of `[3.736, 9.898]`,
+and its total edf `9.05` → `9.03` against mgcv's `8.9798`. Its bound was retuned to 1.5e-3 and the
+3-D one tightened 4× to 1e-3.
+
+**Not fully closed.** A residual of about 1e-3 RELATIVE remains in scat's ρ-gradient at moderate ρ
+(analytic +1.528723e-1 against FD +1.530165e-1 at ρ = 0). One candidate: the IFT step uses
+`∂β/∂ρ_j = −λ_j·A⁻¹·S_j·β` with `A = X'WX + λS`, but on scat's outlier rows the working weight is
+the *expected* curvature rather than `½·D''_η`, so `A` is not the Hessian of the penalised deviance
+there. Untested.
+
 ## Verdict
 
 **A gamrs defect, not a difference of objective.** The two fitters share the basis, the penalty, the
@@ -202,11 +264,10 @@ identified: `g[0]` of `scat`'s assembled REML gradient disagrees with a finite d
 own score, by enough to flip its sign once the λ ridge goes shallow — the one axis of that gradient
 nothing tested.
 
-Not yet established: *why* `g[0]` is wrong. The error grows with ρ while the true gradient decays,
-which points at a term in the λ-envelope derivative that fails to cancel in the over-penalised
-limit, but that has not been traced to a line. Fixing it is a separate change and the parity claim
-should stay withdrawn until it lands: **on the joint Gaussian model gamrs and mgcv are the same fit;
-on the `scat` refits the published adjustments come from, they are not.**
+Traced and fixed — see "The root cause, to a line" above. The parity claim on the `scat` refits can
+be restated once it is re-measured on the adjuster capture; the synthetic evidence is that the
+flat-ridge regime now lands on mgcv (edf 2.0015 vs 2.0102, $22 rather than $291), and the real
+`condition` / `quality` terms have NOT yet been re-measured.
 
 ## Reproducing
 

@@ -42,6 +42,23 @@ pub trait ShapeInnerBuilder<
         s_list: Vec<Array2<f64>>,
         opts: PirlsOpts,
     ) -> Self::Inner;
+
+    /// Coefficient of the λ-dependent ridge this inner solver bakes into
+    /// the factor it hands the score — i.e. the `c` in
+    /// `A = X'WX + Σλ_jS_j + c·max|diag(X'WX + Σλ_jS_j)|·I`.
+    ///
+    /// It is NOT a solver detail the score can ignore: the score reads
+    /// `log|A|` and `tr(A⁻¹S_j)` off that factor, so the analytic
+    /// ρ-gradient owes a `∂ridge/∂ρ_j · tr(A⁻¹)/2` term for whatever
+    /// ridge is actually in there. Returning the wrong `c` puts a term
+    /// growing like λ into a gradient whose true value decays.
+    ///
+    /// Default `0.0` — `PirlsInner` hands back the **unridged** factor
+    /// (its 1e-12 ridge is applied to a copy used only for the β̂ solve,
+    /// `linalg.rs::factor_and_solve_with_ridge`). `OcatInner` overrides.
+    fn score_ridge_scale(&self, _n_terms: usize) -> f64 {
+        0.0
+    }
 }
 
 /// Unit-struct builder for `PirlsInner<L, K, V, S>`. The `S` parameter
@@ -108,5 +125,12 @@ impl<S: LinearSolver> ShapeInnerBuilder<OcatLoss, IdentityLink, OcatVariance, S>
             opts,
             _solver: PhantomData,
         }
+    }
+
+    /// `OcatInner`'s final-pass factor carries the v0.x adaptive ridge
+    /// `1e-5·(1 + √n_pen)·max|diag(A_post_pen)|` (`gam_fit5.rs:246-256`),
+    /// so the score's ρ-gradient must differentiate it.
+    fn score_ridge_scale(&self, n_terms: usize) -> f64 {
+        1.0e-5 * (1.0 + (n_terms as f64).sqrt())
     }
 }

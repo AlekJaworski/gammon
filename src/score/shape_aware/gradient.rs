@@ -45,17 +45,20 @@ where
     /// 1. **`∂ridge/∂ρ_j · tr(H⁻¹) / 2`**: post-penalty `max_diag(A)`
     ///    ridge depends on λ. At `i* = argmax_i |A[i,i]|` (post-pen),
     ///    `∂A[i*,i*]/∂ρ_j = λ_j·S_j[i*,i*]` (W constant by envelope).
+    ///    **Only for inner solvers that actually ridge the factor the
+    ///    score reads** — see `ShapeInnerBuilder::score_ridge_scale`.
     ///
     /// 2. **`Tk·KK'_j / 2`**: W = ½·Dmu2(η) depends on β through η = Xβ,
     ///    so `∂(X'WX)/∂ρ_j` is non-zero via the chain:
     ///    `∂β/∂ρ_j = −λ_j·H⁻¹·S_j·β` (IFT on PIRLS score equation),
     ///    `η₁_j = X·∂β/∂ρ_j`,
-    ///    `Tk·KK'_j = Σᵢ (½·Dmu3_i) · η₁_j[i] · h_diag[i]`,
+    ///    `Tk·KK'_j = Σᵢ (∂W_i/∂μ_i) · η₁_j[i] · h_diag[i]`,
     ///    where `h_diag_i = (X·H⁻¹·X')_ii`.
-    ///    Only fires when the Loss supplies `level1_shape_derivatives`
-    ///    (ocat does; default Loss impl returns None, so other shape-
-    ///    aware families fall back to the pure envelope — matching
-    ///    gamrs's documented parity floor for those).
+    ///    Fires when the Loss supplies `level1_shape_derivatives` (ocat:
+    ///    `∂W/∂μ = ½·Dmu3`) or `ift_trace_weight_derivs` (scat/TDist:
+    ///    `dw_dmu`, which respects the observed→expected weight switch).
+    ///    Families with neither (NegBin, InverseGaussian, Tweedie) fall
+    ///    back to the pure envelope — gamrs's documented parity floor.
     pub(crate) fn compute_rho_envelope_gradient(
         &self,
         fit: &GaussianInnerFit<S>,
@@ -70,46 +73,80 @@ where
         let n = fit.n;
         let p = fit.p;
 
-        // Rebuild A_diag = X'WX_diag + Σ λ_j S_j_diag to find i*.
-        // Broadcast: A_diag[c] = Σ_i X[i,c]² · W[i] = (X² · W).col_sum.
-        let mut a_diag = Array1::<f64>::zeros(p);
-        for c in 0..p {
-            let xc = self.x_design.column(c);
-            a_diag[c] = (&xc * &xc * &fit.working_weights).sum();
-        }
-        for j in 0..n_terms {
-            let lambda_j = rho_slice[j].exp();
+        // The ridge term only exists for inner solvers that actually bake a
+        // λ-dependent ridge into the factor the score reads `log|A|` and
+        // `tr(A⁻¹S_j)` off (ocat does; PIRLS hands back an unridged factor —
+        // see `ShapeInnerBuilder::score_ridge_scale`). Differentiating a ridge
+        // that is not in `A` adds a term growing like λ·tr(A⁻¹) to a gradient
+        // whose true value decays to zero as λ → ∞, which is how it flipped
+        // the sign of scat's ρ-gradient on a shallow ridge.
+        let ridge_scale = self.inner_builder.score_ridge_scale(n_terms);
+        let (i_star, tr_h_inv) = if ridge_scale == 0.0 {
+            (0_usize, 0.0_f64)
+        } else {
+            // Rebuild A_diag = X'WX_diag + Σ λ_j S_j_diag to find i*.
+            // Broadcast: A_diag[c] = Σ_i X[i,c]² · W[i] = (X² · W).col_sum.
+            let mut a_diag = Array1::<f64>::zeros(p);
             for c in 0..p {
-                a_diag[c] += lambda_j * self.s_list[j][[c, c]];
+                let xc = self.x_design.column(c);
+                a_diag[c] = (&xc * &xc * &fit.working_weights).sum();
             }
-        }
-        let mut i_star = 0_usize;
-        let mut best = a_diag[0].abs();
-        for c in 1..p {
-            let v = a_diag[c].abs();
-            if v > best {
-                best = v;
-                i_star = c;
+            for j in 0..n_terms {
+                let lambda_j = rho_slice[j].exp();
+                for c in 0..p {
+                    a_diag[c] += lambda_j * self.s_list[j][[c, c]];
+                }
             }
-        }
+            let mut i_star = 0_usize;
+            let mut best = a_diag[0].abs();
+            for c in 1..p {
+                let v = a_diag[c].abs();
+                if v > best {
+                    best = v;
+                    i_star = c;
+                }
+            }
+            // tr(H⁻¹) — diag of A⁻¹ via the fit's factor.
+            let mut id_eye = Array2::<f64>::zeros((p, p));
+            for c in 0..p {
+                id_eye[[c, c]] = 1.0;
+            }
+            (i_star, fit.trace_a_inv(id_eye.view()))
+        };
 
-        let ridge_scale = 1.0e-5 * (1.0 + (n_terms as f64).sqrt());
-        // tr(H⁻¹) — diag of A⁻¹ via the fit's factor.
-        let mut id_eye = Array2::<f64>::zeros((p, p));
-        for c in 0..p {
-            id_eye[[c, c]] = 1.0;
-        }
-        let tr_h_inv = fit.trace_a_inv(id_eye.view());
+        // Tk·KK' contribution — the β-chain in `log|H|`. `W` depends on β
+        // through η = Xβ, so `∂(X'WX)/∂ρ_j` is non-zero even at converged β̂
+        // (the envelope theorem kills the β-chain in `D + Σλβ'Sβ`, not in
+        // `log|H|`). Per-row coefficient is `∂W_i/∂μ_i`, taken from whichever
+        // hook the Loss supplies:
+        //   - `ift_trace_weight_derivs` (scat/TDist) FIRST where present: it
+        //     honours the family's observed→expected weight switch, where the
+        //     outlier rows carry a μ-INDEPENDENT expected weight and so
+        //     contribute nothing. `½·Dmu3` differentiates the observed
+        //     curvature on every row, which is not the `W` that is in `A`.
+        //   - `level1_shape_derivatives` otherwise (ocat): `∂W/∂μ = ½·Dmu3`.
+        // Families with neither hook (NegBin, InverseGaussian, Tweedie) keep
+        // the pure envelope form — the documented parity floor for them.
+        let dw_dmu_rows: Option<Array1<f64>> = family
+            .loss
+            .ift_trace_weight_derivs(
+                self.y.view(),
+                fit.eta.view(),
+                self.prior_weights.as_ref().map(|w| w.view()),
+            )
+            .map(|(_dw_dtheta, dw_dmu)| dw_dmu)
+            .or_else(|| {
+                family
+                    .loss
+                    .level1_shape_derivatives(
+                        self.y.view(),
+                        fit.eta.view(),
+                        self.prior_weights.as_ref().map(|w| w.view()),
+                    )
+                    .map(|level1| level1.dmu3.mapv(|v| 0.5 * v))
+            });
 
-        // Tk·KK' contribution — only fires when the Loss supplies
-        // `level1_shape_derivatives` (currently ocat). For other shape-
-        // aware families we use the pure-envelope formula which is the
-        // existing documented parity floor.
-        let tk_kkt_per_term: Vec<f64> = if let Some(level1) = family.loss.level1_shape_derivatives(
-            self.y.view(),
-            fit.eta.view(),
-            self.prior_weights.as_ref().map(|w| w.view()),
-        ) {
+        let tk_kkt_per_term: Vec<f64> = if let Some(dw_dmu) = dw_dmu_rows {
             // h_diag[i] = (X · A⁻¹ · X')_ii. Materialise A_inv once then
             // A_inv·X' as one matmul (instead of n per-row solves).
             let a_inv: Array2<f64> = fit.a_inv();
@@ -118,7 +155,9 @@ where
             for i in 0..n {
                 h_diag[i] = (&self.x_design.row(i) * &a_inv_xt.column(i)).sum();
             }
-            // tk_kkt[j] = Σ ½·dmu3[i]·η1[i,j]·h_diag[i]  (broadcast sum).
+            // tk_kkt[j] = Σᵢ ∂W_i/∂μ_i · η1_j[i] · h_diag[i]  (broadcast sum),
+            // where η1_j = X·∂β/∂ρ_j and ∂β/∂ρ_j = −λ_j·A⁻¹·S_j·β (IFT on the
+            // PIRLS score equation). The caller applies the outer ½.
             let mut tk_kkt = vec![0.0_f64; n_terms];
             for j in 0..n_terms {
                 let lambda_j = rho_slice[j].exp();
@@ -126,8 +165,7 @@ where
                 let rhs = s_beta.mapv(|v| -lambda_j * v);
                 let dbeta_drho_j: Array1<f64> = S::solve(&fit.a_factor, rhs.view());
                 let eta1_j = self.x_design.dot(&dbeta_drho_j);
-                // 0.5 · Σ dmu3 · η1_j · h_diag  — fused broadcast sum.
-                tk_kkt[j] = 0.5 * (&level1.dmu3 * &eta1_j * &h_diag).sum();
+                tk_kkt[j] = (&dw_dmu * &eta1_j * &h_diag).sum();
             }
             tk_kkt
         } else {

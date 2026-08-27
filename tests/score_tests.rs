@@ -188,8 +188,10 @@ fn tdist_analytic_shape_grad_matches_fd() {
     for theta_init in probes {
         let theta = Array1::from_vec(theta_init.to_vec());
         let (_v, g) = score.value_and_grad(&theta).unwrap();
-        // Shape axes only (i ∈ {1,2}); g[0] is the λ-envelope gradient
-        // (verified separately). Richardson D(h) = (4·FD(h) − FD(2h))/3
+        // Shape axes only (i ∈ {1,2}); the ρ axis has its own test,
+        // `tdist_analytic_rho_grad_matches_fd` — which is where the
+        // λ-envelope gradient was ACTUALLY checked for the first time, and
+        // where it turned out to be wrong. Richardson D(h) = (4·FD(h) − FD(2h))/3
         // cancels the O(h²) truncation term for a ~O(h⁴) estimate of the
         // true derivative. With the mgcv-faithful IRLS — observed Newton
         // weight on core rows, **expected**-curvature weight with the
@@ -225,32 +227,36 @@ fn tdist_analytic_shape_grad_matches_fd() {
 /// of gamrs's OWN score at the same θ.
 ///
 /// `tdist_analytic_shape_grad_matches_fd` above checks `i in 1..3` only — the
-/// two shape axes — and says of the third "g[0] is the λ-envelope gradient
-/// (verified separately)". For scat it was not: nothing probed g[0] on this
-/// family, and it is wrong.
+/// two shape axes — and used to say of the third "g[0] is the λ-envelope
+/// gradient (verified separately)". It was not, for scat or for Tweedie, and
+/// it was wrong: `compute_rho_envelope_gradient` carried a
+/// `∂ridge/∂ρ_j · tr(H⁻¹)/2` term for a λ-dependent ridge that only
+/// `OcatInner` bakes into the factor the score reads (`PirlsInner` hands back
+/// an UNRIDGED factor — its 1e-12 ridge goes on a copy used for the β̂ solve
+/// only, `linalg.rs::factor_and_solve_with_ridge`). Differentiating a ridge
+/// that is not in `A` adds a term proportional to λ·tr(A⁻¹) to a gradient
+/// whose true value decays like 1/λ. Measured on the probes below, the error
+/// was exactly proportional to λ: 1.1e-2 at ρ=0, 5.7e-1 at ρ=4, 3.1e1 at ρ=8,
+/// 1.7e3 at ρ=12, 9.2e4 at ρ=16 — each step of +4 in ρ multiplying it by e⁴.
 ///
-/// The error is ADDITIVE and grows with ρ, while the TRUE gradient decays toward
-/// zero as the penalty takes over — so it is harmless while the true gradient is
-/// O(1) and dominant once the λ ridge goes shallow. On the production fit path
-/// the damage is modest in absolute terms and fatal in sign: at the point the
-/// outer Newton actually stopped on the synthetic flat-ridge fixture, analytic
-/// = +0.0275 against a finite difference of −0.0355. Probed directly here,
-/// unanchored by the fit's own state, it diverges much further. Either way the
-/// ρ axis is the one axis of scat's gradient nothing checked. That shallow-ridge
-/// regime is where the TrueFootage adjuster's single-term refits sit
-/// (`docs/scat_adjuster_parity_2026-08.md`): on a near-linear signal the REML
-/// score descends monotonically toward the λ→∞ straight-line limit, the true
-/// gradient falls to ~1e-2, and the analytic one comes back with the WRONG SIGN.
-/// The outer Newton then steps the wrong way, step-halving finds no decrease,
-/// and `outer.rs`'s fallback returns the point it is standing on — leaving edf
-/// above mgcv's and the fitted curve hundreds of dollars off. Measured on the
-/// real `condition` term and reproduced synthetically by
-/// `tests/parity_scat_flat_ridge.rs`.
+/// Why it hid for three releases: the error is additive and the TRUE gradient
+/// is O(1) while the λ ridge is steep, so it changed nothing on a well-curved
+/// surface. Once the ridge goes shallow it dominates and flips the sign; the
+/// outer Newton then steps the wrong way, step-halving finds no decrease, and
+/// `outer.rs`'s fallback returns the point it is standing on — leaving edf
+/// above mgcv's and the fitted curve hundreds of dollars off. That regime is
+/// what `tests/parity_scat_flat_ridge.rs` reproduces.
 ///
-/// The Hessian is FD'd on this same analytic gradient, so a wrong g[0] poisons
-/// H[0][0] too — observed negative curvature where the surface is monotone.
+/// The Hessian is FD'd on this same analytic gradient, so a wrong g[0] poisoned
+/// H[0][0] too — negative curvature at a point where the surface is monotone.
+///
+/// The bar: absolute error against a Richardson-extrapolated central FD,
+/// scaled by `1 + |fd|`. ρ = 16 is asserted differently — there `A` has a
+/// condition number around 1e10 and the FD of `log|A|` is no longer a usable
+/// oracle (it reads a systematic ~1e-3 drift that the analytic decay says is
+/// not there), so the assertion is that the analytic gradient has DECAYED,
+/// which is what the ridge term destroyed.
 #[test]
-#[ignore = "open defect: scat's analytic d(REML)/d(rho) is wrong once the lambda ridge goes shallow; see docs/scat_adjuster_parity_2026-08.md"]
 fn tdist_analytic_rho_grad_matches_fd() {
     use gamrs::basis::CrSpline;
 
@@ -323,7 +329,7 @@ fn tdist_analytic_rho_grad_matches_fd() {
     for theta_init in probes {
         let theta = Array1::from_vec(theta_init.to_vec());
         let (_v, g) = score.value_and_grad(&theta).unwrap();
-        let h = 1e-4;
+        let h = 1e-3;
         let fd_rich = (4.0 * fd_at(&theta, 0, h) - fd_at(&theta, 0, 2.0 * h)) / 3.0;
         let abs_err = (g[0] - fd_rich).abs();
         println!(
@@ -338,13 +344,28 @@ fn tdist_analytic_rho_grad_matches_fd() {
                 ""
             }
         );
+        if theta_init[0] >= 16.0 {
+            // FD is not an oracle this far out (see the doc comment); assert
+            // the decay instead. Pre-fix this read +9.175e4.
+            assert!(
+                g[0].abs() < 1e-4,
+                "at rho=16 the true gradient has decayed like 1/lambda; \
+                 analytic says {:+.6e}",
+                g[0]
+            );
+            continue;
+        }
+        let bar = 1e-3 * (1.0 + fd_rich.abs());
+        assert!(
+            abs_err < bar,
+            "scat analytic d(REML)/d(rho) at rho={:.1}: analytic {:+.6e} vs FD \
+             {fd_rich:+.6e}, abs err {abs_err:.3e} over bar {bar:.3e}",
+            theta_init[0],
+            g[0]
+        );
         worst = worst.max(abs_err);
     }
-    // The shape axes hold to <1e-3 relative at every probe; ρ should too.
-    assert!(
-        worst < 1e-3,
-        "scat analytic d(REML)/d(rho) drifts from FD by up to {worst:.3e}"
-    );
+    println!("  worst abs err over the rho<=12 probes: {worst:.3e}");
 }
 
 /// Phase-1 port verification: Tweedie's analytic shape gradient must
@@ -409,12 +430,16 @@ fn tweedie_analytic_shape_grad_matches_fd() {
             let v_minus = score.value(&t_minus).unwrap();
             g_fd[i] = (v_plus - v_minus) / (2.0 * h);
         }
-        // Only assert on shape components (i ∈ {1, 2}); g[0] is the
-        // envelope λ-gradient and is verified by a separate test. FD
-        // tolerance is loose because the score value contains a Dunn-Smyth
+        // All three axes, ρ included. g[0] used to be skipped here on the
+        // claim that it was "verified by a separate test" — it was not, for
+        // this family or for scat, and it was wrong: the shape-aware score
+        // differentiated a λ-dependent ridge that only `OcatInner` puts in
+        // the factor it hands back (`ShapeInnerBuilder::score_ridge_scale`).
+        // At the first probe that read +3.763e-2 against an FD of +9.567e-3.
+        // FD tolerance is loose because the score value contains a Dunn-Smyth
         // series sum that contributes O(1e2) noise to FD at moderate
         // (φ, p). Agreement to 2e-2 confirms the analytic formula.
-        for i in 1..3 {
+        for i in 0..3 {
             let rel = (g[i] - g_fd[i]).abs() / (g_fd[i].abs() + 1.0);
             assert!(
                 rel < 2e-2,

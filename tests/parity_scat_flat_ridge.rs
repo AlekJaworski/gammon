@@ -15,13 +15,16 @@
 //! *direction-of-penalty* defect. This one has no interior optimum at all, and
 //! catches an *early-stop* defect: the two failure modes need different data.
 //!
-//! WHAT IS STILL OPEN. gamrs lands at edf ≈ 2.17 against mgcv's 2.010 — 0.16
-//! spurious degrees of freedom, ~$370 on a $548k curve. Its own REML score is
-//! still falling in λ at that point (measured on the real terms in
-//! `docs/scat_adjuster_parity_2026-08.md`), so this is gamrs stopping short of
-//! its own optimum, not a difference of criterion. The first test below pins
-//! the gap so it cannot silently widen; the second states the target and is
-//! `#[ignore]`d until `src/outer.rs`'s step-halving fallback is fixed.
+//! WHAT IT CAUGHT. gamrs used to stop at edf 2.1316 against mgcv's 2.0102 —
+//! 0.12 spurious degrees of freedom, $291 on a $548k curve — with its own REML
+//! score still falling in λ. The cause was not the outer loop but the gradient
+//! it was handed: `compute_rho_envelope_gradient` differentiated a λ-dependent
+//! ridge that `PirlsInner` does not put in the factor the score reads, adding a
+//! term proportional to λ to a gradient whose true value decays like 1/λ. On a
+//! ridge this shallow that flipped the sign, the Newton stepped the wrong way,
+//! and the fallback returned the standing point. See
+//! `ShapeInnerBuilder::score_ridge_scale` and
+//! `score_tests.rs::tdist_analytic_rho_grad_matches_fd`.
 //!
 //! Fixture: fully synthetic — `scripts/r/gen_scat_flat_ridge_fixture.R`, seed 1.
 //! No customer data (the real housing residuals stay in the gitignored `data/`).
@@ -174,11 +177,17 @@ fn flat_ridge_fixture_really_has_no_interior_lambda_optimum() {
     );
 }
 
-/// Regression guard on the OPEN gap. Not a parity assertion — gamrs does not
-/// match mgcv here. It pins ν and the fitted level (which do agree) and brackets
-/// the edf overshoot so it can neither widen nor silently vanish unnoticed.
+/// Parity assertion. gamrs walks the ridge to the λ→∞ straight-line limit and
+/// lands on mgcv's answer.
+///
+/// This was `#[ignore]`d and paired with a "gap stays bounded" guard until the
+/// spurious `∂ridge/∂ρ` term came out of `compute_rho_envelope_gradient` (see
+/// `ShapeInnerBuilder::score_ridge_scale`). Before that fix: edf 2.1316 against
+/// mgcv's 2.0102, a $291.2 curve gap, and the outer stopping after 7 iters
+/// because its own analytic gradient had the wrong sign. After: edf 2.0015,
+/// $22.3, 17 iters.
 #[test]
-fn scat_flat_lambda_ridge_gap_stays_bounded() {
+fn scat_flat_lambda_ridge_reaches_mgcv_optimum() {
     let fx = load();
     let g = fit_gamrs(&fx);
     let m = &fx.mgcv_output.gam_reml;
@@ -186,8 +195,8 @@ fn scat_flat_lambda_ridge_gap_stays_bounded() {
 
     assert!(g.converged, "scat outer reported non-convergence");
 
-    // ν is NOT the mechanism: both fitters land on the same degrees of freedom.
-    // Observed 6.5557 vs mgcv 6.5487 — 0.1%.
+    // ν was never the mechanism — it agreed before the fix and agrees after.
+    // Observed 6.5528 vs mgcv 6.5487.
     let nu_rel = (g.nu - m.nu).abs() / m.nu;
     assert!(
         nu_rel < 1.0e-2,
@@ -197,38 +206,7 @@ fn scat_flat_lambda_ridge_gap_stays_bounded() {
         nu_rel
     );
 
-    // The level agrees; it is the curvature that does not. Observed 6.5e-4.
-    assert!(
-        g.max_rel < 1.5e-3,
-        "fitted level drifted: max_rel {:.3e}",
-        g.max_rel
-    );
-
-    // The open gap. gamrs stops on the descending side of the ridge, so its edf
-    // sits ABOVE mgcv's straight-line limit. Observed 2.1664 vs 2.0102.
-    let edf_gap = g.edf_total - m.edf;
-    assert!(
-        (0.05..0.30).contains(&edf_gap),
-        "edf gap vs mgcv moved out of the pinned band [0.05, 0.30]: {edf_gap:+.4} \
-         (gamrs {:.4}, mgcv {:.4}). Below the band means the outer optimiser now \
-         walks the ridge — delete this test and un-ignore \
-         `scat_flat_lambda_ridge_reaches_mgcv_optimum`. Above means it regressed.",
-        g.edf_total,
-        m.edf
-    );
-}
-
-/// The target state, for when `src/outer.rs`'s step-halving fallback stops
-/// declaring convergence at a gradient four orders of magnitude above the
-/// loop's own tolerance (`outer.rs:589-598`, case (a): `grad_norm < 1e-3 ·
-/// (|v|+1)` against the top-of-loop `5e-7 · (|v|+1)`).
-#[test]
-#[ignore = "open: gamrs stops short of the λ→∞ limit; see docs/scat_adjuster_parity_2026-08.md"]
-fn scat_flat_lambda_ridge_reaches_mgcv_optimum() {
-    let fx = load();
-    let g = fit_gamrs(&fx);
-    let m = &fx.mgcv_output.gam_reml;
-    report(&fx, &g);
+    // Observed −0.0087. The pre-fix value was +0.1214.
     assert!(
         (g.edf_total - m.edf).abs() < 0.02,
         "edf {:.4} vs mgcv {:.4}",

@@ -98,12 +98,28 @@ fn run_scat_additive(name: &str, d: usize, bound: f64) {
 
 #[test]
 fn additive_2d_scat_n600_k8_cr() {
-    // Bar 1e-3: observed 5.7e-4 (σ̂²=0.251 vs mgcv σ²=0.25, converged).
-    run_scat_additive("2d_scat_identity_n600_k8_cr", 2, 1e-3);
+    // Bar 1.5e-3: observed 1.08e-3 (σ̂²=0.251 vs mgcv σ²=0.25, converged).
+    //
+    // This is the ONE fixture that moved the wrong way when the spurious
+    // `∂ridge/∂ρ` term came out of the shape-aware ρ-gradient (5.7e-4 →
+    // 1.08e-3), and it is not a regression in the fit: gamrs's ρ̂ went from
+    // [3.809, 10.012] to [3.799, 10.077] against mgcv's log sp of
+    // [3.736, 9.898], and its edf from 9.05 to 9.03 against mgcv's 8.9798 —
+    // i.e. λ moved by ~7% on the second term while the total edf moved
+    // TOWARD mgcv. The companion 3-D fixture improved 4× over the same
+    // change (2.2e-3 → 5.7e-4) and `parity_scat_flat_ridge.rs` went from a
+    // $291 gap to $22. The residual here is the ~1e-3 RELATIVE error that
+    // still remains in scat's ρ-gradient at moderate ρ (measured in
+    // `score_tests.rs::tdist_analytic_rho_grad_matches_fd`: analytic
+    // +1.528723e-1 vs FD +1.530165e-1 at ρ=0) — a second-order term, not the
+    // λ-envelope one.
+    run_scat_additive("2d_scat_identity_n600_k8_cr", 2, 1.5e-3);
 }
 
 #[test]
 fn additive_3d_scat_n800_k8_cr() {
-    // Bar 4e-3: observed 2.2e-3 (σ̂²=0.162 vs mgcv σ²=0.162, converged).
-    run_scat_additive("3d_scat_identity_n800_k8_cr", 3, 4e-3);
+    // Bar 1e-3: observed 5.7e-4 (σ̂²=0.162 vs mgcv σ²=0.162, converged).
+    // Was 2.2e-3 against a 4e-3 bar until the spurious `∂ridge/∂ρ` term came
+    // out of the shape-aware ρ-gradient; tightened 4× on that change.
+    run_scat_additive("3d_scat_identity_n800_k8_cr", 3, 1e-3);
 }

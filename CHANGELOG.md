@@ -7,6 +7,39 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+### Fixed
+- **The shape-aware REML gradient's ρ (log λ) axis differentiated a ridge that
+  is not there.** `compute_rho_envelope_gradient` added
+  `½·c·λ_j·S_j[i*,i*]·tr(A⁻¹)` with `c = 1e-5·(1 + √n_pen)` — the adaptive ridge
+  `OcatInner` bakes into the factor it returns. `PirlsInner`, which drives
+  scat/TDist, NegBin and Tweedie, hands back an **unridged** factor (its 1e-12
+  ridge goes on a copy used only for the β̂ solve). For those families the term
+  was pure error, and being proportional to λ it grew without bound while the
+  true gradient decays like 1/λ: on the scat FD probe it read 1.1e-2 at ρ = 0
+  and 9.2e4 at ρ = 16. Harmless on a steep λ ridge, decisive on a shallow one —
+  it flipped the gradient's sign, the outer Newton stepped the wrong way,
+  step-halving found no decrease and `outer.rs` returned the standing point.
+  The Hessian is finite-differenced on this same gradient, so `H_ρρ` came back
+  negative where the surface is monotone.
+
+  Inner solvers now declare what they ridge via
+  `ShapeInnerBuilder::score_ridge_scale`. Alongside it, the `log|H|` β-chain
+  term prefers `Loss::ift_trace_weight_derivs`' `dw_dmu` over `½·Dmu3` where the
+  family supplies it — for scat the two differ on the outlier rows, where the
+  working weight is the μ-independent expected curvature.
+
+  Measured: `tests/parity_scat_flat_ridge.rs` goes from edf 2.1316 / $291.2
+  against mgcv's 2.0102 to edf 2.0015 / $22.3, and its parity assertion is no
+  longer `#[ignore]`d; `3d_scat_identity_n800` tightens 4× (2.2e-3 → 5.7e-4);
+  Tweedie's ρ axis goes from 2.78e-2 to 2.42e-3 relative. The ρ axis is now
+  asserted for scat (`score_tests.rs::tdist_analytic_rho_grad_matches_fd`, no
+  longer ignored) and for Tweedie (`tweedie_analytic_shape_grad_matches_fd` now
+  probes `i in 0..3`); both previously said "g[0] is verified separately", and
+  it was not. `2d_scat_identity_n600` moved the other way (5.7e-4 → 1.08e-3)
+  while its ρ̂ and edf moved toward mgcv's; bound retuned to 1.5e-3 with the
+  reasoning recorded at the call site. Full analysis in
+  `docs/scat_adjuster_parity_2026-08.md`.
+
 ### Changed
 - **`tests/parity_scat_tf9963.rs` now runs on generated data.** The fixture it
   shipped with in 0.13.0 (`tests/fixtures/tf9963_garage_spaces_scat.json`) was
