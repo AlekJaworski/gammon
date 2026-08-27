@@ -221,6 +221,132 @@ fn tdist_analytic_shape_grad_matches_fd() {
     }
 }
 
+/// The ρ (log λ) axis of scat's assembled REML gradient, against a central FD
+/// of gamrs's OWN score at the same θ.
+///
+/// `tdist_analytic_shape_grad_matches_fd` above checks `i in 1..3` only — the
+/// two shape axes — and says of the third "g[0] is the λ-envelope gradient
+/// (verified separately)". For scat it was not: nothing probed g[0] on this
+/// family, and it is wrong.
+///
+/// The error is ADDITIVE and grows with ρ, while the TRUE gradient decays toward
+/// zero as the penalty takes over — so it is harmless while the true gradient is
+/// O(1) and dominant once the λ ridge goes shallow. On the production fit path
+/// the damage is modest in absolute terms and fatal in sign: at the point the
+/// outer Newton actually stopped on the synthetic flat-ridge fixture, analytic
+/// = +0.0275 against a finite difference of −0.0355. Probed directly here,
+/// unanchored by the fit's own state, it diverges much further. Either way the
+/// ρ axis is the one axis of scat's gradient nothing checked. That shallow-ridge
+/// regime is where the TrueFootage adjuster's single-term refits sit
+/// (`docs/scat_adjuster_parity_2026-08.md`): on a near-linear signal the REML
+/// score descends monotonically toward the λ→∞ straight-line limit, the true
+/// gradient falls to ~1e-2, and the analytic one comes back with the WRONG SIGN.
+/// The outer Newton then steps the wrong way, step-halving finds no decrease,
+/// and `outer.rs`'s fallback returns the point it is standing on — leaving edf
+/// above mgcv's and the fitted curve hundreds of dollars off. Measured on the
+/// real `condition` term and reproduced synthetically by
+/// `tests/parity_scat_flat_ridge.rs`.
+///
+/// The Hessian is FD'd on this same analytic gradient, so a wrong g[0] poisons
+/// H[0][0] too — observed negative curvature where the surface is monotone.
+#[test]
+#[ignore = "open defect: scat's analytic d(REML)/d(rho) is wrong once the lambda ridge goes shallow; see docs/scat_adjuster_parity_2026-08.md"]
+fn tdist_analytic_rho_grad_matches_fd() {
+    use gamrs::basis::CrSpline;
+
+    // Same construction as `tdist_analytic_shape_grad_matches_fd`, so the only
+    // thing that differs between the two tests is WHICH axis is probed.
+    let n = 90;
+    let xs: Vec<f64> = (0..n).map(|i| (i as f64) / (n as f64)).collect();
+    let mut ys = Vec::with_capacity(n);
+    for (i, &xi) in xs.iter().enumerate() {
+        let base = (2.0 * std::f64::consts::PI * xi).sin();
+        let r = ((i as f64) * 12.9898 + 78.233).sin() * 43758.5453;
+        let frac = r - r.floor();
+        let noise = if frac > 0.9 {
+            6.0 * (frac - 0.5)
+        } else {
+            0.3 * (frac - 0.5)
+        };
+        ys.push(base + noise);
+    }
+    let y = Array1::from_vec(ys);
+    let x = Array1::from_vec(xs);
+
+    let cr = CrSpline::with_quantile_knots(x.view(), 8).unwrap();
+    let x2d = x.view().insert_axis(ndarray::Axis(1));
+    let x_design = cr.evaluate(x2d.view());
+    let penalties = cr.penalties();
+    let s = penalties[0].clone();
+
+    let family_base = tdist_identity(5.0, 1.0);
+    let score: ShapeAwarePirlsScore<_, _, _> = ShapeAwareEnvelopeScore {
+        x_design: x_design.clone(),
+        y: y.clone(),
+        prior_weights: None,
+        s_list: vec![s.clone()],
+        family_base,
+        rank_s_list: vec![x_design.ncols() - 2],
+        mp: 2,
+        log_pseudo_det_s_list: vec![0.0],
+        coords: CoordsKind::Identity,
+        pirls_opts: PirlsOpts::default(),
+        inner_builder: PirlsInnerBuilder,
+        profile: FixedAtOneProfile,
+        _solver: std::marker::PhantomData,
+        accepted_state: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
+        stats: gamrs::stats::FitStats::new(),
+    };
+
+    let fd_at = |theta: &Array1<f64>, i: usize, h: f64| -> f64 {
+        let mut t_plus = theta.clone();
+        let mut t_minus = theta.clone();
+        t_plus[i] += h;
+        t_minus[i] -= h;
+        (score.value(&t_plus).unwrap() - score.value(&t_minus).unwrap()) / (2.0 * h)
+    };
+
+    // Walk ρ up into the over-penalised tail, where the true |d score/dρ|
+    // decays toward zero and any additive error in the analytic gradient takes
+    // over. Low ρ is the regime the family was tuned in and passes.
+    let ln = |nu: f64| (nu - 2.0_f64).ln();
+    let probes: &[[f64; 3]] = &[
+        [0.0, 0.0, ln(5.0)],
+        [4.0, 0.0, ln(5.0)],
+        [8.0, 0.0, ln(5.0)],
+        [12.0, 0.0, ln(5.0)],
+        [16.0, 0.0, ln(5.0)],
+    ];
+
+    let mut worst = 0.0_f64;
+    for theta_init in probes {
+        let theta = Array1::from_vec(theta_init.to_vec());
+        let (_v, g) = score.value_and_grad(&theta).unwrap();
+        let h = 1e-4;
+        let fd_rich = (4.0 * fd_at(&theta, 0, h) - fd_at(&theta, 0, 2.0 * h)) / 3.0;
+        let abs_err = (g[0] - fd_rich).abs();
+        println!(
+            "  rho={:>5.1}  analytic={:+.6e}  fd={:+.6e}  abs_err={:.3e}{}",
+            theta_init[0],
+            g[0],
+            fd_rich,
+            abs_err,
+            if g[0] * fd_rich < 0.0 {
+                "  <-- SIGN FLIP"
+            } else {
+                ""
+            }
+        );
+        worst = worst.max(abs_err);
+    }
+    // The shape axes hold to <1e-3 relative at every probe; ρ should too.
+    assert!(
+        worst < 1e-3,
+        "scat analytic d(REML)/d(rho) drifts from FD by up to {worst:.3e}"
+    );
+}
+
 /// Phase-1 port verification: Tweedie's analytic shape gradient must
 /// match a central FD of the score value at the same θ. Tests at three
 /// distinct (ρ, log φ, p_trans) points to cover both shape components.

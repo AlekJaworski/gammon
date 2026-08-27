@@ -1,6 +1,6 @@
 # `scat` vs mgcv on the adjuster refits — open, measured 2026-08-26
 
-**Status: OPEN, cause uncharacterised.** Not a reproduction of
+**Status: OPEN, cause characterised 2026-08-27 — a gamrs defect.** Not a reproduction of
 [`scat_parity_bug.md`](./scat_parity_bug.md) (resolved in 0.11.2, direction-of-robustness);
 that fix is in and its regression test still passes. This is a *magnitude* disagreement on
 single-smooth `scat` refits, and it lands squarely on that note's last caveat:
@@ -52,8 +52,10 @@ recomputing it from the committed `scat` curves reproduces the published `price_
 
 The two worst terms are the two with the most distinct values against their `k`: `condition` 19
 distinct against k=12, `quality` 16 against k=12. That is where a harder likelihood surface would
-bite first — consistent with two correct implementations landing in different optima, and equally
-consistent with a defect. **The data below cannot separate those two readings.**
+bite first. Read on 2026-08-26 as equally consistent with two correct implementations landing in
+different optima and with a defect; **the 2026-08-27 measurements below separate the two — it is a
+defect.** The distinguishing feature turned out not to be `n_unique` against `k` but the shape of
+the λ ridge: on both worst terms the REML score has no interior optimum in λ at all.
 
 ## Ruled out
 
@@ -71,7 +73,7 @@ consistent with a defect. **The data below cannot separate those two readings.**
 - **A capture artefact.** Slopes, `scat` curves and joint curves now come from one process, one
   day, one `(X, y)`, with a `versions` block asked of the running toolchain.
 
-## What would settle it — none of this is captured yet
+## What would settle it — asked 2026-08-26, all three answered below
 
 1. **The `scat` refits' own diagnostics, per arm** — estimated `ν`, `σ²`, edf, and convergence
    flag per feature. Only the *joint* model's `sp`/`edf` were captured. If gamrs's `scat` is
@@ -86,6 +88,125 @@ consistent with a defect. **The data below cannot separate those two readings.**
    6→3, `garage_spaces` 6→5, `bedrooms` auto-promoted to a parametric unpenalised term. Harmless
    there (the joint curves still agree to a dollar), but nobody has checked what happens per
    feature under `scat`.
+
+## The cause — measured 2026-08-27
+
+**gamrs's analytic REML gradient with respect to `ρ = log λ` is wrong for `scat`, and on a shallow
+λ ridge it comes back with the wrong sign.** The outer Newton then steps the wrong way, step-halving
+finds no decrease, and `outer.rs` returns the point it is standing on. That leaves λ too small, edf
+above mgcv's, and the fitted curve hundreds of dollars off — with `ν` and `σ²` in agreement
+throughout, because those are the two axes that were tested.
+
+The measurement, on the synthetic fixture, at the exact θ the outer Newton stopped at
+(`gamrs::fit`, traced out of `src/outer.rs`; the score value agrees with
+`evaluate_reml_at_scat` to 4e-8, so it is the same score function):
+
+| | ∂score/∂ρ | ∂score/∂log σ² | ∂score/∂log(ν−3) |
+|---|---|---|---|
+| gamrs analytic | **+0.027467** | +0.0853 | −0.0113 |
+| central FD of gamrs's own score | **−0.035481** | −0.3449 | −0.0113 |
+
+The FD is stable across `h` = 1e-2, 1e-3, 1e-4. Along the Newton path the error is additive and
+roughly flat in absolute terms while the true gradient shrinks, so it is harmless early and decisive
+late:
+
+| iter | ρ | analytic ∂/∂ρ | FD ∂/∂ρ |
+|---|---|---|---|
+| 0 | 0.63 | −4.9066 | −4.9055 |
+| 2 | 6.70 | −1.5046 | −1.5047 |
+| 3 | 11.28 | −0.0835 | −0.1060 |
+| 4 | 12.96 | **+0.0993** | **−0.0174** |
+| 6 | 12.30 | **+0.0275** | **−0.0355** |
+
+The Hessian is finite-differenced *on this same analytic gradient*
+(`outer.rs`: "`value_grad_hess()` runs PIRLS + analytic-grad + FD-on-grad Hessian"), so a wrong
+`g[0]` poisons `H[0][0]` too — the trace shows `H_ρρ = −0.0576`, negative curvature at a point where
+the surface is monotone.
+
+**Why nothing caught it.** `tests/score_tests.rs::tdist_analytic_shape_grad_matches_fd` checks
+`i in 1..3` — the two shape axes only — and says of the third: *"g[0] is the λ-envelope gradient
+(verified separately)"*. For `scat` it was not. `tests/score_tests.rs::tdist_analytic_rho_grad_matches_fd`
+now probes it (`#[ignore]`d, it fails); the ρ axis fails that same test's own 1e-3 bar even at ρ = 0.
+
+### Where it bites, and where it does not
+
+A ~0.06 gradient error is nothing against a strongly curved surface and everything against a flat
+one. That is exactly the split observed:
+
+| feature | λ ridge | gamrs edf | mgcv edf | curve gap |
+|---|---|---|---|---|
+| `sale_date` | sharp interior optimum | 9.1628 | 9.0921 | $98 |
+| `gla` | interior optimum | 3.6908 | 3.6740 | $43 |
+| `lot_sqft` | interior optimum | 3.1793 | 3.1897 | $171 |
+| `bathrooms` | interior optimum | 2.6113 | 2.6162 | $38 |
+| `garage_spaces` | shallow | 2.1540 | 2.2132 | $683 |
+| **`condition`** | **no interior optimum** | **2.2709** | **2.0031** | **$1,549** |
+| **`quality`** | **no interior optimum** | **2.8746** | **2.0005** | **$661** |
+
+On `condition` and `quality` the signal is near-linear in a coarse ordinal predictor, so REML has no
+interior optimum in λ at all: the score descends monotonically toward the λ→∞ null-space limit,
+where the CR smooth collapses to a straight line (edf → 2). mgcv walks that ridge to `sp` ≈ 9.3e6 /
+1.0e9. gamrs stops at λ ≈ 9.0e4 / 2.8e5.
+
+### Ruled out on the way
+
+- **A different objective.** Fed the *same* `(λ, ν, σ²)`, gamrs's deviance reproduces mgcv's to
+  1e-8 – 1e-6 on every feature. The CR basis, the identifiability constraint, the penalty
+  normalisation and the inner PIRLS are the same; gamrs's reported λ is in mgcv's `sp` units.
+  Every difference is in where the outer optimiser stops.
+- **A different ν.** gamrs's ν is within 0.03–0.28 of mgcv's on every feature, and *closer to
+  mgcv's own multi-start landing* than mgcv's default-start fit is (`condition`: gamrs 6.4646,
+  mgcv multi-start 6.4796, mgcv default 6.4419). ν is not the mechanism. `MIN_DF = 3` and the
+  `ν − min.df` reparameterisation still match at these values.
+- **A flat basin with two legitimate answers.** mgcv lands on an identical ν and edf to six decimal
+  places from all 11 starting `(ν, σ)` pairs on every feature that fits — zero spread. And
+  *gamrs's own criterion* is better at mgcv's point than at gamrs's: −0.031 on `condition`,
+  −0.559 on `quality`. It is not two optima; it is one, and gamrs is short of it.
+- **The REML-change convergence escape** (`outer.rs:283-296`, which returns `converged: true` on
+  `|ΔREML|/|REML| < reml_tol` with no gradient check — a real divergence from mgcv's `newton()`,
+  which clears `converged` whenever any `|grad| > score.scale·conv.tol`). A/B with `reml_tol = 0`:
+  `condition` and `quality` come back **bit-identical**. Not this.
+- **The `k` cap and parametric auto-promotion inside the per-feature refits.** They do fire —
+  `bathrooms` 6→3, `garage_spaces` 6→5, and `bedrooms`/`pool`/`stories` (2 distinct values each)
+  are auto-promoted to unpenalised parametric terms where mgcv keeps a 2-column smooth. But
+  `condition` (k=12) and `quality` (k=12) are untouched, and they are the two worst terms.
+- **The input.** The mgcv and gamrs arms fit `scat` on partial residuals from their own joint
+  models, which differ by up to $8.60 on a ~$300k range. Refitting both fitters on *both* arms'
+  residuals moves the curve gap by less than $2. The disagreement is the fitter, not the input.
+
+### Cost, in REML units
+
+The reason this is invisible to a convergence test and loud in dollars: on `condition`, gamrs's own
+score falls by **0.030** between its landing point and the λ→∞ limit, and the curve moves **$1,549**.
+mgcv's criterion agrees the surface is that flat — its score at gamrs's λ and at its own differ by
+0.022. A criterion flat to a hundredth of a REML unit spans a thousand-plus dollars of published
+adjustment.
+
+## Code paths
+
+| what | where |
+|---|---|
+| the call site that makes `scat` the published family | `tf_adjustments/engine/api_custom_clusters.py:119` — `adjustments_per_feature` passes `sp_res.residual_model._model` into `get_slope`, overriding the joint model |
+| the single-term `scat` fit itself | `tf_adjustments/engine/service_location_time_adjustments.py:230-241` — `FeatureAdjuster.two_step_adjustments` builds a one-predictor `Gam(family="t-dist")` and fits it on `sp.residuals_x[non_nan] / sp.residuals_y[non_nan]` |
+| gamrs fitting entry point | `src/fit/family_impls.rs` — `FamilyFitWithSolver<IdentityLink, TVariance, S> for TDist::fit_from_prep_canonical`, which standardizes the response (`scat_response_scale`), builds `θ₀ = [ρ_init, log σ̃², log(ν−3)]` and calls `fit_shape_aware` |
+| the outer optimiser | `src/outer.rs:266-599` — damped subset Newton; gradient test at `:270-282`, REML-change escape at `:283-296`, step-halving at `:411-437`, the `!accepted` fallback and its four convergence clauses at `:459-599` |
+| the wrong gradient | `src/score/shape_aware/gradient.rs` — the assembled REML gradient; `g[0]` (the ρ axis) is the component that fails |
+| mgcv's side | `mgcv` R `gam.fit5` / `newton()` in `R/mgcv.r`; `scat` in `R/efam.r:1248` |
+
+## Verdict
+
+**A gamrs defect, not a difference of objective.** The two fitters share the basis, the penalty, the
+inner solve and the criterion — matched-parameter deviances agree to 1e-8. gamrs's own REML score is
+lower at mgcv's answer than at gamrs's on both disputed terms. And the proximate cause is
+identified: `g[0]` of `scat`'s assembled REML gradient disagrees with a finite difference of gamrs's
+own score, by enough to flip its sign once the λ ridge goes shallow — the one axis of that gradient
+nothing tested.
+
+Not yet established: *why* `g[0]` is wrong. The error grows with ρ while the true gradient decays,
+which points at a term in the λ-envelope derivative that fails to cancel in the over-penalised
+limit, but that has not been traced to a line. Fixing it is a separate change and the parity claim
+should stay withdrawn until it lands: **on the joint Gaussian model gamrs and mgcv are the same fit;
+on the `scat` refits the published adjustments come from, they are not.**
 
 ## Reproducing
 
