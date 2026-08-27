@@ -40,6 +40,18 @@ features = ["python"]
 module-name = "gamrs._gamrs_native"
 python-source = "python"
 manifest-path = "Cargo.toml"
+# The sdist otherwise ships every tracked file, which is how the 0.13.0/0.13.1
+# sdists published a real adjuster capture (address + 620 sale prices) that the
+# repo's own /data/ gitignore existed to prevent. None of these paths build or
+# test the extension: docs/ names the customer and quotes internal source paths
+# with line numbers, scripts/ and tools/ are local harnesses with hardcoded
+# /home/alex paths. benches/ stays — Cargo.toml declares [[bench]] paths.
+exclude = [
+  "docs/**",
+  "scripts/**",
+  "tools/**",
+  ".github/**",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]

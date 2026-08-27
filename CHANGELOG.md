@@ -8,6 +8,22 @@ is locked. Versions correspond to the published PyPI wheels.
 ## [Unreleased]
 
 ### Fixed
+- **The sdist no longer ships `docs/`, `scripts/`, `tools/` or `.github/`.**
+  `[tool.maturin]` carried no `include`/`exclude`, so every tagged release
+  published the whole tracked tree — which is how the 0.13.0 and 0.13.1 sdists
+  came to carry a real adjuster capture (a street address and 620 sale-derived
+  values) that this repo's `/data/` gitignore existed to prevent. The fixture
+  itself is gone from the tip, but the packaging that published it was still
+  armed. None of the excluded paths build or test the extension; `benches/`
+  stays because `Cargo.toml` declares `[[bench]]` paths into it. Verified by
+  building an sdist locally: it now contains only `benches/`, `python/`, `src/`
+  and `tests/`.
+
+  This does **not** reach the already-published 0.13.0/0.13.1 sdists, which
+  still contain the file and remain downloadable. Those have to be deleted from
+  PyPI separately — a history rewrite cannot touch them.
+
+### Fixed
 - **The shape-aware REML gradient's ρ (log λ) axis differentiated a ridge that
   is not there.** `compute_rho_envelope_gradient` added
   `½·c·λ_j·S_j[i*,i*]·tr(A⁻¹)` with `c = 1e-5·(1 + √n_pen)` — the adaptive ridge
