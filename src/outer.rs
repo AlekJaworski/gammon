@@ -338,11 +338,20 @@ impl OuterSolver for NewtonWithHalving {
             let dim = g.len();
             // Subset filter — mgcv's `uconv.ind` at gam.fit3.r:1643:
             //   active_i ⇔ |g_i| > dim_tol  OR  |H_ii| > dim_tol
-            // where dim_tol = score_scale · 1e-7 (a tier looser than the
-            // top-of-loop convergence threshold). The H_ii OR clause keeps
-            // axes active when curvature is meaningful even if the gradient
-            // is small (saddle-point case).
-            let dim_tol = score_scale * 1.0e-7;
+            // where dim_tol is mgcv's `reml.scale * conv.tol * .1`
+            // (`fast-REML.r:1531`) — a tier looser than the convergence
+            // threshold, but tied to it rather than a constant of its own.
+            // The H_ii OR clause keeps axes active when curvature is
+            // meaningful even if the gradient is small (saddle-point case).
+            //
+            // This was a hardcoded `score_scale * 1e-7`, 67× looser than
+            // mgcv's, and it froze the axis that needed to move. On the
+            // saturated-basis fixture at the low-σ² landing the gradient is
+            // `[-7.7e-5, -1.13e-4, +1.2e-5]` against a dim_tol of 8.55e-5, so
+            // the ρ axis was frozen out — leaving step-halving to exhaust on
+            // the shape axes alone, hit the stall path, and report
+            // `converged: true` 9.1e-4 short in REML.
+            let dim_tol = score_scale * opts.grad_tol * 0.1;
             let active: Vec<usize> = (0..dim)
                 .filter(|&i| g[i].abs() > dim_tol || h[[i, i]].abs() > dim_tol)
                 .collect();
