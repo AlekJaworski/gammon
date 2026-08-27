@@ -127,6 +127,10 @@ where
         //   - `level1_shape_derivatives` otherwise (ocat): `∂W/∂μ = ½·Dmu3`.
         // Families with neither hook (NegBin, InverseGaussian, Tweedie) keep
         // the pure envelope form — the documented parity floor for them.
+        // `ift_trace_weight_derivs` returns the derivatives of the weight
+        // actually in the matrix the score differentiates — including, under
+        // the migration switch, the unswitched observed ones — so this needs
+        // no branch of its own.
         let dw_dmu_rows: Option<Array1<f64>> = family
             .loss
             .ift_trace_weight_derivs(

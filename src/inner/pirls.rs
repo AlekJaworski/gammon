@@ -76,6 +76,33 @@ where
 /// Gated by `GAMRS_OBSERVED_LOG_DET_H=1` while the change is being measured
 /// against mgcv on real data. It is a migration switch, not a supported knob:
 /// it changes what the fitted numbers *are*, so it must not survive as a mode.
+/// The observed curvature the score should differentiate, or `None` to leave
+/// the working-weight factor alone. Gated by the same migration switch as
+/// [`observed_log_det_h`] so the score value and its derivatives can never
+/// disagree about which matrix they mean.
+fn family_observed_score_weights<L, K, V>(
+    family: &Family<L, K, V>,
+    y: &Array1<f64>,
+    eta: &Array1<f64>,
+    prior_w: &Array1<f64>,
+) -> Option<Array1<f64>>
+where
+    L: Loss + Clone,
+    K: Link + Clone,
+    V: VarianceFn + Clone,
+{
+    if !observed_log_det_h_enabled() {
+        return None;
+    }
+    let w = family
+        .loss
+        .observed_curvature_weights(y.view(), eta.view(), Some(prior_w.view()))?;
+    if w.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    Some(w)
+}
+
 pub(crate) fn observed_log_det_h<L, K, V>(
     family: &Family<L, K, V>,
     y: &Array1<f64>,
@@ -942,6 +969,35 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
                 }
             }
         }
+
+        // Make `a_factor` the matrix the SCORE should differentiate.
+        //
+        // Everything downstream — `log_det_a`, `trace_a_inv`, `a_inv`, and so
+        // the gradient's `h_diag` and IFT bracket — reads this one factor, so
+        // rebuilding it here is the single seam that keeps the criterion and
+        // all of its derivatives consistent. The loop's factor was built from
+        // the working weight, which for an observed→expected switch family is
+        // NOT the Hessian of the penalised deviance on the outlier rows (and
+        // is one μ-step stale besides — the final pass above refreshed
+        // `working_weights` but not the factor).
+        //
+        // Cholesky can legitimately fail here: negative rows are the point,
+        // and mgcv's own rule is that individual `w_i < 0` are fine only while
+        // `X'WX + E'E` stays PD (`gdi.c`'s `pls_fit1` returns `n < 0`
+        // otherwise and `gam.fit4.r` retries with Fisher). On failure we keep
+        // the loop's factor, which is that same fallback.
+        let a_factor = match family_observed_score_weights(&self.family, &self.y, &eta, &prior_w) {
+            Some(w_score) => {
+                let xtw = weighted_xt(&self.x_design, &w_score);
+                let mut a = xtw.dot(&self.x_design);
+                add_penalty(&mut a, &s_total, lambda);
+                match S::factorize(a) {
+                    Ok(f) => f,
+                    Err(_) => a_factor,
+                }
+            }
+            None => a_factor,
+        };
 
         // For PIRLS at convergence: rss-like quantity for downstream code is
         // the working-RSS `Σ W·(z - X·β)²`, which mgcv calls `dev_num` (it

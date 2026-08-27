@@ -456,6 +456,7 @@ impl Loss for TDist {
         let dwexp_dlog_sigma2 = -w_exp;
         let dwexp_dlog_nu_m2 = 2.0 * nu_minus_df / (nu_p3 * nu_p3 * sigma2);
 
+        let observed_score_matrix = crate::inner::pirls::observed_log_det_h_enabled();
         let mut dw_dtheta = Array2::<f64>::zeros((n, 2));
         let mut dw_dmu = Array1::<f64>::zeros(n);
         for i in 0..n {
@@ -467,9 +468,12 @@ impl Loss for TDist {
             let wt_i = prior_w.map(|w| w[i]).unwrap_or(1.0);
 
             // Core iff observed curvature ½·Dmu2 > 1e-12 (matches
-            // `irls_observed_pair`'s branch exactly).
+            // `irls_observed_pair`'s branch exactly) — OR unconditionally when
+            // the score's matrix carries the observed curvature on every row.
+            // This hook's contract is "derivatives of the weight actually in
+            // `A`", so when `A` stops substituting, so must this.
             let w_obs = nu_p1 * (q - r2) / s2;
-            if w_obs > 1e-12 && w_obs.is_finite() {
+            if observed_score_matrix || (w_obs > 1e-12 && w_obs.is_finite()) {
                 // ∂W/∂θ_k = ½·dmu2th[k]; ∂W/∂μ = ½·dmu3 (Level-1 formulas).
                 let dmu2th_0 = 2.0 * nu_p1 * q * (3.0 * r2 - q) / s3;
                 let dmu2th_1 =
