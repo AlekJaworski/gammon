@@ -56,6 +56,31 @@ where
 ///
 /// Returns `None` if neither path produces finite output (caller falls back
 /// to the Fisher H's log|H|).
+/// Counters for how often the observed penalised Hessian is usable.
+///
+/// The observed-curvature criterion is CONDITIONALLY defined: when
+/// `X'diag(½D_μμ)X + λS` loses positive-definiteness we fall back to `log|A|`,
+/// which means the objective can change under the optimiser's feet. These
+/// count the two branches so that discontinuity can be measured instead of
+/// assumed. Diagnostic only — they exist alongside the migration switch and
+/// should be removed with it.
+pub(crate) static OBS_PD_OK: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+pub(crate) static OBS_PD_FALLBACK: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// `(pd_ok, pd_fallback)` since the last reset.
+pub fn observed_pd_counts() -> (usize, usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (OBS_PD_OK.load(Relaxed), OBS_PD_FALLBACK.load(Relaxed))
+}
+
+pub fn reset_observed_pd_counts() {
+    use std::sync::atomic::Ordering::Relaxed;
+    OBS_PD_OK.store(0, Relaxed);
+    OBS_PD_FALLBACK.store(0, Relaxed);
+}
+
 /// **The** `log|H|` the score differentiates. One definition of the precedence.
 ///
 /// observed curvature (families with an observed→expected switch) → Newton-A
@@ -193,16 +218,19 @@ where
         for i in 0..p {
             let lii = l[[i, i]];
             if !lii.is_finite() || lii.abs() < 1e-300 {
+                OBS_PD_FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return None;
             }
             log_det += lii.ln();
         }
+        OBS_PD_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return Some(2.0 * log_det);
     }
     // Not PD. mgcv retries the step with Fisher weights here; the caller's
     // fallback to `log|A|` is the same choice, so bail rather than take
     // |eigenvalues|, which would be a third criterion nobody asked for.
     let _ = h.eigh(UPLO::Lower);
+    OBS_PD_FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     None
 }
 

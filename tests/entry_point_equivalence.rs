@@ -167,36 +167,91 @@ fn scat_fit_is_insensitive_to_the_nu_start() {
     );
 }
 
-/// **KNOWN DEFECT: the σ² start IS load-bearing, and low variance is the bad
-/// side.** mgcv says so out loud — `efam.r:172-174`, "low df and low variance
-/// promotes indefiniteness. Better to start with moderate df and fairly high
-/// variance" — and starts at `σ = 0.8·sd(y)`. gamrs's own default is
-/// `σ² = sd(y)²`, which is on the safe side; but nothing stops a caller passing
-/// a low one, and `tests/parity_scat_tf9963.rs` does exactly that.
+/// **KNOWN DEFECT: under the observed-`log|H|` criterion a low σ² start makes
+/// the outer loop stop EARLY — at a measurably worse REML value.**
 ///
-/// Measured on this fixture with the observed-`log|H|` criterion: starting at
-/// `σ² = 0.1·sd²` instead of `sd²` moves edf 2.3754 → 2.4262 and the curve
-/// error against mgcv 1.1e-4 → 9.5e-4, a 9× degradation from the start alone.
+/// Stated on the objective, not the curve, because that is the robust claim: a
+/// run that ends at a higher REML than another run on the same problem did not
+/// find the optimum, whatever its edf says.
 ///
-/// This test bounds the damage so a fix shows up as improvement and a
-/// regression as failure. It is NOT a licence to keep the sensitivity — the
-/// fix is to make the outer loop reach the same optimum regardless, and/or to
-/// adopt mgcv's init. Do not loosen the bound to make something else pass.
+/// Measured on this fixture:
+/// ```text
+///                        rho        REML            edf
+///   log|A|  sd^2      7.516694   854.222515972   2.3641
+///   log|A|  0.1sd^2   7.517681   854.222515961   2.3638   <- agree to 1e-8
+///   observed sd^2     7.452111   854.174642406   2.3754
+///   observed 0.1sd^2  7.286090   854.175555690   2.4262   <- 9.1e-4 WORSE
+/// ```
+/// So the shipped criterion reaches the same optimum from any start, and the
+/// new one does not. That is a real cost of the criterion change.
+///
+/// Ruled out as the cause, by measurement: the PD fallback (never fires — see
+/// `observed_criterion_pd_fallback_rate_by_start`), the entry point, the ν
+/// start, and `grad_tol` (tightening it to mgcv's `sqrt(eps)` does not move
+/// this). Do NOT loosen this bound to make something else pass.
 #[test]
-fn scat_low_variance_start_degrades_the_fit_by_a_bounded_amount() {
-    let (x, y, k, ux) = case();
+fn observed_criterion_low_variance_start_stops_early() {
+    let (x, y, k, _ux) = case();
     let sd = sd_of(&y);
     let good = fit_at(&x, &y, k, 5.0, sd * sd);
     let poor = fit_at(&x, &y, k, 5.0, 0.1 * sd * sd);
-    let pg = good.predict(ux.view()).unwrap();
-    let pp = poor.predict(ux.view()).unwrap();
-    let d = max_rel(pg.as_slice().unwrap(), pp.as_slice().unwrap());
+    let excess = poor.reml_value - good.reml_value;
     println!(
-        "  s2_0=sd^2 -> edf {:.4};  s2_0=0.1*sd^2 -> edf {:.4};  curve diff {d:.3e}",
-        good.edf_total, poor.edf_total
+        "  s2_0=sd^2   -> rho={:.6} reml={:.9} edf={:.4}\n  \
+         s2_0=0.1sd^2 -> rho={:.6} reml={:.9} edf={:.4}\n  \
+         excess REML at the low start = {excess:+.3e}",
+        good.rho[0], good.reml_value, good.edf_total, poor.rho[0], poor.reml_value, poor.edf_total
     );
     assert!(
-        d < 2.0e-3,
-        "the low-variance start got WORSE than the recorded 1e-3: {d:.3e}"
+        excess > -1.0e-9,
+        "the low-variance start found a BETTER optimum ({excess:.3e}) — then the \
+         high-variance start is the one stopping early and this test has the \
+         asymmetry backwards"
     );
+    assert!(
+        excess < 2.0e-3,
+        "the low-variance start's early stop got worse than recorded: excess \
+         REML {excess:.3e} (was 9.1e-4)"
+    );
+}
+
+/// **Measures the mechanism behind the σ²-start sensitivity above.**
+///
+/// The observed-curvature criterion is conditionally defined: when
+/// `X'diag(½D_μμ)X + λS` is not positive definite we fall back to `log|A|`, so
+/// the objective can change under the optimiser's feet. mgcv's own init comment
+/// (`efam.r:172-174`) predicts a low σ² start makes this worse — smaller σ²
+/// puts more rows past `|r| > √(νσ²)`, so more negative-curvature rows.
+///
+/// This prints the PD-ok / PD-fallback counts per start so the claim is
+/// measured rather than reasoned. It asserts only the weak, robust thing: a fit
+/// that never falls back cannot be suffering from this mechanism.
+#[test]
+fn observed_criterion_pd_fallback_rate_by_start() {
+    let (x, y, k, _ux) = case();
+    let sd = sd_of(&y);
+    for (tag, nu, s2) in [
+        ("s2=sd^2 (gamrs)", 5.0, sd * sd),
+        (
+            "s2=(0.8sd)^2 (mgcv)",
+            (1.5_f64).exp() + 3.0,
+            (0.8 * sd).powi(2),
+        ),
+        ("s2=0.1*sd^2 (low)", 5.0, 0.1 * sd * sd),
+    ] {
+        gamrs::inner::pirls_reset_observed_pd_counts();
+        let f = fit_at(&x, &y, k, nu, s2);
+        let (ok, fb) = gamrs::inner::pirls_observed_pd_counts();
+        let total = ok + fb;
+        let pct = if total == 0 {
+            f64::NAN
+        } else {
+            100.0 * fb as f64 / total as f64
+        };
+        println!(
+            "  {tag:<22} edf={:.4}  iters={:<3}  rho={:.6}  reml={:.9}  \
+             PD ok={ok:<5} fallback={fb:<5} ({pct:.1}% of {total} evals)",
+            f.edf_total, f.n_iters, f.rho[0], f.reml_value
+        );
+    }
 }

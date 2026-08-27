@@ -34,6 +34,10 @@ pub use linalg::{
     chol_back_solve, chol_forward_solve, factor_and_solve_with_ridge, CholeskySolver, LinearSolver,
     LuSolver,
 };
+/// Diagnostic re-exports for the observed-curvature criterion's PD-fallback
+/// counters. These exist alongside the migration switch and go with it.
+pub use pirls::observed_pd_counts as pirls_observed_pd_counts;
+pub use pirls::reset_observed_pd_counts as pirls_reset_observed_pd_counts;
 pub use pirls::{PirlsInner, PirlsOpts};
 
 /// Result of any inner-solver fit — Gaussian or PIRLS-iterative.
