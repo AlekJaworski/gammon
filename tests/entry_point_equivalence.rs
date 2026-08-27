@@ -202,11 +202,16 @@ fn observed_criterion_low_variance_start_stops_early() {
          excess REML at the low start = {excess:+.3e}",
         good.rho[0], good.reml_value, good.edf_total, poor.rho[0], poor.reml_value, poor.edf_total
     );
+    // With the SHIPPED criterion both starts reach the same optimum and this
+    // lands at ~-1.2e-8, i.e. convergence noise about zero — which is the
+    // healthy case, not a reversal. The guard is for a MEANINGFUL reversal
+    // (the high-variance start being the one that stops early), so it has to
+    // sit above that noise floor rather than at it.
     assert!(
-        excess > -1.0e-9,
-        "the low-variance start found a BETTER optimum ({excess:.3e}) — then the \
-         high-variance start is the one stopping early and this test has the \
-         asymmetry backwards"
+        excess > -1.0e-6,
+        "the low-variance start found a materially BETTER optimum ({excess:.3e}) \
+         — then the high-variance start is the one stopping early and this test \
+         has the asymmetry backwards"
     );
     assert!(
         excess < 2.0e-3,
