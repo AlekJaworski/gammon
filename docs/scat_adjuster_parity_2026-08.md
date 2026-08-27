@@ -1,4 +1,4 @@
-# `scat` vs mgcv on the adjuster refits — open, measured 2026-08-26
+# `scat` vs mgcv on the adjuster refits — measured 2026-08-26, four defects fixed 2026-08-27
 
 **Status: FIXED 2026-08-27 — a gamrs defect, root-caused to one term.** Not a reproduction of
 [`scat_parity_bug.md`](./scat_parity_bug.md) (resolved in 0.11.2, direction-of-robustness);
@@ -294,3 +294,82 @@ Its inputs (the recorded request, the property-api population, `r_fitting`, the 
   is nothing on a ~$42,900 RMSE.
 - **Cannot:** that the published adjustments agree to the same standard. They come from `scat`,
   and on `scat` the gap is up to 1.29% with the cause uncharacterised.
+
+---
+
+## 2026-08-27, later — FOUR defects, not one, and the first fix was not the cause
+
+The `score_ridge_scale` fix earlier in the day was real but did not move the adjuster numbers
+(`garage_spaces` 577.1 → 577.1 dollars RMSE). Chasing that led to three more, each traced against
+mgcv's own source rather than guessed.
+
+**1. The IFT bracket was the wrong matrix.** `compute_rho_envelope_gradient` derived `∂β/∂ρ` by
+solving against `fit.a_factor`. `irls_observed_pair` substitutes the positive *expected* curvature
+wherever observed `½·D_μμ ≤ 0`, which preserves β̂ (the working response keeps
+`W(z−η) = −½·D_μ` whatever the weight) but means `A` is not the Hessian of the penalised deviance on
+those rows — and the implicit-function bracket must be that Hessian. PIRLS stationarity at the
+converged fit is 1.4e-8, so a central FD of β̂ is a sound oracle:
+
+| ρ | `∂β/∂ρ` vs FD, against `A` | against observed `H` |
+|---|---|---|
+| 0 | 2.576e-2 | **1.988e-8** |
+| 4 | 2.926e-2 | 3.227e-5 (tracks stationarity 3.3e-6) |
+
+**2. The criterion itself differed from mgcv's.** mgcv `gam.fit4.r:367` sets `w <- dd$Deta2 * .5` —
+observed curvature, negatives kept (`gdi.c`'s `pls_fit1` takes them via `sqrt(|w|)` with sign
+tracking) — and retries Fisher only if `X'WX + E'E` comes back indefinite. gamrs substituted
+instead, and the score reads `log|H|` off that factor, so **gamrs was optimising a different
+function of (λ, ν, σ²) than mgcv on any data with outlier rows.** Proof on the real order: gamrs
+with observed `log|H|` evaluated at mgcv's own ρ gives **861.391445** against mgcv's recorded
+**861.3914448621**; `condition` **650.132633** against **650.1326331246**. The argmin moves onto
+mgcv's point too — `garage_spaces` `|ρ*−ρ_mgcv|` **1.4500 → 0.0250**. The observed penalised Hessian
+is positive definite at every probe despite the negative rows, so plain Cholesky suffices.
+
+**3. The outer loop's convergence test was inverted.** mgcv `fast-REML.r:1587-1603` sets
+`converged <- TRUE`, clears it if any `|grad|` exceeds tolerance, then clears it *again* if the REML
+value is still moving — re-enabling every axis, because it "can't progress" otherwise. It never
+concludes convergence *from* a small score change. gamrs returned `converged: true` when
+`|ΔREML| < reml_tol`, so it stopped wherever the steps went quiet, which on a flat λ ridge is
+nowhere near the argmin (fixture: argmin ρ ≈ 21.92, stopping at ρ ≈ 16.77).
+
+**2 and 3 are interlocking, and neither alone works** — `garage_spaces` curve RMSE against mgcv:
+
+| | stop-early (old) | mgcv rule (new) |
+|---|---|---|
+| `log\|A\|` (shipped) | 577.1 | **806.7 — worse** |
+| `log\|H_obs\|` | 182.7 | **20.8** |
+
+Optimising harder only helps once the function is right. That is independent evidence for 2.
+
+**4. edf was reported from a mismatched pair.** `compute_edf` forms `tr(A⁻¹·X'WX)` and was handed
+`working_weights` while `A⁻¹` came from `a_factor` — different vectors once the factor is observed.
+`GaussianInnerFit` now carries `a_weights`, the weights its factor was actually built from. Reporting
+only; the fit never changed, which is why the curves did not move with it.
+
+### Where it stands on the real order
+
+- published secant worst `|Δ|` **1.288% → 0.391%**. `condition` −1.288% → **−0.001%**, `quality`
+  0.470% → 0.053%, `garage_spaces` 0.156% → −0.048%, `lot_sqft` −0.116% → −0.006%. Nine of ten
+  terms inside 0.09%.
+- worst curve RMSE **600.0 → 91.3**; `garage_spaces` **577.1 → 20.8**.
+- edf within 0.055 of mgcv on every term, most within 0.006.
+
+### Still open
+
+- **`sale_date`** is the lone secant outlier at 0.391% (was 0.495% — barely moved by any of this)
+  and the worst curve at 91.3 RMSE. `k = 25`, edf 9.2: a far richer basis than the 2-edf terms, so
+  probably a different mechanism.
+- **Outer-loop start-sensitivity.** `tf9963_garage_spaces_scat_lands_on_mgcv_optimum` breaches its
+  1e-3 bound (1.064e-3) with the new criterion, and it is the *start* that decides, not the
+  criterion: `init_sigma2` is standardized as `init_sigma2/s²`, so the test's
+  `tdist_identity(5.0, y_var*0.1)` (σ²_std ≈ 0.0999) lands at 9.456e-4 while `Gam`'s default
+  (σ²_std ≈ 5.5e-10) lands at **1.095e-4**. The sensible-looking start does worse. This is the
+  observation in "Ruled out" above — mgcv lands identically from 11 starts, gamrs does not — now
+  the live defect. **Not to be resolved by moving the bound.**
+
+### Two measurement traps, recorded so nobody re-walks them
+
+- The scat score carries PIRLS-convergence noise of order 1e-2 in ρ (`dev_rel_tol` is 1e-9 against a
+  score of ~7000). An FD profile of the score near a landing point is not trustworthy below that.
+- ν is `MIN_DF + exp(θ)` with `MIN_DF = 3`, so a probe written as `ln(5)` means **ν = 6, not 5**.
+  Hardcoding the wrong ν in a diagnostic makes a correct fix look only partly effective.
