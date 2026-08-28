@@ -67,21 +67,27 @@ pub struct OuterTuning {
     /// `fast-REML.r:1481` was wrong: that is `fast.REML.fit`, the Gaussian
     /// fREML path, not the one scat takes.
     ///
-    /// It is justified EMPIRICALLY, and re-measured after the `max_half` fix
-    /// (which invalidated the first measurement). Against mgcv 1.9.4 run
-    /// directly on the ten real adjuster terms, same standardized problem:
+    /// It is justified EMPIRICALLY, by a sweep against mgcv 1.9.4 run directly
+    /// on the ten real adjuster terms (same standardized problem, worst-term
+    /// curve error):
     ///
     /// ```text
-    ///                    sqrt(eps)      mgcv's 5e-6
-    ///   garage_spaces    3.476e-5       5.882e-4      ($20.6 vs $348)
-    ///   condition        3.381e-5       1.016e-4      ($17 vs $51)
-    ///   worst term       3.809e-5       5.882e-4
+    ///   grad_tol    condition    garage_spaces    worst
+    ///   5e-6 (mgcv) 1.016e-4     5.882e-4         5.882e-4
+    ///   1e-6        1.016e-4     2.992e-4         2.992e-4
+    ///   1e-7        1.810e-5     2.911e-5         3.809e-5   <-- the knee
+    ///   1e-8        3.462e-5     3.476e-5         3.809e-5
+    ///   sqrt(eps)   3.381e-5     3.476e-5         3.809e-5
     /// ```
     ///
-    /// Cost: one extra outer iteration and ~10% wall clock (51-53 ms/fit at
-    /// mgcv's tolerance vs 56-59 at this one, `bench_scat_profile`). A 15×
-    /// accuracy gain on the worst term is worth that; revisit if the trade
-    /// changes.
+    /// 1e-7 is the knee AND slightly better than anything tighter on both of
+    /// the two worst terms, at the same iteration count — `sqrt(eps)` was
+    /// 150× tighter for nothing. Below 1e-6 the worst term is pinned at
+    /// 3.809e-5 by `quality`, which no tolerance moves.
+    ///
+    /// Costs no iterations on the scat scaling probe (identical counts at
+    /// n = 500/2000/5000/10000), so this is an accuracy gain rather than a
+    /// speed trade.
     pub grad_tol: f64,
     /// Score-relative REML-change tolerance: converge when
     /// `|ΔREML| / max(|REML|, 1) < reml_tol`. Active after iter ≥ 3.
@@ -101,7 +107,7 @@ impl OuterTuning {
     /// `smooth.rs:2545-2569 reml.tol`.
     pub fn mgcv_default() -> Self {
         Self {
-            grad_tol: f64::EPSILON.sqrt(),
+            grad_tol: 1.0e-7,
             reml_tol: 1.0e-7,
             max_iters: 200,
             max_step: 5.0,
@@ -252,7 +258,7 @@ impl Default for NewtonOpts {
             // which produces ρ̂ differences of 1-2 units vs v0.x on the
             // saturated axis. See parity report 2026-05-27.
             max_iters: 200,
-            grad_tol: f64::EPSILON.sqrt(),
+            grad_tol: 1.0e-7,
             reml_tol: 1.0e-7,
             step_min: 1e-3,
             hess_floor: 1e-8,
