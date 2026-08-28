@@ -338,20 +338,20 @@ impl OuterSolver for NewtonWithHalving {
             let dim = g.len();
             // Subset filter — mgcv's `uconv.ind` at gam.fit3.r:1643:
             //   active_i ⇔ |g_i| > dim_tol  OR  |H_ii| > dim_tol
-            // where dim_tol is mgcv's `reml.scale * conv.tol * .1`
-            // (`fast-REML.r:1531`) — a tier looser than the convergence
-            // threshold, but tied to it rather than a constant of its own.
-            // The H_ii OR clause keeps axes active when curvature is
-            // meaningful even if the gradient is small (saddle-point case).
+            // mgcv `gam.fit3.r:1643`: `uconv.ind <- (abs(grad) >
+            // score.scale*conv.tol*.1) | (abs(grad2) > score.scale*conv.tol*.1)`
+            // with `conv.tol = 1e-6` for the scat path (`mgcv.r:2209`), i.e.
+            // `1e-7 · score_scale`. The H_ii OR clause keeps axes active when
+            // curvature is meaningful even if the gradient is small
+            // (saddle-point case).
             //
-            // This was a hardcoded `score_scale * 1e-7`, 67× looser than
-            // mgcv's, and it froze the axis that needed to move. On the
-            // saturated-basis fixture at the low-σ² landing the gradient is
-            // `[-7.7e-5, -1.13e-4, +1.2e-5]` against a dim_tol of 8.55e-5, so
-            // the ρ axis was frozen out — leaving step-halving to exhaust on
-            // the shape axes alone, hit the stall path, and report
-            // `converged: true` 9.1e-4 short in REML.
-            let dim_tol = score_scale * opts.grad_tol * 0.1;
+            // NB this was briefly changed to `score_scale * grad_tol * 0.1` on
+            // the belief that the hardcoded 1e-7 was "67× looser than mgcv's".
+            // It was not — 1e-7·score_scale IS mgcv's value; the 67× came from
+            // comparing against `fast.REML.fit`'s `sqrt(eps)`, which drives the
+            // Gaussian fREML path, not scat. Reverted, and it made no
+            // measurable difference either way.
+            let dim_tol = score_scale * 1.0e-7;
             let active: Vec<usize> = (0..dim)
                 .filter(|&i| g[i].abs() > dim_tol || h[[i, i]].abs() > dim_tol)
                 .collect();
@@ -427,22 +427,19 @@ impl OuterSolver for NewtonWithHalving {
             // and `value_grad_hess()` runs PIRLS + analytic-grad + FD-on-grad
             // Hessian, this drops per-trial cost from ~(2d+1) PIRLS to 1
             // (d = θ-dim; mgcv_rust pattern, `gam_optimized.rs:1390-1547`).
-            // Adaptive halving cap — port of mgcv_rust `smooth.rs:2741-2772`.
-            // Near convergence the Newton direction is reliable and full
-            // halving budget is wasted exploring near-equal points; far from
-            // convergence the direction is less trusted so allow more
-            // halvings. Stalled REML change → 1 halving (no point in deeper
-            // search).
-            let stalled = iter >= 3 && ((v - prev_v).abs() / v.abs().max(1.0) < 1.0e-4);
-            let max_half = if stalled {
-                1
-            } else if grad_norm < 0.1 {
-                10
-            } else if grad_norm < 1.0 {
-                20
-            } else {
-                30
-            };
+            // mgcv `newton()` uses `maxHalf = 30` unconditionally
+            // (`gam.fit3.r:1230`, default set at `mgcv.r:2212`). There is no
+            // adaptive cap.
+            //
+            // This carried one, ported from mgcv_rust `smooth.rs:2741-2772`,
+            // whose `stalled → 1 halving` branch collapsed the line search to a
+            // SINGLE probe at the full capped Newton step exactly when the REML
+            // change had gone quiet — i.e. on a flat λ ridge, precisely where
+            // more halving is needed rather than less. It also silently
+            // invalidated a diagnostic: sweeping `step_min` from 1e-3 to 1e-10
+            // appeared to change nothing, because `max_half = 1` exits the loop
+            // before `step_min` can ever bind.
+            let max_half = 30;
             let mut alpha = 1.0;
             let mut accepted = false;
             let mut accepted_trial: Option<Array1<f64>> = None;

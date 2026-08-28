@@ -183,62 +183,51 @@ fn scat_fit_is_insensitive_to_the_nu_start() {
     );
 }
 
-/// **KNOWN DEFECT: under the observed-`log|H|` criterion a low σ² start makes
-/// the outer loop stop EARLY — at a measurably worse REML value.**
+/// **The σ² start must not decide where the fit lands** — in either criterion
+/// mode. Stated on the REML objective, not the curve or edf: a run that ends at
+/// a higher REML than another run on the same problem did not find the optimum,
+/// whatever its edf says.
 ///
-/// Stated on the objective, not the curve, because that is the robust claim: a
-/// run that ends at a higher REML than another run on the same problem did not
-/// find the optimum, whatever its edf says.
-///
-/// Measured on this fixture:
-/// ```text
-///                        rho        REML            edf
-///   log|A|  sd^2      7.516694   854.222515972   2.3641
-///   log|A|  0.1sd^2   7.517681   854.222515961   2.3638   <- agree to 1e-8
-///   observed sd^2     7.452111   854.174642406   2.3754
-///   observed 0.1sd^2  7.286090   854.175555690   2.4262   <- 9.1e-4 WORSE
-/// ```
-/// So the shipped criterion reaches the same optimum from any start, and the
-/// new one does not. That is a real cost of the criterion change.
-///
-/// Ruled out as the cause, by measurement: the PD fallback (never fires — see
-/// `observed_criterion_pd_fallback_rate_by_start`), the entry point, the ν
-/// start, and `grad_tol` (tightening it to mgcv's `sqrt(eps)` does not move
-/// this). Do NOT loosen this bound to make something else pass.
+/// This began life as a defect note. Under the observed-`log|H|` criterion a
+/// low σ² start used to land 9.133e-4 above the optimum (rho 7.286090 vs
+/// 7.452111, edf 2.4262 vs 2.3754) while the shipped `log|A|` criterion was
+/// start-insensitive. The cause was NOT the criterion: it was
+/// `stalled → max_half = 1`, an adaptive line-search cap ported from mgcv_rust
+/// that collapsed halving to a single probe exactly when the REML change had
+/// gone quiet — i.e. on a flat λ ridge, where more halving is needed, not less.
+/// mgcv uses `maxHalf = 30` unconditionally (`gam.fit3.r:1230`, `mgcv.r:2212`).
+/// With that restored the low start reaches the same optimum to 2.5e-8.
 #[test]
-fn observed_criterion_low_variance_start_stops_early() {
+fn scat_fit_is_insensitive_to_the_sigma2_start() {
     let (x, y, k, _ux) = case();
     let sd = sd_of(&y);
     let good = fit_at(&x, &y, k, 5.0, sd * sd);
     let poor = fit_at(&x, &y, k, 5.0, 0.1 * sd * sd);
     let excess = poor.reml_value - good.reml_value;
     println!(
-        "  s2_0=sd^2   -> rho={:.6} reml={:.9} edf={:.4}\n  \
-         s2_0=0.1sd^2 -> rho={:.6} reml={:.9} edf={:.4}\n  \
-         excess REML at the low start = {excess:+.3e}",
-        good.rho[0], good.reml_value, good.edf_total, poor.rho[0], poor.reml_value, poor.edf_total
+        "  s2_0=sd^2   -> rho={:.6} reml={:.9} edf={:.4} iters={}\n  \
+         s2_0=0.1sd^2 -> rho={:.6} reml={:.9} edf={:.4} iters={}\n  \
+         REML difference = {excess:+.3e}",
+        good.rho[0],
+        good.reml_value,
+        good.edf_total,
+        good.n_iters,
+        poor.rho[0],
+        poor.reml_value,
+        poor.edf_total,
+        poor.n_iters
     );
-    // With the SHIPPED criterion both starts reach the same optimum and this
-    // lands at ~-1.2e-8, i.e. convergence noise about zero — which is the
-    // healthy case, not a reversal. The guard is for a MEANINGFUL reversal
-    // (the high-variance start being the one that stops early), so it has to
-    // sit above that noise floor rather than at it.
-    // Branch on the configuration, because a single band that admits BOTH
-    // outcomes discriminates nothing — which is what this asserted before.
-    if observed_criterion_on() {
-        assert!(
-            excess > 5.0e-4 && excess < 2.0e-3,
-            "the documented early stop under the observed criterion is not what it \
-             was: excess REML {excess:.3e}, recorded 9.133e-4. If it has GONE, \
-             delete this test and the defect note with it."
-        );
-    } else {
-        assert!(
-            excess.abs() < 1.0e-6,
-            "with the shipped log|A| criterion both starts reach the same optimum; \
-             they now differ by {excess:.3e}"
-        );
-    }
+    assert!(
+        excess.abs() < 1.0e-6,
+        "the sigma^2 start decides the landing again: REML differs by \
+         {excess:.3e} (rho {:.6} vs {:.6}, edf {:.4} vs {:.4}). Check the \
+         line-search halving budget before anything else — a cap on halving is \
+         what caused this the first time.",
+        good.rho[0],
+        poor.rho[0],
+        good.edf_total,
+        poor.edf_total
+    );
 }
 
 /// **Measures the mechanism behind the σ²-start sensitivity above.**
