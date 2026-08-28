@@ -260,3 +260,44 @@ fn observed_criterion_pd_fallback_rate_by_start() {
         );
     }
 }
+
+/// **Pre-standardizing the response by hand must be a no-op.** The fit core
+/// divides by `scat_response_scale(y)` = `sd(y)` (floored at 1) and rescales
+/// out, so handing it `y/sd(y)` with a correspondingly scaled σ² start poses
+/// the identical problem. If the two disagree, the standardization round-trip
+/// is not exact and every measurement depends on which scale you happened to
+/// pass in.
+#[test]
+fn pre_standardizing_the_response_is_a_no_op() {
+    let (x, y, k, ux) = case();
+    let sd = sd_of(&y);
+    let yz = y.mapv(|v| v / sd);
+
+    // Same effective start: σ²_std = 0.1 either way.
+    let raw = fit_at(&x, &y, k, 5.0, 0.1 * sd * sd);
+    let pre = fit_at(&x, &yz, k, 5.0, 0.1);
+
+    let pr = raw.predict(ux.view()).unwrap();
+    let pp = pre.predict(ux.view()).unwrap();
+    // `pre` is fitted on y/sd, so its curve is on that scale.
+    let pp_raw: Vec<f64> = pp.iter().map(|v| v * sd).collect();
+    let d = max_rel(pr.as_slice().unwrap(), &pp_raw);
+    println!(
+        "  raw y          -> rho={:.6} reml={:.9} edf={:.4} iters={}",
+        raw.rho[0], raw.reml_value, raw.edf_total, raw.n_iters
+    );
+    println!(
+        "  pre-standardized -> rho={:.6} reml={:.9} edf={:.4} iters={}",
+        pre.rho[0], pre.reml_value, pre.edf_total, pre.n_iters
+    );
+    println!("  curve difference: {d:.3e}");
+    assert!(
+        d < 1.0e-6,
+        "pre-standardizing changed the fit ({d:.3e}): rho {:.6} vs {:.6}, \
+         edf {:.4} vs {:.4}. The standardization round-trip is not exact.",
+        raw.rho[0],
+        pre.rho[0],
+        raw.edf_total,
+        pre.edf_total
+    );
+}
