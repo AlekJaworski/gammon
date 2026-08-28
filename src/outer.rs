@@ -275,6 +275,29 @@ impl OuterSolver for NewtonWithHalving {
         let (mut v, mut g, mut h) = score.value_grad_hess(&theta)?;
         let mut prev_v = f64::INFINITY;
 
+        // Nothing to optimise. An all-parametric design has no penalties and,
+        // for a fixed-dispersion family, no shape parameters either — so θ is
+        // empty and there is no step to take. Return before the Newton
+        // machinery, whose `active.is_empty()` safeguard would otherwise fall
+        // back to `vec![0]` and index an empty gradient.
+        //
+        // This used to be handled incidentally: the old top-of-loop test
+        // returned as soon as `grad_norm < tol`, and `inf_norm` of an empty
+        // vector is 0. Adding mgcv's score-change VETO removed that accident,
+        // because the veto holds convergence off for the first three iterations
+        // regardless — so the empty case walked into the step builder and
+        // panicked. Caught by `tests/python/test_smoke.py`'s all-parametric
+        // Bernoulli case, which the Rust suite does not cover.
+        if theta.is_empty() {
+            return Ok(OuterFit {
+                theta,
+                value: v,
+                grad_norm: 0.0,
+                iterations: 0,
+                converged: true,
+            });
+        }
+
         for iter in 0..opts.max_iters {
             if let Some(s) = score.stats() {
                 s.bump_outer();
