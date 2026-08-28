@@ -479,10 +479,36 @@ pub(crate) fn check_y_in_unit(y: ArrayView1<f64>, family_name: &str) -> Result<(
 /// `FittedGam` construction site so the vcov is populated once at
 /// fit-time and downstream `predict_ci` / `predict_diff` calls are
 /// cheap.
+/// Coefficient covariance — mgcv's `Vp`.
+///
+/// From the **Fisher** pair where the family has one, for the same reason edf
+/// is (see [`compute_edf`] and `Loss::expected_curvature_weights`): mgcv builds
+/// `rV` from the `sqrt(wf)` re-factorisation at `gdi.c:2266-2288`, and
+/// `Vp = rV·rVᵀ·scale`.
+///
+/// Verified in R against mgcv 1.9.4 on `1d_scat_saturated_basis_n620_k5_cr`:
+/// the Fisher inverse matches `m$Vp` to **7.8e-15** max relative, while the
+/// observed inverse — what this used unconditionally — is **2.2e-2** out
+/// (`Vp[1,1]` 1.716070e+06 vs 1.713119e+06). Every standard error, confidence
+/// interval and `predict(se = TRUE)` on a scat fit came off the wrong matrix.
 pub(crate) fn compute_vcov<S: crate::inner::LinearSolver>(
     fit: &crate::inner::GaussianInnerFit<S>,
     scale: f64,
 ) -> ndarray::Array2<f64> {
+    if let Some((f, _)) = fit.fisher.as_ref() {
+        // The family's dispersion is ALREADY inside the Fisher weight — for
+        // scat, `W_f = (ν+1)/((ν+3)σ²)` — so `A_f⁻¹` is already ∝ σ² and the
+        // caller's `scale` must NOT be applied again. This is why mgcv reports
+        // `scale = 1` for scat: `Vp = rV·rVᵀ·scale` with the dispersion carried
+        // by `wf`, not by the multiplier.
+        //
+        // gamrs's scat driver reports `scale = σ²` (a deliberate divergence —
+        // users want it), and `fit_shape_aware` passes that same value here. So
+        // applying it would double-count: measured on
+        // `1d_scat_saturated_basis_n620_k5_cr`, σ² = 0.686405 and the reported
+        // vcov came out exactly `(1 − 0.686405) = 31.4%` away from mgcv's `Vp`.
+        return S::invert(f);
+    }
     let mut v = fit.a_inv();
     // Skip the multiplication if scale==1 — saves a full p² pass on the
     // fixed-φ families which are the majority.

@@ -380,3 +380,90 @@ fn scat_criterion_matches_mgcv_on_its_own_sp_ladder() {
         );
     }
 }
+
+/// **`vcov` must be the FISHER inverse** — mgcv's `Vp`, not the inverse of the
+/// matrix the score differentiates.
+///
+/// mgcv builds `rV` from the `sqrt(wf)` re-factorisation (`gdi.c:2266-2288`) and
+/// reports `Vp = rV·rVᵀ·scale`. Verified in R against mgcv 1.9.4 on this
+/// fixture, using mgcv's OWN design and penalty so the bases match: the Fisher
+/// inverse reproduces `m$Vp` to 7.8e-15 max relative, while the observed
+/// inverse — what gamrs used to report — is 2.2e-2 out (`Vp[1,1]`
+/// 1.716070e+06 vs 1.713119e+06).
+///
+/// Asserted here in the form that does not need mgcv's basis: for scat the
+/// Fisher weight is the SCALAR `c = (ν+1)/((ν+3)σ²)`, so
+/// `Vp = (c·XᵀX + λS)⁻¹` exactly. Fitted on an already-standardized response so
+/// there is one scale throughout and `rescale_scat_fit` is a no-op — the raw
+/// path is covered separately by
+/// `entry_point_equivalence::pre_standardizing_the_response_is_a_no_op`.
+#[test]
+fn scat_vcov_is_the_fisher_inverse() {
+    use gamrs::design::{Additive, DesignStrategy, TermSpec};
+    use ndarray_linalg::Inverse;
+
+    let fx = load();
+    let n = fx.inputs.y_train.len();
+    let x = Array2::from_shape_vec((n, 1), fx.inputs.x_train.clone()).unwrap();
+    let y_raw = Array1::from_vec(fx.inputs.y_train.clone());
+    let sd = {
+        let m = y_raw.iter().sum::<f64>() / (n as f64);
+        (y_raw.iter().map(|&v| (v - m).powi(2)).sum::<f64>() / ((n - 1) as f64)).sqrt()
+    };
+    let y = y_raw.mapv(|v| v / sd);
+
+    let fit = gamrs::fit(
+        gamrs::family::tdist_identity(5.0, 1.0),
+        x.view(),
+        y.view(),
+        None,
+        fx.inputs.k,
+    )
+    .expect("scat fit");
+
+    // c from the fit's OWN reported shape, so this cannot pass by accident.
+    let sigma2 = fit.shape_params[0].exp();
+    let nu = 3.0 + fit.shape_params[1].exp();
+    let c = (nu + 1.0) / ((nu + 3.0) * sigma2);
+
+    let prep = Additive {
+        terms: vec![TermSpec::Cr {
+            col: 0,
+            k: fx.inputs.k,
+        }],
+    }
+    .prepare(x.view())
+    .expect("design");
+    let xd = &prep.x_design;
+    let p = xd.ncols();
+    let mut a = xd.t().dot(xd).mapv(|v| c * v);
+    for (j, s_j) in prep.s_list.iter().enumerate() {
+        let lambda_j = fit.rho[j].exp();
+        for r in 0..p {
+            for q in 0..p {
+                a[[r, q]] += lambda_j * s_j[[r, q]];
+            }
+        }
+    }
+    let want = a.inv().expect("Fisher matrix should be invertible");
+
+    let got = &fit.vcov;
+    let scale = want.iter().fold(0.0_f64, |m, &v| m.max(v.abs()));
+    let rel = got
+        .iter()
+        .zip(want.iter())
+        .map(|(g, w)| (g - w).abs())
+        .fold(0.0_f64, f64::max)
+        / scale;
+    println!(
+        "  nu={nu:.6} sigma2={sigma2:.6} c={c:.6e}  edf={:.4}\n  \
+         vcov vs (c.X'X + lam.S)^-1: max rel = {rel:.3e}",
+        fit.edf_total
+    );
+    assert!(
+        rel < 1.0e-10,
+        "vcov is not the Fisher inverse (max rel {rel:.3e}). If this fires after \
+         a change to compute_vcov, note that the observed inverse differs from \
+         mgcv's Vp by 2.2e-2 on this fixture — the Fisher pair is the correct one."
+    );
+}
