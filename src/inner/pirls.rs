@@ -118,8 +118,12 @@ where
 
 /// Cheap precondition for [`score_log_det_h`]: when this is false the caller
 /// must skip it entirely rather than pay to build `s_total` for nothing.
+///
+/// A family with `observed_curvature_weights` needs the observed `log|H|`; a
+/// `use_newton_irls` family needs the Newton one. Everything else keeps the
+/// fit's own factor and pays nothing.
 pub(crate) fn score_log_det_h_applies<L: Loss + Clone>(loss: &L) -> bool {
-    loss.use_newton_irls() || observed_log_det_h_enabled()
+    loss.use_newton_irls() || loss.has_observed_curvature()
 }
 
 /// Opt-in: build the score's `log|H|` from the family's **observed**
@@ -139,13 +143,15 @@ pub(crate) fn score_log_det_h_applies<L: Loss + Clone>(loss: &L) -> bool {
 /// `None` when the family supplies no observed curvature, when the matrix is
 /// not usable, or when the opt-in is off — caller falls back to `log|A|`.
 ///
-/// Gated by `GAMRS_OBSERVED_LOG_DET_H=1` while the change is being measured
-/// against mgcv on real data. It is a migration switch, not a supported knob:
-/// it changes what the fitted numbers *are*, so it must not survive as a mode.
+/// Verified against mgcv 1.9.4 on the fixture's own `sp_ladder`: gamrs's score
+/// reproduces mgcv's REML at all seven rungs to 3e-6 absolute on values of
+/// ~7325 (see `parity_scat_tf9963::scat_criterion_matches_mgcv_on_its_own_sp_ladder`).
+/// The working-weight `log|A|` misses the same ladder by 2.8e-2.
 /// The observed curvature the score should differentiate, or `None` to leave
-/// the working-weight factor alone. Gated by the same migration switch as
-/// [`observed_log_det_h`] so the score value and its derivatives can never
-/// disagree about which matrix they mean.
+/// the working-weight factor alone — the single seam that decides which matrix
+/// `fit.a_factor` is, and therefore what `log|H|`, `tr(H⁻¹S)`, `a_inv`, the
+/// gradient's `h_diag` and the Hessian all read. One place, so they cannot
+/// disagree.
 fn family_observed_score_weights<L, K, V>(
     family: &Family<L, K, V>,
     y: &Array1<f64>,
@@ -157,9 +163,6 @@ where
     K: Link + Clone,
     V: VarianceFn + Clone,
 {
-    if !observed_log_det_h_enabled() {
-        return None;
-    }
     let w = family
         .loss
         .observed_curvature_weights(y.view(), eta.view(), Some(prior_w.view()))?;
@@ -183,9 +186,6 @@ where
     V: VarianceFn + Clone,
 {
     use ndarray_linalg::{Cholesky, Eigh, UPLO};
-    if !observed_log_det_h_enabled() {
-        return None;
-    }
     let w_obs =
         family
             .loss
@@ -232,19 +232,6 @@ where
     let _ = h.eigh(UPLO::Lower);
     OBS_PD_FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     None
-}
-
-/// Read once — this is on the score's hot path. Public within the crate so
-/// callers can keep their fast path: when this is off and the family is not on
-/// the Newton path, they must not pay for building `s_total` at all.
-pub(crate) fn observed_log_det_h_enabled() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("GAMRS_OBSERVED_LOG_DET_H")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
 }
 
 pub(crate) fn lazy_newton_log_det_h<L, K, V>(

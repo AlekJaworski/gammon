@@ -393,6 +393,10 @@ impl Loss for TDist {
         })
     }
 
+    fn has_observed_curvature(&self) -> bool {
+        true
+    }
+
     /// Expected (Fisher) curvature — mgcv's `wf` for scat, and the weight edf
     /// and vcov must be built from. `efam.r:1327-1329` sets
     /// `EDmu2 = 2(ν+1)/((ν+3)σ²)` on every row, so `½·EDmu2` is a single
@@ -466,15 +470,10 @@ impl Loss for TDist {
         let sigma2 = self.sigma2;
         let nu_p1 = nu + 1.0;
         let nu_minus_df = nu - MIN_DF;
-        let nu_p3 = nu + 3.0;
         let q = nu * sigma2; // νσ²
         let qs_theta1 = sigma2 * nu_minus_df; // ∂q/∂θ_1
                                               // Expected weight W_exp = ½·EDmu2 and its θ-derivatives.
-        let w_exp = nu_p1 / (nu_p3 * sigma2);
-        let dwexp_dlog_sigma2 = -w_exp;
-        let dwexp_dlog_nu_m2 = 2.0 * nu_minus_df / (nu_p3 * nu_p3 * sigma2);
 
-        let observed_score_matrix = crate::inner::pirls::observed_log_det_h_enabled();
         let mut dw_dtheta = Array2::<f64>::zeros((n, 2));
         let mut dw_dmu = Array1::<f64>::zeros(n);
         for i in 0..n {
@@ -485,27 +484,21 @@ impl Loss for TDist {
             let s3 = s2 * s;
             let wt_i = prior_w.map(|w| w[i]).unwrap_or(1.0);
 
-            // Core iff observed curvature ½·Dmu2 > 1e-12 (matches
-            // `irls_observed_pair`'s branch exactly) — OR unconditionally when
-            // the score's matrix carries the observed curvature on every row.
-            // This hook's contract is "derivatives of the weight actually in
-            // `A`", so when `A` stops substituting, so must this.
-            let w_obs = nu_p1 * (q - r2) / s2;
-            if observed_score_matrix || (w_obs > 1e-12 && w_obs.is_finite()) {
-                // ∂W/∂θ_k = ½·dmu2th[k]; ∂W/∂μ = ½·dmu3 (Level-1 formulas).
-                let dmu2th_0 = 2.0 * nu_p1 * q * (3.0 * r2 - q) / s3;
-                let dmu2th_1 =
-                    2.0 * (nu_minus_df * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q)) / s3;
-                let dmu3 = 4.0 * r * nu_p1 * (3.0 * q - r2) / s3;
-                dw_dtheta[[i, 0]] = wt_i * 0.5 * dmu2th_0;
-                dw_dtheta[[i, 1]] = wt_i * 0.5 * dmu2th_1;
-                dw_dmu[i] = wt_i * 0.5 * dmu3;
-            } else {
-                // Outlier: W = w_exp (μ-independent → ∂W/∂μ = 0).
-                dw_dtheta[[i, 0]] = wt_i * dwexp_dlog_sigma2;
-                dw_dtheta[[i, 1]] = wt_i * dwexp_dlog_nu_m2;
-                dw_dmu[i] = 0.0;
-            }
+            // `∂W/∂θ_k = ½·dmu2th[k]`, `∂W/∂μ = ½·dmu3` (Level-1 formulas), on
+            // EVERY row. No outlier branch: this hook's contract is
+            // "derivatives of the weight actually in the matrix the score
+            // differentiates", and that matrix now carries the observed
+            // curvature everywhere (`pirls.rs` rebuilds `a_factor` from
+            // `observed_curvature_weights`). There used to be an
+            // expected-curvature branch here mirroring `irls_observed_pair`'s
+            // substitution; it went with the substitution.
+            let dmu2th_0 = 2.0 * nu_p1 * q * (3.0 * r2 - q) / s3;
+            let dmu2th_1 =
+                2.0 * (nu_minus_df * (q - r2) * s + nu_p1 * qs_theta1 * (3.0 * r2 - q)) / s3;
+            let dmu3 = 4.0 * r * nu_p1 * (3.0 * q - r2) / s3;
+            dw_dtheta[[i, 0]] = wt_i * 0.5 * dmu2th_0;
+            dw_dtheta[[i, 1]] = wt_i * 0.5 * dmu2th_1;
+            dw_dmu[i] = wt_i * 0.5 * dmu3;
         }
         Some((dw_dtheta, dw_dmu))
     }

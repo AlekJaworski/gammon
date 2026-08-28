@@ -345,6 +345,14 @@ pub trait Loss {
     /// Includes the per-row prior weight; identity-link coordinates. `None` ⇒
     /// the family has no separate expected curvature, so edf keeps using the
     /// factor the fit already built.
+    /// Does this family have a separate **observed** curvature, i.e. does
+    /// [`Self::observed_curvature_weights`] return `Some`? A cheap predicate so
+    /// callers can skip building `s_total` for a family that has none, without
+    /// allocating a weight vector to find out.
+    fn has_observed_curvature(&self) -> bool {
+        false
+    }
+
     fn expected_curvature_weights(
         &self,
         _y: ndarray::ArrayView1<f64>,

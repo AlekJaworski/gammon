@@ -64,15 +64,6 @@ fn max_rel(a: &[f64], b: &[f64]) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
-/// Is the observed-`log|H|` criterion active? Read from the environment rather
-/// than the crate, because the switch is a process-wide `OnceLock` that no test
-/// can flip in-process — so a test that needs to know must ask the same source.
-fn observed_criterion_on() -> bool {
-    std::env::var("GAMRS_OBSERVED_LOG_DET_H")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
-}
-
 fn sd_of(y: &Array1<f64>) -> f64 {
     let n = y.len() as f64;
     let m = y.iter().sum::<f64>() / n;
@@ -244,14 +235,9 @@ fn scat_fit_is_insensitive_to_the_sigma2_start() {
 /// fallback never fires. If the fallback starts firing, the objective becomes
 /// discontinuous and that is a finding, not a detail.
 ///
-/// Skipped rather than passed when the switch is off, because with `log|A|`
-/// the observed path is never reached and there is nothing to measure.
+/// The observed criterion is now unconditional, so this always measures.
 #[test]
 fn observed_criterion_pd_fallback_rate_by_start() {
-    if !observed_criterion_on() {
-        println!("  SKIPPED: GAMRS_OBSERVED_LOG_DET_H is off, the observed path never runs");
-        return;
-    }
     let (x, y, k, _ux) = case();
     let sd = sd_of(&y);
     for (tag, nu, s2) in [
