@@ -298,6 +298,7 @@ class Gam:
         family: str = "gaussian",
         link: Optional[str] = None,
         df: Optional[float] = None,
+        sigma2: Optional[float] = None,
         tweedie_p: Optional[float] = None,
         negbin_theta: Optional[float] = None,
         r: Optional[int] = None,
@@ -331,6 +332,12 @@ class Gam:
         self.min_points_to_save = min_points_to_save
         self.max_points_to_save = max_points_to_save
         self.df = df
+        # scat's σ² INITIAL value, in the response's own units (the native side
+        # standardizes internally). Counterpart to `df` (= ν); like `df` it is a
+        # start, not a constraint. Exposed because it is load-bearing: on a
+        # saturated basis a low σ² start lands the outer loop at a measurably
+        # worse REML than `sd(y)²` does, so it has to be settable and testable.
+        self.sigma2 = sigma2
         self.tweedie_p = tweedie_p
         self.negbin_theta = negbin_theta
         self.r = int(r) if r is not None else None
@@ -439,8 +446,23 @@ class Gam:
         # Forward-compat: stash any remaining unknown kwargs without
         # erroring so a textual mgcv_rust → gamrs substitution doesn't
         # blow up at construction time.
+        #
+        # But SAY SO. Silently discarding a keyword is worse than rejecting it:
+        # it looks like it worked. `Gam(sigma2=...)` and `Gam(nu=...)` were both
+        # swallowed here for months, and a whole round of scat start-sensitivity
+        # measurements was invalid as a result — every "sweep" was the same
+        # start repeated, and the contradiction against the Rust-side results
+        # got reported as a puzzle instead of a broken instrument.
         if kwargs:
             self._unknown_kwargs = kwargs
+            warnings.warn(
+                f"gamrs.Gam ignored unrecognised keyword(s): "
+                f"{sorted(kwargs)}. They are accepted for mgcv_rust source "
+                f"compatibility but have NO effect on the fit. For scat, the "
+                f"shape start is `df=` (ν) and `sigma2=` (σ²).",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Filled at fit time:
         self._fitted = self.X = self.y = self.sample_weight = None
@@ -472,6 +494,8 @@ class Gam:
         if self.family in ("t-dist", "scat") and self.df is not None:
             # gamrs's tdist takes nu (ν); df is its v0.x alias.
             out["nu"] = float(self.df)
+        if self.family in ("t-dist", "scat") and self.sigma2 is not None:
+            out["sigma2"] = float(self.sigma2)
         if self.family in ("tweedie", "tw", "Tweedie") and self.tweedie_p is not None:
             out["tweedie_p"] = float(self.tweedie_p)
         if self.family == "ocat":
