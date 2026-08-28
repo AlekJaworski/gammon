@@ -510,16 +510,32 @@ pub(crate) fn compute_edf<S: crate::inner::LinearSolver>(
     working_weights: &Array1<f64>,
     fit: &crate::inner::GaussianInnerFit<S>,
 ) -> f64 {
+    // mgcv computes edf from the FISHER pair, not from whatever factor the
+    // score differentiates: `gdi.c:2260-2290` re-QRs `[sqrt(wf)X; E]` after the
+    // observed-weight work is done, precisely so edf is "computed safely".
+    // Where the family exposes that weight, use it — BOTH sides from `W_f`, its
+    // own factorisation. Verified against mgcv 1.9.4 on
+    // `1d_scat_saturated_basis_n620_k5_cr`: this reproduces mgcv's reported
+    // 2.3879040656710795 to 4.5e-14, where pairing the observed weight with the
+    // observed factor gives 2.3807272805 (7.2e-3 out, because 23 of 620 rows
+    // have ½·D_μμ ≤ 0).
+    let (weights, factor) = match fit.fisher.as_ref() {
+        Some((f, w_f)) => (w_f, Some(f)),
+        None => (working_weights, None),
+    };
     let p = x_design.ncols();
     let n = x_design.nrows();
     let mut wxt = ndarray::Array2::<f64>::zeros((p, n));
     for j in 0..n {
         for i in 0..p {
-            wxt[[i, j]] = x_design[[j, i]] * working_weights[j];
+            wxt[[i, j]] = x_design[[j, i]] * weights[j];
         }
     }
     let xtwx = wxt.dot(x_design);
-    fit.trace_a_inv(xtwx.view())
+    match factor {
+        Some(f) => S::trace_a_inv(f, xtwx.view()),
+        None => fit.trace_a_inv(xtwx.view()),
+    }
 }
 
 /// Per-term EDF for a multi-smooth fit. Uses the identity

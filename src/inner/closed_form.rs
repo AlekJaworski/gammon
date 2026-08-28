@@ -168,6 +168,9 @@ fn gaussian_inner_solve_cached<S: LinearSolver>(
         eta,
         // Factor and its weights travel together — see `a_weights`.
         a_weights: working_weights.clone(),
+        // No separate expected curvature on this path — edf/vcov keep
+        // using `a_factor`, as before. See `GaussianInnerFit::fisher`.
+        fisher: None,
         working_weights,
         working_response,
         deviance: rss,

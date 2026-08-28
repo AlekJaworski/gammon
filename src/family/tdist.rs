@@ -393,6 +393,24 @@ impl Loss for TDist {
         })
     }
 
+    /// Expected (Fisher) curvature — mgcv's `wf` for scat, and the weight edf
+    /// and vcov must be built from. `efam.r:1327-1329` sets
+    /// `EDmu2 = 2(ν+1)/((ν+3)σ²)` on every row, so `½·EDmu2` is a single
+    /// scalar. Same value `irls_observed_pair` substitutes on outlier rows —
+    /// but here it applies to ALL rows, which is the difference that matters.
+    fn expected_curvature_weights(
+        &self,
+        y: ndarray::ArrayView1<f64>,
+        _eta: ndarray::ArrayView1<f64>,
+        prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<ndarray::Array1<f64>> {
+        use ndarray::Array1;
+        let w_exp = (self.nu + 1.0) / ((self.nu + 3.0) * self.sigma2);
+        Some(Array1::from_shape_fn(y.len(), |i| {
+            prior_w.map(|p| p[i]).unwrap_or(1.0) * w_exp
+        }))
+    }
+
     /// Observed curvature `½·D_μμ` on EVERY row, negatives included — the
     /// bracket in `∂β/∂ρ_j = −λ_j·[X'diag(½·D_μμ)X + Σλ_kS_k]⁻¹·S_j·β`.
     ///

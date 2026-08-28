@@ -316,6 +316,44 @@ pub trait Loss {
         None
     }
 
+    /// Per-row **expected** (Fisher) curvature `½·E[d²D/dμ²]` — the weight
+    /// mgcv computes **edf and the coefficient covariance** from, and NOT the
+    /// weight it takes `log|H|` off.
+    ///
+    /// mgcv keeps two factorisations on purpose. `gdi.c:2260-2290` finishes the
+    /// observed-weight work, then overwrites `w ← sqrt(wf)`, re-QRs
+    /// `[sqrt(wf)X; E]` and rebuilds `P`, `K`, `rV` from *that*, with the
+    /// comment "get rV and K using E(W)… needed in order to compute effective
+    /// degrees of freedom safely, and for posterior inference".
+    /// `wf = pmax(0, dd$EDeta2 * .5)` (`gam.fit4.r:563`), and for scat
+    /// `efam.r:1327-1329` makes `EDmu2` the constant `2(ν+1)/((ν+3)σ²)`, so
+    /// `wf = (ν+1)/((ν+3)σ²)` — one scalar, identical on every row.
+    ///
+    /// So mgcv's scat edf is `tr[(c·X'X + λS)⁻¹·c·X'X]`, algebraically a
+    /// *Gaussian* edf at effective smoothing `λ/c`. Verified against mgcv
+    /// 1.9.4 on `1d_scat_saturated_basis_n620_k5_cr`: the Fisher pair
+    /// reproduces mgcv's reported `edf = 2.3879040656710795` to **4.5e-14**,
+    /// while pairing the observed weights with the observed factor gives
+    /// 2.3807272805 — off by 7.2e-3, because 23 of 620 rows have
+    /// `½·D_μμ ≤ 0`.
+    ///
+    /// This deliberately breaks the `a_factor`/`a_weights` pairing invariant:
+    /// that pairing is right for `log|H|` (both observed) and exactly wrong for
+    /// edf (both Fisher). One factor cannot serve both jobs, which is why mgcv
+    /// builds two.
+    ///
+    /// Includes the per-row prior weight; identity-link coordinates. `None` ⇒
+    /// the family has no separate expected curvature, so edf keeps using the
+    /// factor the fit already built.
+    fn expected_curvature_weights(
+        &self,
+        _y: ndarray::ArrayView1<f64>,
+        _eta: ndarray::ArrayView1<f64>,
+        _prior_w: Option<ndarray::ArrayView1<f64>>,
+    ) -> Option<ndarray::Array1<f64>> {
+        None
+    }
+
     /// Per-observation Level-2 shape derivatives feeding the **full
     /// analytic** REML/LAML Hessian path (port of mgcv_rust
     /// `src/reml/mod.rs::tdist_gdi2_native`'s `gdi2`-style assembly,

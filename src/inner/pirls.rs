@@ -691,6 +691,9 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver> I
             mu: mu_new,
             // Factor and its weights travel together — see `a_weights`.
             a_weights: working_weights.clone(),
+            // No separate expected curvature on this path — edf/vcov keep
+            // using `a_factor`, as before. See `GaussianInnerFit::fisher`.
+            fisher: None,
             working_weights,
             working_response,
             deviance: dev_new,
@@ -1073,6 +1076,22 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
                 None => (a_factor, working_weights.clone()),
             };
 
+        // The Fisher pair for edf / vcov — see `GaussianInnerFit::fisher`.
+        // Built here because this is where the family and the penalty are both
+        // in hand; costs one extra p×p assembly + factorisation per inner fit,
+        // and p is the basis dimension.
+        let fisher = self
+            .family
+            .loss
+            .expected_curvature_weights(self.y.view(), eta.view(), Some(prior_w.view()))
+            .filter(|w| w.iter().all(|v| v.is_finite()))
+            .and_then(|w_f| {
+                let xtw = weighted_xt(&self.x_design, &w_f);
+                let mut a = xtw.dot(&self.x_design);
+                add_penalty(&mut a, &s_total, lambda);
+                S::factorize(a).ok().map(|f| (f, w_f))
+            });
+
         // For PIRLS at convergence: rss-like quantity for downstream code is
         // the working-RSS `Σ W·(z - X·β)²`, which mgcv calls `dev_num` (it
         // matches the GLM deviance at convergence for canonical links).
@@ -1144,6 +1163,7 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
             converged,
             a_factor,
             a_weights,
+            fisher,
             log_det_h_override,
             tk_kkt_inputs,
             dw_deta: Some(dw_deta),

@@ -97,6 +97,18 @@ pub struct GaussianInnerFit<S: LinearSolver = CholeskySolver> {
     ///
     /// Equal to `working_weights` on every path that does not substitute.
     pub a_weights: Array1<f64>,
+    /// The **Fisher** pair: `(factorisation of X'diag(W_f)X + λS, W_f)`, where
+    /// `W_f` is `Loss::expected_curvature_weights`.
+    ///
+    /// A SECOND factorisation, deliberately. `a_factor` is what the score
+    /// differentiates (observed curvature); this is what edf and the
+    /// coefficient covariance are computed from. mgcv keeps both for exactly
+    /// this reason (`gdi.c:2260-2290` re-QRs with `sqrt(wf)` after the observed
+    /// work is done). One factor cannot serve both jobs.
+    ///
+    /// `None` when the family supplies no separate expected curvature, in which
+    /// case edf and vcov fall back to `a_factor` / `a_weights` as before.
+    pub fisher: Option<(S::Factorization, Array1<f64>)>,
     /// Optional `log|H|` override for the REML score body. Defaults to
     /// `None`, which makes the score body read `2·Σ log L_ii` off
     /// `a_factor` (the Fisher-W A). PIRLS solvers fill this with the
