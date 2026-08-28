@@ -7,6 +7,187 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-28
+
+**`scat` / `t-dist` numerical results change again, and by more than 0.13.0
+moved them.** Six separate defects were found in the REML machinery scat
+drives, each traced to a line in mgcv's source and measured against it. λ̂,
+edf, fitted curves, **and every standard error** move. They move toward mgcv:
+against `mgcv::gam` on a common standardized problem, the worst of ten real
+smooth terms goes from a 6.0e-4 relative curve error at 0.13.1 to 3.8e-5.
+
+If you fit `family="scat"` / `"t-dist"`, expect different numbers after
+upgrading — including from `predict(se=True)`, `vcov` and any confidence
+interval, which 0.13.0 did not touch.
+
+**Other families move slightly too, and it is worth knowing why.** The
+curvature, edf and vcov fixes are all behind `Loss` hooks that default to
+`None`, so those are scat-only. But three of the six defects were in the
+*shared* outer loop — the convergence veto, the halving budget and
+`grad_tol` — so every family that reaches a flat λ ridge now walks further
+along it instead of stopping where the steps went quiet. Measured across the
+non-scat parity fixtures, μ agreement with mgcv gets marginally **worse**
+while σ̂² agreement gets **better**:
+
+| fixture | max_rel μ | scale_rel σ̂² | outer iters |
+|---|---|---|---|
+| `1d_gaussian_near_linear_n500_k10` | 6.50e-7 → 3.92e-6 | 8.97e-7 → 7.96e-7 | 10 → 12 |
+| `4d_gaussian_mixed_n1000_k10` | 4.72e-6 → 3.48e-5 | 8.05e-8 → 6.48e-8 | 11 → 16 |
+| `8d_neighbourhoods_like_n15000` | 5.90e-6 → 1.50e-5 | 6.10e-7 → **2.19e-7** | 9 → 11 |
+| `10d_gaussian_n3000_k8` | 2.19e-6 → 6.53e-6 | 1.18e-7 → **4.13e-8** | 11 → 14 |
+| `additive tw profile-p n600 k8` | 4.73e-4 → **3.30e-4** | — | — |
+
+That is the flat-ridge effect, not a regression: on `near_linear` — a term
+that is very nearly a straight line, so its ridge runs to λ→∞ — ρ̂ goes
+17.770 → 19.766, further up a ridge mgcv also does not finish climbing. Every
+one of these stays two or more orders inside its parity bound (the Gaussian
+bars are 5e-4), and Tweedie improves. Note the **iteration counts rise
+~20–45%**, so non-scat fits get somewhat slower as well.
+
+The full write-up, including what was measured and ruled out, is
+`docs/scat_adjuster_parity_2026-08.md`.
+
+### Fixed
+- **The REML score used the wrong curvature, so scat was optimising the wrong
+  function.** The score's `log|H|` term was evaluated on the working-weight
+  matrix `A`, but `irls_observed_pair` substitutes the positive *expected*
+  curvature wherever the observed `½·D_μμ ≤ 0` — that substitution is what
+  keeps `X'WX + λS` factorisable, and it is correct for the β step, but it
+  means `A` is not the Hessian of the penalised deviance on those rows. mgcv
+  keeps the observed weight, negatives and all (`gam.fit4.r:367`, `w <-
+  dd$Deta2 * .5`), and only zeroes a row if the factorisation comes back
+  indefinite.
+
+  **This is proven against mgcv, not argued.** Evaluated on mgcv's own
+  `sp_ladder` at pinned shape — a pure λ-slice, so nothing about gamrs's
+  optimiser enters — gamrs's score now reproduces mgcv's REML at all 7 rungs
+  to **3e-6 absolute** on values of ~7325, i.e. 4e-10 relative. The old
+  working-weight `log|A|` misses the same ladder by 2.8e-2. Locked by
+  `scat_criterion_matches_mgcv_on_its_own_sp_ladder`, which fails on the old
+  criterion.
+
+  One seam decides this: `family_observed_score_weights` in `pirls.rs` sets
+  what `fit.a_factor` is, and `log|H|`, `tr(H⁻¹S)`, `a_inv`, the gradient's
+  `h_diag` and the Hessian all read that one factor, so they cannot disagree.
+  `Loss::has_observed_curvature()` lets families without a weight switch skip
+  the work entirely.
+
+- **The implicit-function-theorem bracket was the same wrong matrix.**
+  `compute_rho_envelope_gradient` solved for `∂β/∂ρ` against `fit.a_factor`
+  when that factor was the working-weight one. At the converged fit the
+  stationarity residual is 1.4e-8, so a central FD of β̂ is a trustworthy
+  oracle: `∂β/∂ρ` was **2.576e-2** against `A` and **1.988e-8** against the
+  observed Hessian, and the resulting score gradient went from 9.5e-4
+  relative off its own FD to 5.6e-6. The bracket is indefinite by
+  construction, so it needs LU rather than Cholesky. Locked by
+  `ift_dbeta_drho_matches_fd_of_beta_hat`.
+
+- **The outer loop concluded convergence from a small score change.** mgcv
+  does the opposite: `fast-REML.r:1587-1603` sets `converged <- TRUE`, clears
+  it if any gradient exceeds tolerance, then clears it *again* if the REML
+  value is still moving — the score-change test is a **veto**, never a reason
+  to stop. gamrs returned `converged: true` on a small `|ΔREML|`, so on a flat
+  λ ridge the loop stopped wherever the steps went quiet. On the synthetic
+  flat-ridge fixture the criterion's argmin is at ρ ≈ 21.92 and the loop
+  stopped at ρ ≈ 16.77.
+
+- **The line search collapsed to a single probe on exactly the ridges that
+  needed it most.** The step-halving cap carried a `stalled ⇒ 1 halving`
+  branch ported from mgcv_rust (`smooth.rs:2741-2772`) that fired when
+  `|ΔREML|/|v| < 1e-4` after iteration 3 — that is, on a flat λ ridge, where
+  *more* halving is wanted. mgcv uses `maxHalf = 30` unconditionally
+  (`gam.fit3.r:1230`, `mgcv.r:2212`). This was the root cause of a σ²-start
+  sensitivity that had survived every other hypothesis: the saturated-basis
+  fixture landed 9.1e-4 REML short from a `0.1·sd²` start and now lands
+  2.5e-8 from it. Locked by `scat_fit_is_insensitive_to_the_sigma2_start`.
+
+- **edf came from the observed pair; mgcv computes it from the Fisher pair.**
+  mgcv keeps two factorisations on purpose — `gdi.c:2260-2290` finishes the
+  observed-weight work, then overwrites `w <- sqrt(wf)`, re-QRs and rebuilds
+  `P`, `K` and `rV` from that, "in order to compute effective degrees of
+  freedom safely, and for posterior inference". For scat `wf` is the single
+  scalar `(ν+1)/((ν+3)σ²)` (`efam.r:1327-1329`), so mgcv's scat edf is
+  algebraically a Gaussian edf at effective smoothing `λ/c`, with no observed
+  curvature in it anywhere.
+
+  Verified in R against mgcv 1.9.4 at mgcv's own fit: mgcv reports
+  `sum(edf) = 2.3879040656710795`; the Fisher-pair formula gives
+  `2.3879040656711243` (**+4.5e-14**), the observed-weight pair gives
+  `2.3807272805472910` (**−7.2e-3**). 23 of 620 rows had `w_obs ≤ 0`.
+  New `Loss::expected_curvature_weights`, and `GaussianInnerFit` now carries a
+  `fisher` pair built in PIRLS where family and penalty are both in hand.
+
+- **`vcov` likewise, and σ² was double-counted in it.** mgcv builds `rV` from
+  that same `sqrt(wf)` re-factorisation and reports `Vp = rV·rV'·scale`, so
+  coefficient covariance comes from the Fisher factor too. Verified in R on
+  mgcv's own design and penalty: the Fisher inverse matches `m$Vp` to
+  **7.8e-15**, the observed inverse — what gamrs used — to **2.2e-2**.
+
+  Separately, `compute_vcov` multiplied by `scale = σ²` when the Fisher weight
+  `c = (ν+1)/((ν+3)σ²)` already contains `1/σ²`. That is precisely why mgcv
+  reports `scale = 1` for scat: the dispersion is carried by `wf`, not by the
+  multiplier. The reported vcov sat a further 31.4% off. End-to-end against
+  mgcv's `Vp`, max relative difference goes **3.196e-1 → 8.7e-3**, and
+  `se(β₀)` reads 1310.00 against mgcv's 1309.99. gamrs still reports
+  `scale = σ²` on the `FittedGam` — a deliberate divergence — it just must not
+  be applied to the Fisher inverse.
+
+- **`Gam(sigma2=...)` and `Gam(nu=...)` were silently discarded.** Neither was
+  a constructor parameter, and a `**kwargs: Any` stashed anything
+  unrecognised into `self._unknown_kwargs` without a word — five orders of
+  magnitude of `sigma2` gave bit-identical fits. `sigma2` is now a real
+  argument forwarded to the native scat init alongside `df` (= ν); it is a
+  start, not a constraint, and it is load-bearing. Unknown keywords still do
+  not raise (mgcv_rust source compatibility) but now **warn**, naming the
+  ignored keys.
+
+### Added
+- **`evaluate_reml_at_scat` returns the analytic shape gradient**, from the
+  same score type the outer Newton drives, and reports `grad_error` on
+  failure rather than omitting the key — a caller defaulting a missing `grad`
+  to NaN cannot distinguish "not computed" from "computed as NaN". The scat
+  shape axes are a severe cancellation (`½·d(Dp)` and `−d(ls)` at ∓~300
+  summing to −8.7e-4), so nothing but the real gradient can be checked
+  against an FD here.
+
+### Changed
+- **`grad_tol` is 1e-7.** Swept against mgcv 1.9.4 run directly on ten real
+  smooth terms: 1e-7 is the knee of the curve *and* slightly better than
+  anything tighter on both of the two worst terms (worst-term curve error
+  5.9e-4 at mgcv's own 5e-6, 3.8e-5 at 1e-7, unchanged below). The curve is
+  not monotone in the tolerance, so a two-point comparison misleads — the
+  full sweep is in the doc comment at `outer.rs`.
+
+- **The scat parity bounds were recalibrated to the new criterion.** They had
+  been set against the old one and carried 12×–28000× headroom, wide enough
+  for a real regression to pass through. They now sit at ~5–10× over the
+  measured value — tight enough to bite, loose enough that last-digit drift
+  across a refactor is not a false alarm. Two bars were deliberately left
+  alone as already in that band. Three stale justifying comments were struck,
+  including one citing a "~1e-3 residual in scat's ρ-gradient" that now
+  measures 5.6e-8.
+
+### Performance
+- **scat fits cost about 39% more** (`bench_scat_profile`, n=2000 k=10:
+  41 → 56 ms/fit). This is the price of the correct criterion and is
+  inherent — `a_factor` is now an extra O(n·p²) weighted product plus a
+  factorisation per inner fit, and mgcv does the same two factorisations.
+  Two redundant rebuilds were removed on the way (the IFT no longer re-forms
+  and re-factorises a matrix `fit.a_factor` already is; `score_log_det_h` no
+  longer rebuilds a matrix whose log-det is `fit.log_det_a()`), and the
+  Fisher pair is now opt-in per fit via `PirlsOpts::want_fisher` rather than
+  built on every inner iteration and used once.
+
+  Across n it is not uniform: n=500 1.08×, n=2000 1.17×, n=5000 1.36×,
+  n=10000 1.08×, and n=2000 k=25 **0.95×** — faster.
+
+- **Other families pay a smaller, indirect cost**: no per-iteration work was
+  added for them, but the outer loop no longer stops early, so it runs more
+  iterations. On the parity fixtures that is 9 → 11 at n=15000 d=8 and
+  11 → 16 on `4d_gaussian_mixed`. This was not separately wall-clocked —
+  `bench_gaussian` and `bench_baseline` panic on fixtures absent from the
+  repo, which is a pre-existing gap, not one this release introduced.
+
 ## [0.13.2] — 2026-08-27
 
 A packaging and correctness release: the sdist is scoped to what actually
@@ -462,7 +643,9 @@ numbers on every platform that already had a wheel.
 - First beta. Multi-smooth additive, tensor products, and the ten-family
   parity battery.
 
-[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.14.0
+[0.13.2]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.13.2
 [0.13.1]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.13.1
 [0.13.0]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.13.0
 [0.12.3]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.12.3

@@ -5,7 +5,7 @@ six composable trait layers (`Basis`, `BasisTransform`, `Loss`/`Link`/`VarianceF
 `InnerSolver`, `ScoreDerivatives`, `OuterSolver`). Designed for parity with
 R's `mgcv`.
 
-**Status: beta (v0.11).** Fastest where wall time matters — large n and
+**Status: beta (v0.14).** Fastest where wall time matters — large n and
 high basis dimension (up to ~2.3× at n=1M and ~15× at k=50 vs
 `mgcv_rust` 0.23), competitive-to-slower on tiny fits, with a known
 multi-smooth-NegBin gap; see [Performance](#performance) for the honest
@@ -68,10 +68,12 @@ All ten families land 1-D parity against `mgcv`:
 Multi-smooth (`s(x0) + s(x1) + …`) ships with `mgcv` R parity tests for
 Gaussian / Bernoulli / Poisson / QuasiPoisson / QuasiBinomial / Gamma /
 InvGauss / NegBin / Tweedie / scat. scat / TDist multi-smooth now has mgcv
-reference parity tests too — 2-D µ rel-err ~5.7e-4, 3-D ~2.2e-3, with σ̂²
-matching mgcv to ~0.1% (`tests/parity_additive_scat.rs`,
+reference parity tests too — as of 0.14.0, 2-D µ rel-err ~5.5e-6 and 3-D
+~8.3e-5, with σ̂² matching mgcv to ~0.1% (`tests/parity_additive_scat.rs`,
 `scripts/r/gen_scat_multismooth_fixtures.R`). Those bounds tightened 8-16× in
-0.13.0 when a spurious rank adjustment came out of scat's REML score; the same
+0.13.0 when a spurious rank adjustment came out of scat's REML score, and
+another 30-200× in 0.14.0 when scat's REML criterion was corrected to
+mgcv's observed-curvature `log|H|`; the same
 release adds `tests/parity_scat_tf9963.rs`, a saturated-basis lock (5 distinct
 x against k = 5, the geometry that exposed the defect) against all three mgcv
 arms (`gam`+REML, `bam`+REML, `bam`+fREML). Quantile/ELF now fits
@@ -277,7 +279,7 @@ so adding a family is a `Loss` impl, not a fork of the optimiser.
 
 ## Versioning
 
-Beta (`0.13.x`). The API is stabilising; minor bumps may carry breaking
+Beta (`0.14.x`). The API is stabilising; minor bumps may carry breaking
 changes until the 1.0 surface is locked. All ten families plus Ocat and
 Quantile/ELF now fit multi-smooth additive designs.
 
