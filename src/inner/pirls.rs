@@ -59,11 +59,13 @@ where
 /// Counters for how often the observed penalised Hessian is usable.
 ///
 /// The observed-curvature criterion is CONDITIONALLY defined: when
-/// `X'diag(½D_μμ)X + λS` loses positive-definiteness we fall back to `log|A|`,
-/// which means the objective can change under the optimiser's feet. These
-/// count the two branches so that discontinuity can be measured instead of
-/// assumed. Diagnostic only — they exist alongside the migration switch and
-/// should be removed with it.
+/// `X'diag(½D_μμ)X + λS` loses positive-definiteness the fit keeps the
+/// working-weight factor instead, which means the objective changed under the
+/// optimiser's feet. These count the two branches so that discontinuity is
+/// measured rather than assumed — it has never been observed to fire.
+///
+/// Incremented at the `a_factor` rebuild, which is where the decision lives
+/// now that the score reads `log|H|` straight off that factor.
 pub(crate) static OBS_PD_OK: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 pub(crate) static OBS_PD_FALLBACK: std::sync::atomic::AtomicUsize =
@@ -123,7 +125,13 @@ where
 /// `use_newton_irls` family needs the Newton one. Everything else keeps the
 /// fit's own factor and pays nothing.
 pub(crate) fn score_log_det_h_applies<L: Loss + Clone>(loss: &L) -> bool {
-    loss.use_newton_irls() || loss.has_observed_curvature()
+    // NOT `has_observed_curvature()`. For such a family `pirls.rs` already
+    // built `fit.a_factor` FROM the observed curvature, so `fit.log_det_a()` is
+    // `log|H_obs|` — measured equal to a fresh `observed_log_det_h` to
+    // 0.000e0 at every probe. Asking for it again re-does an O(n·p²) weighted
+    // product plus a Cholesky, per score evaluation, to reproduce a number the
+    // fit is holding. Only the Newton-A path needs a separate build.
+    loss.use_newton_irls()
 }
 
 /// Opt-in: build the score's `log|H|` from the family's **observed**
@@ -556,6 +564,14 @@ pub struct PirlsOpts {
     /// Initial η = μ_init mapped through the link. `None` → family-specific
     /// default (`(y + 0.5) / 2` for Bernoulli; `y` clamped for Poisson).
     pub eta_init: Option<Array1<f64>>,
+    /// Build [`GaussianInnerFit::fisher`] — the extra Fisher-weighted
+    /// factorisation that edf and vcov are computed from.
+    ///
+    /// Off by default because it is consumed ONCE, from the final fit, while
+    /// PIRLS runs per score evaluation: building it every time cost ~4ms of a
+    /// 56ms scat fit for nothing. The fit drivers turn it on for the final
+    /// `inner.fit(&rho_hat)` only.
+    pub want_fisher: bool,
 }
 
 impl Default for PirlsOpts {
@@ -565,6 +581,7 @@ impl Default for PirlsOpts {
             dev_rel_tol: 1e-9,
             halving_steps: 10,
             eta_init: None,
+            want_fisher: false,
         }
     }
 }
@@ -1055,9 +1072,22 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
                     let xtw = weighted_xt(&self.x_design, &w_score);
                     let mut a = xtw.dot(&self.x_design);
                     add_penalty(&mut a, &s_total, lambda);
+                    // This factorisation IS the PD decision now: mgcv permits
+                    // negative `w_i` but needs `X'WX + E'E` positive definite
+                    // overall (`gdi.c`'s `pls_fit1` returns n < 0 otherwise and
+                    // `gam.fit4.r` retries with Fisher). On failure we keep the
+                    // working-weight factor, which is that same fallback — and
+                    // it means the objective changed mid-optimisation, so it is
+                    // counted rather than silently taken.
                     match S::factorize(a) {
-                        Ok(f) => (f, w_score),
-                        Err(_) => (a_factor, working_weights.clone()),
+                        Ok(f) => {
+                            OBS_PD_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            (f, w_score)
+                        }
+                        Err(_) => {
+                            OBS_PD_FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            (a_factor, working_weights.clone())
+                        }
                     }
                 }
                 None => (a_factor, working_weights.clone()),
@@ -1067,17 +1097,20 @@ impl<L: Loss + Clone, K: Link + Clone, V: VarianceFn + Clone, S: LinearSolver>
         // Built here because this is where the family and the penalty are both
         // in hand; costs one extra p×p assembly + factorisation per inner fit,
         // and p is the basis dimension.
-        let fisher = self
-            .family
-            .loss
-            .expected_curvature_weights(self.y.view(), eta.view(), Some(prior_w.view()))
-            .filter(|w| w.iter().all(|v| v.is_finite()))
-            .and_then(|w_f| {
-                let xtw = weighted_xt(&self.x_design, &w_f);
-                let mut a = xtw.dot(&self.x_design);
-                add_penalty(&mut a, &s_total, lambda);
-                S::factorize(a).ok().map(|f| (f, w_f))
-            });
+        let fisher = if !self.opts.want_fisher {
+            None
+        } else {
+            self.family
+                .loss
+                .expected_curvature_weights(self.y.view(), eta.view(), Some(prior_w.view()))
+                .filter(|w| w.iter().all(|v| v.is_finite()))
+                .and_then(|w_f| {
+                    let xtw = weighted_xt(&self.x_design, &w_f);
+                    let mut a = xtw.dot(&self.x_design);
+                    add_penalty(&mut a, &s_total, lambda);
+                    S::factorize(a).ok().map(|f| (f, w_f))
+                })
+        };
 
         // For PIRLS at convergence: rss-like quantity for downstream code is
         // the working-RSS `Σ W·(z - X·β)²`, which mgcv calls `dev_num` (it

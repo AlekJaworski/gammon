@@ -691,7 +691,12 @@ impl<S: LinearSolver> FamilyFitWithSolver<IdentityLink, OcatVariance, S> for Oca
             y.to_owned(),
             prior,
             prep.s_list.clone(),
-            PirlsOpts::default(),
+            // edf and vcov read the Fisher pair, and this is the one fit they
+            // read — so ask for it here and nowhere else.
+            PirlsOpts {
+                want_fisher: true,
+                ..PirlsOpts::default()
+            },
         );
         let final_fit: GaussianInnerFit<S> = final_inner.fit(&rho_hat)?;
 

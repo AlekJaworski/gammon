@@ -162,53 +162,19 @@ where
             // tk_kkt[j] = Σᵢ ∂W_i/∂μ_i · η1_j[i] · h_diag[i]  (broadcast sum),
             // where η1_j = X·∂β/∂ρ_j and ∂β/∂ρ_j = −λ_j·A⁻¹·S_j·β (IFT on the
             // PIRLS score equation). The caller applies the outer ½.
-            // The IFT bracket is the OBSERVED penalised Hessian, which is not
-            // `fit.a_factor` for a family with an observed→expected weight
-            // switch: `A` carries the positive expected curvature wherever
-            // observed ½·D_μμ ≤ 0, so it is not the Hessian of the penalised
-            // deviance on those rows. Measured on the scat FD probe at ρ = 0,
-            // solving against `A` puts a 2.6% error in ∂β/∂ρ (stable across
-            // h); against the observed Hessian it is 2e-8. Indefinite by
-            // construction — negative rows are the point — so it needs LU,
-            // not Cholesky. `None` ⇒ no switch, and `A` already is the
-            // observed Hessian, so reuse its factor.
-            let obs_factor = family
-                .loss
-                .observed_curvature_weights(
-                    self.y.view(),
-                    fit.eta.view(),
-                    self.prior_weights.as_ref().map(|w| w.view()),
-                )
-                .and_then(|w_obs| {
-                    let mut h = Array2::<f64>::zeros((p, p));
-                    for c in 0..p {
-                        let xc = self.x_design.column(c);
-                        for d in c..p {
-                            let v = (&xc * &self.x_design.column(d) * &w_obs).sum();
-                            h[[c, d]] = v;
-                            h[[d, c]] = v;
-                        }
-                    }
-                    for j in 0..n_terms {
-                        let lambda_j = rho_slice[j].exp();
-                        for c in 0..p {
-                            for d in 0..p {
-                                h[[c, d]] += lambda_j * self.s_list[j][[c, d]];
-                            }
-                        }
-                    }
-                    crate::inner::LuSolver::factorize(h).ok()
-                });
-
+            // The IFT bracket is the observed penalised Hessian — and since
+            // `pirls.rs` now builds `fit.a_factor` from
+            // `observed_curvature_weights`, that factor already IS it. This used
+            // to re-form a p×p matrix and LU-factorise it here, per gradient
+            // call, to get a bit-identical result: measured 1.988e-8 from both
+            // paths at ρ=0 and 3.227e-5 at ρ=4, equal to every digit. Deleted
+            // with the criterion switch, which is what made the two coincide.
             let mut tk_kkt = vec![0.0_f64; n_terms];
             for j in 0..n_terms {
                 let lambda_j = rho_slice[j].exp();
                 let s_beta = self.s_list[j].dot(&fit.beta);
                 let rhs = s_beta.mapv(|v| -lambda_j * v);
-                let dbeta_drho_j: Array1<f64> = match obs_factor.as_ref() {
-                    Some(f) => <crate::inner::LuSolver as LinearSolver>::solve(f, rhs.view()),
-                    None => S::solve(&fit.a_factor, rhs.view()),
-                };
+                let dbeta_drho_j: Array1<f64> = S::solve(&fit.a_factor, rhs.view());
                 let eta1_j = self.x_design.dot(&dbeta_drho_j);
                 tk_kkt[j] = (&dw_dmu * &eta1_j * &h_diag).sum();
             }
