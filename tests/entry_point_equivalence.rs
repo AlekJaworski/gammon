@@ -6,10 +6,17 @@
 //! must agree, and if they do not, every measurement is entry-point dependent
 //! and no parity claim means anything until you say which door you came in by.
 //!
-//! This exists because the 2026-08 scat investigation spent a long time calling
-//! a discrepancy "start-sensitivity" when the two numbers being compared
-//! (max_rel 9.456e-4 and 1.095e-4 on the same fixture) came from these two
-//! entry points, not from two starts. Fixture is fully synthetic.
+//! CORRECTION, recorded because the original header got it wrong: this file was
+//! written believing the investigation's two numbers (max_rel 9.456e-4 and
+//! 1.095e-4 on the same fixture) came from these two entry points. They did
+//! not — the entry points are bit-identical in BOTH criterion modes, as
+//! `cr_and_additive_entry_points_agree_on_scat` measures (0.000e0). The real
+//! cause was `Gam(sigma2=...)` being silently swallowed by the Python
+//! wrapper's `**kwargs`, so the "two starts" were one start; fixed in a later
+//! commit. The file is still worth having — it is what disproved the
+//! entry-point theory — but its premise was a mis-attribution.
+//!
+//! Fixture is fully synthetic.
 
 use gamrs::design::{Additive, TermSpec};
 use gamrs::family::tdist_identity;
@@ -55,6 +62,15 @@ fn max_rel(a: &[f64], b: &[f64]) -> f64 {
         .zip(b)
         .map(|(p, t)| (p - t).abs() / t.abs().max(1e-12))
         .fold(0.0_f64, f64::max)
+}
+
+/// Is the observed-`log|H|` criterion active? Read from the environment rather
+/// than the crate, because the switch is a process-wide `OnceLock` that no test
+/// can flip in-process — so a test that needs to know must ask the same source.
+fn observed_criterion_on() -> bool {
+    std::env::var("GAMRS_OBSERVED_LOG_DET_H")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn sd_of(y: &Array1<f64>) -> f64 {
@@ -207,17 +223,22 @@ fn observed_criterion_low_variance_start_stops_early() {
     // healthy case, not a reversal. The guard is for a MEANINGFUL reversal
     // (the high-variance start being the one that stops early), so it has to
     // sit above that noise floor rather than at it.
-    assert!(
-        excess > -1.0e-6,
-        "the low-variance start found a materially BETTER optimum ({excess:.3e}) \
-         — then the high-variance start is the one stopping early and this test \
-         has the asymmetry backwards"
-    );
-    assert!(
-        excess < 2.0e-3,
-        "the low-variance start's early stop got worse than recorded: excess \
-         REML {excess:.3e} (was 9.1e-4)"
-    );
+    // Branch on the configuration, because a single band that admits BOTH
+    // outcomes discriminates nothing — which is what this asserted before.
+    if observed_criterion_on() {
+        assert!(
+            excess > 5.0e-4 && excess < 2.0e-3,
+            "the documented early stop under the observed criterion is not what it \
+             was: excess REML {excess:.3e}, recorded 9.133e-4. If it has GONE, \
+             delete this test and the defect note with it."
+        );
+    } else {
+        assert!(
+            excess.abs() < 1.0e-6,
+            "with the shipped log|A| criterion both starts reach the same optimum; \
+             they now differ by {excess:.3e}"
+        );
+    }
 }
 
 /// **Measures the mechanism behind the σ²-start sensitivity above.**
@@ -228,11 +249,20 @@ fn observed_criterion_low_variance_start_stops_early() {
 /// (`efam.r:172-174`) predicts a low σ² start makes this worse — smaller σ²
 /// puts more rows past `|r| > √(νσ²)`, so more negative-curvature rows.
 ///
-/// This prints the PD-ok / PD-fallback counts per start so the claim is
-/// measured rather than reasoned. It asserts only the weak, robust thing: a fit
-/// that never falls back cannot be suffering from this mechanism.
+/// Asserts two things. That the observed criterion actually RAN (otherwise the
+/// counters are 0/0 and the test measures nothing — which is what it silently
+/// did in the default configuration when it was print-only), and that the
+/// fallback never fires. If the fallback starts firing, the objective becomes
+/// discontinuous and that is a finding, not a detail.
+///
+/// Skipped rather than passed when the switch is off, because with `log|A|`
+/// the observed path is never reached and there is nothing to measure.
 #[test]
 fn observed_criterion_pd_fallback_rate_by_start() {
+    if !observed_criterion_on() {
+        println!("  SKIPPED: GAMRS_OBSERVED_LOG_DET_H is off, the observed path never runs");
+        return;
+    }
     let (x, y, k, _ux) = case();
     let sd = sd_of(&y);
     for (tag, nu, s2) in [
@@ -257,6 +287,16 @@ fn observed_criterion_pd_fallback_rate_by_start() {
             "  {tag:<22} edf={:.4}  iters={:<3}  rho={:.6}  reml={:.9}  \
              PD ok={ok:<5} fallback={fb:<5} ({pct:.1}% of {total} evals)",
             f.edf_total, f.n_iters, f.rho[0], f.reml_value
+        );
+        assert!(
+            total > 0,
+            "{tag}: the observed criterion never evaluated — this test measured nothing"
+        );
+        assert_eq!(
+            fb, 0,
+            "{tag}: the observed penalised Hessian lost positive-definiteness on \
+             {fb} of {total} evaluations, so the objective switched to log|A| \
+             mid-optimisation. That is a discontinuous criterion."
         );
     }
 }
@@ -292,7 +332,7 @@ fn pre_standardizing_the_response_is_a_no_op() {
     );
     println!("  curve difference: {d:.3e}");
     assert!(
-        d < 1.0e-6,
+        d < 1.0e-12,
         "pre-standardizing changed the fit ({d:.3e}): rho {:.6} vs {:.6}, \
          edf {:.4} vs {:.4}. The standardization round-trip is not exact.",
         raw.rho[0],

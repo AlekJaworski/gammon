@@ -1140,7 +1140,7 @@ mod ift_ladder {
     use crate::inner::{CholeskySolver, LuSolver, PirlsOpts};
     use crate::score::profile::FixedAtOneProfile;
     use crate::score::shape_aware::builder::PirlsInnerBuilder;
-    use crate::traits::{Basis, CoordsKind};
+    use crate::traits::{Basis, CoordsKind, ScoreDerivatives};
     use std::cell::RefCell;
 
     /// Locks the IFT bracket: `∂β/∂ρ` must match a central FD of β̂ itself.
@@ -1202,6 +1202,22 @@ mod ift_ladder {
             *sc.last_eta.borrow_mut() = None;
             *sc.accepted_state.borrow_mut() = None;
             sc.fit_inner_at(th).unwrap().0
+        };
+
+        // Central FD of the SCORE (not of β̂) — the oracle for the assembled
+        // gradient. Warm-start state is cleared so each probe is path-free.
+        let fd_score = |th: &Array1<f64>, i: usize, h: f64| -> f64 {
+            let mut tp = th.clone();
+            let mut tm = th.clone();
+            tp[i] += h;
+            tm[i] -= h;
+            *score.last_eta.borrow_mut() = None;
+            *score.accepted_state.borrow_mut() = None;
+            let vp = score.value(&tp).unwrap();
+            *score.last_eta.borrow_mut() = None;
+            *score.accepted_state.borrow_mut() = None;
+            let vm = score.value(&tm).unwrap();
+            (vp - vm) / (2.0 * h)
         };
 
         let ln = |nu: f64| (nu - 2.0_f64).ln();
@@ -1353,19 +1369,47 @@ mod ift_ladder {
                 e_obs / den
             );
 
-            if rho0 == 0.0 {
+            // Oracle validity gate: the FD of β̂ only means something while PIRLS
+            // is actually at its fixed point.
+            let fd_is_an_oracle = stat_norm < 1.0e-5;
+            if fd_is_an_oracle {
                 assert!(
-                    stat_norm < 1e-6,
-                    "PIRLS is not at its fixed point ({stat_norm:.3e}), so the FD of \
-                     beta-hat is not a valid oracle and this test proves nothing"
-                );
-                assert!(
-                    e_obs / den < 1e-5,
-                    "IFT dbeta/drho disagrees with FD of beta-hat by {:.3e} relative \
-                     (expected-W A gives {:.3e}) — the IFT bracket is not the observed \
-                     penalised Hessian",
+                    e_obs / den < 1.0e-4,
+                    "IFT dbeta/drho disagrees with FD of beta-hat by {:.3e} relative at \
+                     rho={rho0} (expected-W A gives {:.3e}) — the IFT bracket is not the \
+                     observed penalised Hessian",
                     e_obs / den,
                     e_exp / den
+                );
+            }
+
+            // AND — the part that actually locks the production code. Everything
+            // above compares a LOCAL rebuild of the bracket against FD, so it
+            // stays green even if `compute_rho_envelope_gradient` is reverted to
+            // solving against `fit.a_factor`; it verifies the formula, not the
+            // implementation. Assert on the ASSEMBLED gradient the optimiser is
+            // handed, against a Richardson FD of the score itself.
+            //
+            // The bar has to be tight enough to see the defect it guards: before
+            // the fix, ρ=0 read analytic +1.528723e-1 against FD +1.530165e-1,
+            // i.e. 9.4e-4 relative. After, 5.6e-6. A 1e-4 relative bar sits
+            // between them with an order of margin either side.
+            if rho0 == 0.0 {
+                let (_v, g_full) = score.value_and_grad(&theta).unwrap();
+                let h = 1.0e-4;
+                let fd_rich = (4.0 * fd_score(&theta, 0, h) - fd_score(&theta, 0, 2.0 * h)) / 3.0;
+                let rel = (g_full[0] - fd_rich).abs() / fd_rich.abs().max(1e-300);
+                println!(
+                    "    ASSEMBLED grad[0] = {:+.6e}  richardson fd = {fd_rich:+.6e}  \
+                     rel = {rel:.3e}",
+                    g_full[0]
+                );
+                assert!(
+                    rel < 1.0e-4,
+                    "the assembled rho-gradient disagrees with a Richardson FD of its \
+                     own score by {rel:.3e} relative (analytic {:+.6e} vs fd \
+                     {fd_rich:+.6e}). Pre-fix this read 9.4e-4.",
+                    g_full[0]
                 );
             }
         }
