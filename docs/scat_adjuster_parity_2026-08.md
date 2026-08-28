@@ -373,3 +373,97 @@ only; the fit never changed, which is why the curves did not move with it.
   score of ~7000). An FD profile of the score near a landing point is not trustworthy below that.
 - ν is `MIN_DF + exp(θ)` with `MIN_DF = 3`, so a probe written as `ln(5)` means **ν = 6, not 5**.
   Hardcoding the wrong ν in a diagnostic makes a correct fix look only partly effective.
+
+---
+
+## 2026-08-28 — SIX defects, the criterion proven, and the switch deleted
+
+Two adversarial critic passes over the 2026-08-27 work found two more defects and
+two faults in the work itself. Final state.
+
+### The criterion is mgcv's — proven, not inferred
+
+`parity_scat_tf9963::scat_criterion_matches_mgcv_on_its_own_sp_ladder` evaluates
+gamrs's score on mgcv's own `sp_ladder` — a pure λ-slice at fixed (ν, σ), since
+the generator pins `theta` across every rung — and reproduces mgcv's REML at all
+seven rungs to **3e-6 absolute** on values of ~7325 (4e-10 relative). The
+working-weight `log|A|` misses the same ladder by 2.8e-2 on the steep side and
+4.9e-3 on the shallow side. The test FAILS on the old criterion, which is what
+forced the flip. **`GAMRS_OBSERVED_LOG_DET_H` is gone**; one seam
+(`family_observed_score_weights`) decides what `fit.a_factor` is, and every
+consumer reads that factor.
+
+### The two further defects
+
+**5. `max_half` — the actual root cause of the residual early stop.** The line
+search carried an adaptive cap ported from mgcv_rust whose `stalled ⇒ 1 halving`
+branch fired when `|ΔREML|/|v| < 1e-4`, i.e. *on a flat λ ridge, where more
+halving is needed*. mgcv uses `maxHalf = 30` unconditionally (`gam.fit3.r:1230`,
+`mgcv.r:2212`). Removing it took the low-σ² start from 9.133e-4 above the optimum
+to −2.481e-8, and `tf9963` from failing at 1.064e-3 to 1.335e-5. It also
+invalidated an earlier `step_min` sweep: `max_half = 1` exits the loop before
+`step_min` can bind, so that null result meant nothing.
+
+**6. edf and vcov come from the FISHER pair.** mgcv keeps two factorisations:
+`gdi.c:2260-2290` re-QRs `[sqrt(wf)X; E]` *after* the observed-weight work,
+because edf and `rV` must use the expected curvature. `wf = pmax(0, EDeta2*.5)`
+(`gam.fit4.r:563`) and for scat `efam.r:1327-1329` makes `EDmu2` the constant
+`2(ν+1)/((ν+3)σ²)` — one scalar on every row. Verified in R with mgcv's own
+design and penalty:
+
+| | vs mgcv |
+|---|---|
+| Fisher `tr[(c·X'X+λS)⁻¹c·X'X]` | edf to **4.5e-14** |
+| observed pair | edf off by 7.2e-3 |
+| Fisher `A_f⁻¹` | `Vp` to **7.8e-15** |
+| observed `A_obs⁻¹` | `Vp` off by 2.2e-2 |
+
+And σ² must NOT be applied on top: `c` already contains `1/σ²`, which is why mgcv
+reports `scale = 1` for scat. gamrs was double-counting it — reported vcov sat
+exactly `(1 − σ²) = 31.4%` from mgcv's. Every standard error, CI and
+`predict(se=TRUE)` on a scat fit was affected.
+
+### Where the real order stands
+
+Common (standardized) problem — gamrs vs mgcv 1.9.4 run directly on each term:
+
+| term | curve rel | $ max |
+|---|---|---|
+| `sale_date` | 3.667e-07 | 0.2 |
+| `condition` | 3.381e-05 | 17.0 |
+| `garage_spaces` | 3.476e-05 | 20.6 |
+| worst (`quality`) | 3.809e-05 | 23.4 |
+
+Seven of ten terms at 1e-6 or better. Published secant vs mgcv-raw: worst |Δ|
+**1.288% → 0.391%**; `condition` **−1.288% → +0.040%**, `garage_spaces`
++0.156% → −0.026%, `quality` 0.470% → 0.053%. Nine of ten inside 0.09%.
+
+**`sale_date` is not an open defect.** It is the most exact term on a shared
+problem AND the worst against mgcv-raw, because it has the largest
+raw-vs-standardized sensitivity of the ten: mgcv's OWN ν moves 6.4020 → 6.6465
+(3.8%). Each term's raw residual tracks that sensitivity — mgcv shifts 0.63% /
+0.79% / 3.8% on condition / garage_spaces / sale_date and the raw RMSEs come out
+15.4 / 34.5 / 91.3 in the same order. What remains is the standardization
+convention, a product decision.
+
+### Faults in the 2026-08-27 work, for the record
+
+- The flagship IFT test was **vacuous**: it asserted on a local rebuild of the
+  formula, so reverting the production fix left it green. Proven by experiment.
+  Now asserts on the assembled gradient and fails at 9.480e-4 without the fix.
+- The tolerance citations were mis-sourced from `fast.REML.fit` (the Gaussian
+  fREML path) instead of `gam.fit3.r`'s `newton`, which scat actually uses
+  (`conv.tol = 1e-6` ⇒ gradient test `5e-6·score.scale`, axis filter
+  `1e-7·score.scale`). The `dim_tol` change made on that basis was reverted.
+- `grad_tol` is `sqrt(eps)`, deliberately ~336× tighter than mgcv's rule. That is
+  an empirical choice, NOT parity — do not cite mgcv for it.
+
+### Known-loose bounds — tighten before trusting
+
+The fixture bounds were calibrated against the old criterion and now have
+10-28000× headroom: `2d_scat` measures 5.502e-6 against 1.5e-3, `parity_scat`
+measures 1.1e-7 and 3.6e-8 against 1e-3, `tf9963`'s edf bracket is `(2.2..2.6)`
+where the gap is 0.006. They would pass through a large regression.
+
+`parity_scat_flat_ridge` now takes 36 outer iterations (was 22) — the cost of
+removing the halving cap.
