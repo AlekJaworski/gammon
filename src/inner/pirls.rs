@@ -83,78 +83,6 @@ pub fn reset_observed_pd_counts() {
     OBS_PD_FALLBACK.store(0, Relaxed);
 }
 
-/// **The** `log|H|` the score differentiates. One definition of the precedence.
-///
-/// observed curvature (families with an observed→expected switch) → Newton-A
-/// (`use_newton_irls`) → the fit's own factor. This sequence was written out at
-/// three sites — twice in `shape_aware/score.rs` and once in the scat Python
-/// diagnostic — and the diagnostic's copy had drifted to a bare
-/// `fit.log_det_a()`, so a profile taken with it measured a different function
-/// than the fitter optimised. That is the whole bug class this collapse closes.
-pub(crate) fn score_log_det_h<L, K, V, S>(
-    family: &Family<L, K, V>,
-    y: &Array1<f64>,
-    eta: &Array1<f64>,
-    mu: &Array1<f64>,
-    prior_w: &Array1<f64>,
-    x_design: &Array2<f64>,
-    s_total: &Array2<f64>,
-    fit: &crate::inner::GaussianInnerFit<S>,
-) -> f64
-where
-    L: Loss + Clone,
-    K: Link + Clone,
-    V: VarianceFn + Clone,
-    S: crate::inner::LinearSolver,
-{
-    observed_log_det_h(family, y, eta, prior_w, x_design, s_total)
-        .or_else(|| {
-            if family.loss.use_newton_irls() {
-                lazy_newton_log_det_h(family, y, mu, prior_w, x_design, s_total)
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| fit.log_det_a())
-}
-
-/// Cheap precondition for [`score_log_det_h`]: when this is false the caller
-/// must skip it entirely rather than pay to build `s_total` for nothing.
-///
-/// A family with `observed_curvature_weights` needs the observed `log|H|`; a
-/// `use_newton_irls` family needs the Newton one. Everything else keeps the
-/// fit's own factor and pays nothing.
-pub(crate) fn score_log_det_h_applies<L: Loss + Clone>(loss: &L) -> bool {
-    // NOT `has_observed_curvature()`. For such a family `pirls.rs` already
-    // built `fit.a_factor` FROM the observed curvature, so `fit.log_det_a()` is
-    // `log|H_obs|` — measured equal to a fresh `observed_log_det_h` to
-    // 0.000e0 at every probe. Asking for it again re-does an O(n·p²) weighted
-    // product plus a Cholesky, per score evaluation, to reproduce a number the
-    // fit is holding. Only the Newton-A path needs a separate build.
-    loss.use_newton_irls()
-}
-
-/// Opt-in: build the score's `log|H|` from the family's **observed**
-/// curvature (`Loss::observed_curvature_weights`) rather than from the
-/// working weight `A` was factorised with.
-///
-/// Why this exists. For a family with a per-row observed → expected switch
-/// (scat), `A = X'WX + λS` carries the positive *expected* curvature wherever
-/// observed `½·D_μμ ≤ 0`. mgcv does not do that: `gam.fit4.r:367` keeps the
-/// observed weight, negatives and all (`gdi.c`'s `pls_fit1` handles them via
-/// `sqrt(|w|)` with sign tracking), and only retries with Fisher if
-/// `X'WX + E'E` comes back indefinite. So gamrs's `log|A|` is a *different
-/// function of (λ, ν, σ²)* than mgcv's `log|H|` on any data with outlier rows
-/// — measured at ~0.1 apart and, decisively, **ρ-dependent**, so it moves the
-/// argmin. That is a criterion difference no gradient fix can reach.
-///
-/// `None` when the family supplies no observed curvature, when the matrix is
-/// not usable, or when the opt-in is off — caller falls back to `log|A|`.
-///
-/// Verified against mgcv 1.9.4 on the fixture's own `sp_ladder`: gamrs's score
-/// reproduces mgcv's REML at all seven rungs to 3e-6 absolute on values of
-/// ~7325 (see `parity_scat_tf9963::scat_criterion_matches_mgcv_on_its_own_sp_ladder`).
-/// The working-weight `log|A|` misses the same ladder by 2.8e-2.
 /// The observed curvature the score should differentiate, or `None` to leave
 /// the working-weight factor alone — the single seam that decides which matrix
 /// `fit.a_factor` is, and therefore what `log|H|`, `tr(H⁻¹S)`, `a_inv`, the
@@ -180,66 +108,56 @@ where
     Some(w)
 }
 
-pub(crate) fn observed_log_det_h<L, K, V>(
+/// **The** `log|H|` the score differentiates. One definition of the precedence.
+///
+/// Newton-A (`use_newton_irls`) → the fit's own factor. There used to be a
+/// third, leading branch that rebuilt the observed penalised Hessian here; it
+/// went when `pirls.rs` started building `fit.a_factor` from the observed
+/// curvature directly, which makes `fit.log_det_a()` that same number without
+/// an O(n·p²) product and a Cholesky per score evaluation.
+///
+/// The precedence lives in ONE place because the scat Python diagnostic's copy
+/// of it had drifted to a bare `fit.log_det_a()`, so a profile taken with it
+/// measured a different function than the fitter optimised.
+pub(crate) fn score_log_det_h<L, K, V, S>(
     family: &Family<L, K, V>,
     y: &Array1<f64>,
     eta: &Array1<f64>,
+    mu: &Array1<f64>,
     prior_w: &Array1<f64>,
     x_design: &Array2<f64>,
     s_total: &Array2<f64>,
-) -> Option<f64>
+    fit: &crate::inner::GaussianInnerFit<S>,
+) -> f64
 where
     L: Loss + Clone,
     K: Link + Clone,
     V: VarianceFn + Clone,
+    S: crate::inner::LinearSolver,
 {
-    use ndarray_linalg::{Cholesky, Eigh, UPLO};
-    let w_obs =
-        family
-            .loss
-            .observed_curvature_weights(y.view(), eta.view(), Some(prior_w.view()))?;
-    if w_obs.iter().any(|w| !w.is_finite()) {
-        return None;
+    let _ = eta;
+    if family.loss.use_newton_irls() {
+        lazy_newton_log_det_h(family, y, mu, prior_w, x_design, s_total)
+            .unwrap_or_else(|| fit.log_det_a())
+    } else {
+        fit.log_det_a()
     }
-    let n = x_design.nrows();
-    let p = x_design.ncols();
-    let mut wx = x_design.clone();
-    for i in 0..n {
-        let wi = w_obs[i];
-        for j in 0..p {
-            wx[[i, j]] *= wi;
-        }
-    }
-    let mut h: Array2<f64> = x_design.t().dot(&wx);
-    h += s_total;
-    // Symmetrise — the row-scaled product drifts in the last bits.
-    for j in 0..p {
-        for l in (j + 1)..p {
-            let avg = 0.5 * (h[[j, l]] + h[[l, j]]);
-            h[[j, l]] = avg;
-            h[[l, j]] = avg;
-        }
-    }
-    // PD path — mgcv's own requirement (negative w_i allowed, PD overall).
-    if let Ok(l) = h.cholesky(UPLO::Lower) {
-        let mut log_det = 0.0_f64;
-        for i in 0..p {
-            let lii = l[[i, i]];
-            if !lii.is_finite() || lii.abs() < 1e-300 {
-                OBS_PD_FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return None;
-            }
-            log_det += lii.ln();
-        }
-        OBS_PD_OK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return Some(2.0 * log_det);
-    }
-    // Not PD. mgcv retries the step with Fisher weights here; the caller's
-    // fallback to `log|A|` is the same choice, so bail rather than take
-    // |eigenvalues|, which would be a third criterion nobody asked for.
-    let _ = h.eigh(UPLO::Lower);
-    OBS_PD_FALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    None
+}
+
+/// Cheap precondition for [`score_log_det_h`]: when this is false the caller
+/// must skip it entirely rather than pay to build `s_total` for nothing.
+///
+/// A family with `observed_curvature_weights` needs the observed `log|H|`; a
+/// `use_newton_irls` family needs the Newton one. Everything else keeps the
+/// fit's own factor and pays nothing.
+pub(crate) fn score_log_det_h_applies<L: Loss + Clone>(loss: &L) -> bool {
+    // NOT `has_observed_curvature()`. For such a family `pirls.rs` already
+    // built `fit.a_factor` FROM the observed curvature, so `fit.log_det_a()` is
+    // `log|H_obs|` — measured equal to a fresh `observed_log_det_h` to
+    // 0.000e0 at every probe. Asking for it again re-does an O(n·p²) weighted
+    // product plus a Cholesky, per score evaluation, to reproduce a number the
+    // fit is holding. Only the Newton-A path needs a separate build.
+    loss.use_newton_irls()
 }
 
 pub(crate) fn lazy_newton_log_det_h<L, K, V>(

@@ -59,6 +59,29 @@ pub struct OuterTuning {
     /// against a bound of 4.31e-4, at a point whose score was 8.6e-6 WORSE
     /// than mgcv's. Measured against mgcv on the same (standardized) problem,
     /// tightening to `sqrt(eps)` moves the worst term from 1.09e-4 to 3.81e-5.
+    ///
+    /// NOTE this is DELIBERATELY ~336× tighter than mgcv's own rule and is NOT
+    /// justified by parity — mgcv's `newton()` uses `conv.tol = 1e-6`
+    /// (`mgcv.r:2209`) and tests `abs(grad) > score.scale*conv.tol*5`
+    /// (`gam.fit3.r:1644`), i.e. `5e-6·score.scale`. The earlier citation of
+    /// `fast-REML.r:1481` was wrong: that is `fast.REML.fit`, the Gaussian
+    /// fREML path, not the one scat takes.
+    ///
+    /// It is justified EMPIRICALLY, and re-measured after the `max_half` fix
+    /// (which invalidated the first measurement). Against mgcv 1.9.4 run
+    /// directly on the ten real adjuster terms, same standardized problem:
+    ///
+    /// ```text
+    ///                    sqrt(eps)      mgcv's 5e-6
+    ///   garage_spaces    3.476e-5       5.882e-4      ($20.6 vs $348)
+    ///   condition        3.381e-5       1.016e-4      ($17 vs $51)
+    ///   worst term       3.809e-5       5.882e-4
+    /// ```
+    ///
+    /// Cost: one extra outer iteration and ~10% wall clock (51-53 ms/fit at
+    /// mgcv's tolerance vs 56-59 at this one, `bench_scat_profile`). A 15×
+    /// accuracy gain on the worst term is worth that; revisit if the trade
+    /// changes.
     pub grad_tol: f64,
     /// Score-relative REML-change tolerance: converge when
     /// `|ΔREML| / max(|REML|, 1) < reml_tol`. Active after iter ≥ 3.
