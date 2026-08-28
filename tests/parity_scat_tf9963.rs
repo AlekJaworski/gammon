@@ -61,6 +61,7 @@ struct Arm {
     sp: f64,
     edf: f64,
     nu: f64,
+    sigma: f64,
     reml: f64,
     predictions_unique_x: Vec<f64>,
 }
@@ -237,4 +238,145 @@ fn tf9963_scat_refuses_fellner_schall_instead_of_ignoring_it() {
         msg.contains("fREML") && msg.contains("shape-parameter"),
         "error should name the parameter and the path; got {msg:?}"
     );
+}
+
+/// **The criterion test.** Everything else here compares where the two fitters
+/// LAND. This compares the objective itself, on mgcv's own λ-slice.
+///
+/// The fixture's `sp_ladder` is generated with `family = scat(theta = th)` and
+/// `sp = s` pinned (`scripts/r/gen_scat_saturated_basis_fixture.R:71-75`), so ν
+/// and σ are held at the free fit's estimates across every rung. The ladder is
+/// therefore a pure λ-slice at fixed shape, and gamrs's score can be evaluated
+/// at exactly the same points.
+///
+/// Built on RAW `y`, so λ is in mgcv's `sp` units directly — and, it turns out,
+/// the ABSOLUTE scores match too, to ~3e-6 on values of ~7325 (4e-10 relative).
+/// That is asserted as well. (`FittedGam::reml_value` does NOT match absolutely,
+/// because the fit core standardizes the response and the resulting offset —
+/// 6471.366 here — is not the naive `n·ln(sd)` of 6492.357. That is a property
+/// of the standardization, not of the criterion, which is why this test builds
+/// the score directly on raw `y`.) The DIFFERENCE assertions are kept as well:
+/// they cancel every λ-independent constant, so they survive any future change
+/// to the scale convention.
+///
+/// Floor on achievable tightness: rung 3 and `gam_reml` are the same fit and
+/// their recorded `reml` differs at 3.4e-11 — mgcv's own reproducibility limit.
+#[test]
+fn scat_criterion_matches_mgcv_on_its_own_sp_ladder() {
+    use gamrs::design::{Additive, DesignStrategy, TermSpec};
+    use gamrs::family::tdist_identity;
+    use gamrs::inner::PirlsOpts;
+    use gamrs::score::{FixedAtOneProfile, PirlsInnerBuilder, ShapeAwareEnvelopeScore};
+    use gamrs::traits::{CoordsKind, ScoreDerivatives};
+
+    let fx = load();
+    let n = fx.inputs.y_train.len();
+    let x = Array2::from_shape_vec((n, 1), fx.inputs.x_train.clone()).unwrap();
+    let y = Array1::from_vec(fx.inputs.y_train.clone());
+    let m = &fx.mgcv_output.gam_reml;
+    let (nu, sigma2) = (m.nu, m.sigma * m.sigma);
+
+    let prep = Additive {
+        terms: vec![TermSpec::Cr {
+            col: 0,
+            k: fx.inputs.k,
+        }],
+    }
+    .prepare(x.view())
+    .expect("design");
+
+    // Raw y, so λ is in mgcv's `sp` units directly and needs no mapping.
+    let score: gamrs::score::ShapeAwarePirlsScore<_, _, _> = ShapeAwareEnvelopeScore {
+        x_design: prep.x_design.clone(),
+        y: y.clone(),
+        prior_weights: None,
+        s_list: prep.s_list.clone(),
+        family_base: tdist_identity(nu, sigma2),
+        rank_s_list: prep.rank_s_list.clone(),
+        mp: prep.mp,
+        log_pseudo_det_s_list: prep.log_pseudo_det_s_list.clone(),
+        coords: CoordsKind::Identity,
+        pirls_opts: PirlsOpts::default(),
+        inner_builder: PirlsInnerBuilder,
+        profile: FixedAtOneProfile,
+        _solver: std::marker::PhantomData,
+        accepted_state: std::cell::RefCell::new(None),
+        last_eta: std::cell::RefCell::new(None),
+        stats: gamrs::stats::FitStats::new(),
+    };
+
+    let v: Vec<f64> = fx
+        .sp_ladder
+        .iter()
+        .map(|r| {
+            let theta = Array1::from_vec(vec![r.sp.ln(), sigma2.ln(), (nu - 3.0).ln()]);
+            score.value(&theta).expect("score at a ladder rung")
+        })
+        .collect();
+
+    println!("  rung   sp            mgcv reml        gamrs score      d(mgcv)     d(gamrs)");
+    let opt = 3usize; // sp = 1.3583e-6, mgcv's own optimum on this grid
+    for (i, r) in fx.sp_ladder.iter().enumerate() {
+        println!(
+            "   {i}    {:.4e}   {:.9}   {:.9}   {:+.6}   {:+.6}",
+            r.sp,
+            r.reml,
+            v[i],
+            r.reml - fx.sp_ladder[opt].reml,
+            v[i] - v[opt]
+        );
+    }
+
+    // A. Ordering — no tolerance. gamrs's criterion must put its minimum on the
+    //    same rung of mgcv's grid. Fires for any mis-scaled penalty.
+    let argmin = (0..v.len()).min_by(|&a, &b| v[a].total_cmp(&v[b])).unwrap();
+    assert_eq!(
+        argmin, opt,
+        "gamrs's criterion minimises at rung {argmin} (sp {:.4e}) where mgcv's \
+         minimises at rung {opt} (sp {:.4e})",
+        fx.sp_ladder[argmin].sp, fx.sp_ladder[opt].sp
+    );
+
+    // B. The steep side, three decades below the optimum. An off-by-one in the
+    //    `log|λS|` rank convention — the original TF-9963 defect — shifts this
+    //    by ½·ln(10³) = 3.454 units, 61% of the value.
+    let want_steep = fx.sp_ladder[0].reml - fx.sp_ladder[opt].reml;
+    let got_steep = v[0] - v[opt];
+    assert!(
+        (got_steep - want_steep).abs() < 1.0e-4,
+        "steep side: gamrs {got_steep:+.6} vs mgcv {want_steep:+.6} (measured 4e-6 \
+         with the observed log|H|; the working-weight log|A| gives +2.8e-2)"
+    );
+
+    // C. The shallow side, three decades above — the sharp instrument. The two
+    //    candidate `log|H|`s differ by ~0.1 AND ρ-dependently, so a criterion
+    //    carrying the wrong one gets B roughly right and C wrong by a large
+    //    fraction.
+    let want_shallow = fx.sp_ladder[6].reml - fx.sp_ladder[opt].reml;
+    let got_shallow = v[6] - v[opt];
+    println!(
+        "  shallow: gamrs {got_shallow:+.9} vs mgcv {want_shallow:+.9}  (Δ {:+.3e})",
+        got_shallow - want_shallow
+    );
+    assert!(
+        (got_shallow - want_shallow).abs() < 1.0e-4,
+        "shallow side: gamrs {got_shallow:+.9} vs mgcv {want_shallow:+.9} (measured \
+         -1.9e-6 with the observed log|H|; log|A| gives -4.9e-3)"
+    );
+
+    // D. And the absolute values, rung by rung — the strongest form of the
+    //    claim "gamrs's criterion IS mgcv's criterion". Measured worst 3.0e-6
+    //    on scores of ~7325. Bar at 1e-3, ~300x the measurement, because this
+    //    is the assertion most exposed to an unrelated convention change.
+    for (i, r) in fx.sp_ladder.iter().enumerate() {
+        let d = (v[i] - r.reml).abs();
+        assert!(
+            d < 1.0e-3,
+            "rung {i} (sp {:.4e}): gamrs's ABSOLUTE score {:.9} vs mgcv's REML \
+             {:.9}, off by {d:.3e}",
+            r.sp,
+            v[i],
+            r.reml
+        );
+    }
 }
