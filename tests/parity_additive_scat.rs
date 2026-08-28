@@ -98,28 +98,25 @@ fn run_scat_additive(name: &str, d: usize, bound: f64) {
 
 #[test]
 fn additive_2d_scat_n600_k8_cr() {
-    // Bar 1.5e-3: observed 1.08e-3 (σ̂²=0.251 vs mgcv σ²=0.25, converged).
+    // Bar 5e-5: observed 5.502e-6 (σ̂²=0.2496 vs mgcv σ²=0.25, edf 8.98 vs
+    // mgcv's 8.9798, converged). ~9x headroom — loose enough for last-digit
+    // drift across a refactor, tight enough that this fixture no longer
+    // passes through a real regression.
     //
-    // This is the ONE fixture that moved the wrong way when the spurious
-    // `∂ridge/∂ρ` term came out of the shape-aware ρ-gradient (5.7e-4 →
-    // 1.08e-3), and it is not a regression in the fit: gamrs's ρ̂ went from
-    // [3.809, 10.012] to [3.799, 10.077] against mgcv's log sp of
-    // [3.736, 9.898], and its edf from 9.05 to 9.03 against mgcv's 8.9798 —
-    // i.e. λ moved by ~7% on the second term while the total edf moved
-    // TOWARD mgcv. The companion 3-D fixture improved 4× over the same
-    // change (2.2e-3 → 5.7e-4) and `parity_scat_flat_ridge.rs` went from a
-    // $291 gap to $22. The residual here is the ~1e-3 RELATIVE error that
-    // still remains in scat's ρ-gradient at moderate ρ (measured in
-    // `score_tests.rs::tdist_analytic_rho_grad_matches_fd`: analytic
-    // +1.528723e-1 vs FD +1.530165e-1 at ρ=0) — a second-order term, not the
-    // λ-envelope one.
-    run_scat_additive("2d_scat_identity_n600_k8_cr", 2, 1.5e-3);
+    // This used to carry a 1.5e-3 bar justified by a "~1e-3 residual in
+    // scat's ρ-gradient at moderate ρ". That residual is gone: the same
+    // probe (`score_tests.rs::tdist_analytic_rho_grad_matches_fd`) now reads
+    // analytic +1.557897e-1 vs FD +1.557897e-1 at ρ=0, abs err 5.6e-8. The
+    // observed-curvature criterion closed it, and the fixture improved 196x.
+    run_scat_additive("2d_scat_identity_n600_k8_cr", 2, 5e-5);
 }
 
 #[test]
 fn additive_3d_scat_n800_k8_cr() {
-    // Bar 1e-3: observed 5.7e-4 (σ̂²=0.162 vs mgcv σ²=0.162, converged).
-    // Was 2.2e-3 against a 4e-3 bar until the spurious `∂ridge/∂ρ` term came
-    // out of the shape-aware ρ-gradient; tightened 4× on that change.
+    // Bar 1e-3: observed 8.281e-5 (σ̂²=0.1615 vs mgcv σ²=0.162, converged).
+    // Left as-is deliberately — ~12x headroom is already the band we want,
+    // and this fixture is the loosest of the scat set for a reason: 3 margins
+    // means 3 flat-ish ρ axes, so it drifts more than the 2-D one under any
+    // change to the outer loop.
     run_scat_additive("3d_scat_identity_n800_k8_cr", 3, 1e-3);
 }

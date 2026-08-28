@@ -135,10 +135,14 @@ fn tf9963_garage_spaces_scat_lands_on_mgcv_optimum() {
         );
     }
 
-    // Bar 1e-3 against each mgcv arm: observed 5.1e-4 / 3.9e-4 / 3.8e-4 —
-    // closest to bam+fREML, which is the arm the engine actually runs. With
+    // Bar 1e-3 against each mgcv arm: observed 1.187e-4 / 1.335e-5 / 1.016e-5
+    // — still closest to bam+fREML, which is the arm the engine actually runs,
+    // but gam/REML is now the worst arm by 10x and so sets the bar. With
     // `score_rank_adjustment` returning −1 this fixture sits at 1.4e-2, so the
-    // bound is an order of magnitude inside where the defect lived.
+    // bound stays two orders inside where the defect lived. Left at 1e-3
+    // rather than tightened: ~8x headroom on the worst arm is already the band
+    // we want, and gam/REML is the arm that moves most under any outer-loop
+    // change (it is the one whose λ̂ is a stopping artefact on this term).
     for (tag, arm) in arms {
         let rel = max_rel(pred, &arm.predictions_unique_x);
         assert!(
@@ -150,10 +154,16 @@ fn tf9963_garage_spaces_scat_lands_on_mgcv_optimum() {
     // edf is the diagnostic that actually names the failure mode: the defect
     // buys spurious degrees of freedom with too little penalty (edf 3.39 here,
     // 4.02 on the real term it was found on). Bracket rather than pin a
-    // decimal — mgcv's own three arms span 2.3826-2.3879, gamrs sits at 2.3632.
+    // decimal — mgcv's own three arms span 2.3826-2.3879, and gamrs now sits
+    // at 2.3821, i.e. just outside their span rather than 0.02 below it.
+    //
+    // 0.03 around the gam/REML arm is ~5x the current 0.0058 gap: it admits
+    // the whole mgcv arm spread plus drift, and still rejects the 3.39 the
+    // defect produced.
+    let edf_gap = (fit.edf_total - 2.3879).abs();
     assert!(
-        (2.2..2.6).contains(&fit.edf_total),
-        "scat edf {:.4} outside mgcv's 2.38 neighbourhood — \
+        edf_gap < 0.03,
+        "scat edf {:.4} is {edf_gap:.4} from mgcv gam/REML's 2.3879 — \
          the log|λS| rank convention is the first thing to check",
         fit.edf_total
     );

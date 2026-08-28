@@ -101,9 +101,11 @@ fn scat_unweighted_n300_k10_cr() {
         fit.rho[0], fit.scale, fit.n_iters, fit.edf_total,
     );
 
-    // Bar 1e-3: observed 3.8e-4 (ρ̂ = 4.804, edf 8.84 against mgcv's fixture).
-    // The residual is the ν/σ² seed, which mgcv's fixture doesn't expose.
-    assert!(rel < 1e-3, "scat μ rel error {rel:.3e} exceeds 1e-3");
+    // Bar 1e-6: observed 1.132e-7 (ρ̂ = 4.795, edf 8.79 against mgcv's
+    // fixture). ~9x headroom. Was a 1e-3 bar against a 3.8e-4 observation;
+    // the observed-curvature criterion took this fixture down by 3400x, and a
+    // bar left at 1e-3 would no longer notice losing that.
+    assert!(rel < 1e-6, "scat μ rel error {rel:.3e} exceeds 1e-6");
 }
 
 /// Raw-scale robustness via the **Rust API** (no Python-layer standardization).
@@ -154,11 +156,14 @@ fn scat_raw_scale_via_rust_api() {
          σ̂² = {:.4e}; iters = {}",
         fit.scale, fit.n_iters,
     );
-    // Bar 1e-3: observed 3.8e-4 — the same figure as the unit-scale fit, which
-    // is the point of the test.
+    // Bar 1e-6: observed 3.610e-8, against the unit-scale fit's 1.132e-7 —
+    // same order, which is the point of the test (equivariance, so the two
+    // should track). Deliberately the SAME bar as the unit-scale assertion so
+    // that a conditioning loss shows up as this arm crossing a bar the other
+    // one clears, rather than both being graded on their own curve.
     assert!(
-        rel < 1e-3,
-        "raw-scale scat μ rel error {rel:.3e} exceeds 1e-3 (conditioning?)"
+        rel < 1e-6,
+        "raw-scale scat μ rel error {rel:.3e} exceeds 1e-6 (conditioning?)"
     );
 }
 
