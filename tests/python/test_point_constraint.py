@@ -117,3 +117,107 @@ def test_pc_on_the_typed_term_path_and_the_mapping_that_never_applies():
     # A key that names no fitted predictor is the same silent no-op.
     with pytest.warns(UserWarning, match="match no fitted predictor"):
         fit(X, y, {"concesions": 0.0})
+
+
+MIXED = ["gla", "concessions", "flag"]
+
+
+def mixed_sample(n: int = 400, seed: int = 2):
+    """A model with genuinely both kinds of term: two CR smooths and a 0/1 indicator.
+
+    The indicator is a real parametric term, not a smooth that collapsed into one for want of
+    distinct values. That distinction is the point — a collapsed term is an accident of the data and
+    exercises the refusal path, while a DECLARED parametric term sits in the fit alongside the
+    constrained smooth and must come out of it untouched.
+    """
+    rng = np.random.default_rng(seed)
+    gla = rng.uniform(1000, 3000, n)
+    conc = np.abs(rng.normal(0, 8000, n))
+    flag = (rng.random(n) > 0.5).astype(float)
+    y = 120.0 * gla + 0.7 * conc + 25000.0 * flag + rng.normal(0, 15000, n)
+    return np.column_stack([gla, conc, flag]), y
+
+
+def mixed_fit(X, y, pc, **kwargs):
+    return gamrs.Gam(
+        predictors=MIXED,
+        family="gaussian",
+        method="REML",
+        k_default=6,
+        min_k=2,
+        term_k_mapping={"concessions": 3},
+        predictor_basis_map={"flag": "parametric"},
+        term_pc_mapping=pc,
+        **kwargs,
+    ).fit(X, y)
+
+
+def coef_of(gam, name):
+    """One term's coefficient block, by name rather than by position."""
+    first, last = next((f, l) for n, f, l in gam.get_term_indices() if n == name)
+    return np.asarray(gam.coef_)[first : last + 1]
+
+
+def test_pc_on_a_smooth_leaves_the_parametric_term_alone():
+    """The constraint must be absorbed by the smooth's own null-space and the intercept, and reach
+    nothing else. A pc that leaked into the parametric block would still zero the smooth at the
+    point and still leave fitted values unchanged — so those two assertions alone cannot catch it,
+    and the parametric coefficient is what has to be looked at directly.
+    """
+    X, y = mixed_sample()
+    plain = mixed_fit(X, y, None)
+    pinned = mixed_fit(X, y, {"concessions": 0.0})
+
+    assert list(plain.bs_) == ["cr", "cr", "parametric"], "the fixture must actually be mixed"
+
+    # Same model space: the fit does not move. (Not bit-identical — the constraint row changes the
+    # inner system's conditioning — but orders inside any parity bar.)
+    mu_plain, mu_pinned = plain.predict(X), pinned.predict(X)
+    assert np.max(np.abs(mu_plain - mu_pinned)) / np.max(np.abs(mu_plain)) < 1e-7
+    assert plain.edf_total_ == pytest.approx(pinned.edf_total_, rel=1e-6)
+
+    # The parametric slope is the claim. It carries the indicator's whole 25k effect, so a leak
+    # would be loud — and it must not move at all.
+    flag_plain, flag_pinned = coef_of(plain, "flag"), coef_of(pinned, "flag")
+    assert flag_plain.shape == (1,), "a parametric term is one coefficient"
+    assert float(flag_pinned[0]) == pytest.approx(float(flag_plain[0]), rel=1e-7)
+    assert abs(float(flag_plain[0])) > 1000.0, "vacuous: the indicator carries no effect to preserve"
+
+    # The other smooth is untouched too: the constraint is one term's business.
+    assert coef_of(pinned, "gla") == pytest.approx(coef_of(plain, "gla"), rel=1e-6)
+
+    # And the constrained smooth still does what a pc means, with a parametric term in the model.
+    gla_mean, conc_max = float(X[:, 0].mean()), float(X[:, 1].max())
+    row = lambda c: np.array([[gla_mean, c, 1.0]])  # noqa: E731
+    at = lambda g, c: float(g.predict(row(c), type="terms")[0, 1])  # noqa: E731
+    scale = abs(at(plain, conc_max))
+    at_pc_plain = at(plain, 0.0)
+    assert abs(at_pc_plain) > 0.05 * scale, "vacuous: plain smooth already ~0 at pc"
+    assert at(pinned, 0.0) == pytest.approx(0.0, abs=1e-9 * scale)
+    assert float(pinned.coef_[0]) - float(plain.coef_[0]) == pytest.approx(at_pc_plain, rel=1e-6)
+
+
+def test_pc_on_a_declared_parametric_term_is_refused_on_both_paths():
+    """A parametric term has no centering constraint to replace, so there is nothing for a pc to do
+    to it — mgcv has no pc for parametric terms either. Refused out loud on the
+    `predictor_basis_map` path and on the typed-term path, and the rest of the fit still stands.
+    """
+    X, y = mixed_sample()
+    with pytest.warns(UserWarning, match="is NOT applied"):
+        refused = mixed_fit(X, y, {"flag": 0.0})
+    assert np.isfinite(refused.predict(X)).all()
+    assert abs(float(coef_of(refused, "flag")[0])) > 1000.0, "the term still fits, it just has no pc"
+
+    # ParametricTerm has no `pc` field at all, so the typed path cannot express it — the mapping is
+    # the only way to ask, and on the terms= path the mapping itself is the thing that is ignored.
+    assert not hasattr(gamrs.ParametricTerm("flag"), "pc")
+    with pytest.warns(UserWarning, match="term_pc_mapping.*is ignored"):
+        gamrs.Gam(
+            predictors=MIXED,
+            terms=[
+                gamrs.CrTerm("gla", k=6),
+                gamrs.CrTerm("concessions", k=3, pc=0.0),
+                gamrs.ParametricTerm("flag"),
+            ],
+            term_pc_mapping={"flag": 0.0},
+        ).fit(X, y)

@@ -188,3 +188,98 @@ fn pc_holds_through_the_stable_reparam_rotation() {
         "rotated smooth at pc is {f_pinned_v:.3e}, expected 0"
     );
 }
+
+/// Three columns: two for the smooths, plus a 0/1 indicator for a parametric term.
+fn train_mixed(n: usize) -> (Array2<f64>, Array1<f64>) {
+    let mut flat = Vec::with_capacity(n * 3);
+    let mut y = Array1::<f64>::zeros(n);
+    for i in 0..n {
+        let x0 = i as f64 / (n as f64 - 1.0);
+        let x1 = ((i as f64) * 0.618_033_988_75).fract();
+        let flag = if i % 3 == 0 { 1.0 } else { 0.0 };
+        flat.push(x0);
+        flat.push(x1);
+        flat.push(flag);
+        y[i] = 3.0 * (6.0 * x0).sin() + 2.0 * x1 * x1 + 5.0 * flag + 0.05 * ((i % 7) as f64);
+    }
+    (Array2::from_shape_vec((n, 3), flat).unwrap(), y)
+}
+
+#[test]
+fn pc_on_a_smooth_leaves_a_parametric_term_alone() {
+    // A parametric term has no centering constraint, so it has no null-space for the constraint
+    // row to be absorbed into — which is exactly why it is worth asserting that the row does not
+    // reach it. A pc that leaked into the parametric block would still zero the smooth at the
+    // point and still leave fitted values invariant, so neither of those catches it; the
+    // parametric coefficient has to be read directly.
+    let (x, y) = train_mixed(400);
+    let v = 0.35_f64;
+    let terms = |pc| {
+        vec![
+            TermSpec::Cr {
+                col: 0,
+                k: 8,
+                pc: None,
+            },
+            TermSpec::Cr { col: 1, k: 6, pc },
+            TermSpec::Parametric { col: 2 },
+        ]
+    };
+    let fit_it = |pc| {
+        fit_with_design(
+            gaussian_identity(),
+            Additive { terms: terms(pc) },
+            x.view(),
+            y.view(),
+            None,
+        )
+        .expect("fit")
+    };
+    let plain = fit_it(None);
+    let pinned = fit_it(Some(v));
+
+    let Predictor::Additive(additive) = &plain.predictor else {
+        panic!("expected an additive predictor");
+    };
+    let (p_start, p_end) = additive.term_col_ranges[2];
+    assert_eq!(p_end - p_start, 1, "a parametric term is one column");
+
+    // The claim. The indicator carries the whole +5.0 step, so a leak would be loud.
+    let slope_plain = plain.beta[p_start];
+    let slope_pinned = pinned.beta[p_start];
+    assert!(
+        slope_plain.abs() > 1.0,
+        "test is vacuous: the parametric term carries no effect to preserve ({slope_plain:.3e})"
+    );
+    let slope_rel = (slope_pinned - slope_plain).abs() / slope_plain.abs();
+    assert!(
+        slope_rel < 1e-8,
+        "the parametric coefficient moved with the pc: {slope_plain:.9} -> {slope_pinned:.9} (rel {slope_rel:.3e})"
+    );
+
+    // And the pc still does its job with a parametric term in the model.
+    let at_v = Array2::from_shape_vec((1, 3), vec![0.5, v, 1.0]).unwrap();
+    let f_plain_v = term_contribution(&plain, &at_v, 1)[0];
+    let f_pinned_v = term_contribution(&pinned, &at_v, 1)[0];
+    assert!(
+        f_plain_v.abs() > 1e-3,
+        "test is vacuous: the plain smooth is already ~0 at v ({f_plain_v:.3e})"
+    );
+    assert!(
+        f_pinned_v.abs() < 1e-9 * f_plain_v.abs(),
+        "smooth at pc is {f_pinned_v:.3e}, expected 0"
+    );
+    let shift = pinned.beta[0] - plain.beta[0];
+    assert!(
+        (shift - f_plain_v).abs() < 1e-6 * f_plain_v.abs(),
+        "the intercept moved by {shift:.9}, but the plain smooth at v is {f_plain_v:.9} — with a \
+         parametric term present the intercept must still absorb the whole difference"
+    );
+
+    // The fit itself is where it was.
+    let mu_plain = plain.predict(x.view()).unwrap();
+    let mu_pinned = pinned.predict(x.view()).unwrap();
+    let mu_scale = mu_plain.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+    let mu_diff = max_abs(&mu_plain, &mu_pinned) / mu_scale;
+    assert!(mu_diff < 1e-9, "fitted values moved: rel {mu_diff:.3e}");
+}
