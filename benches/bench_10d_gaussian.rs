@@ -53,6 +53,7 @@ fn main() {
         .map(|c| TermSpec::Cr {
             col: c,
             k: k_vec[c],
+            pc: None,
         })
         .collect();
 

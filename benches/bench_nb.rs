@@ -74,8 +74,16 @@ fn bench_2d() {
     let ks: Vec<usize> = fx.inputs.k.clone();
 
     let terms = vec![
-        TermSpec::Cr { col: 0, k: ks[0] },
-        TermSpec::Cr { col: 1, k: ks[1] },
+        TermSpec::Cr {
+            col: 0,
+            k: ks[0],
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: ks[1],
+            pc: None,
+        },
     ];
 
     // Warm
@@ -138,8 +146,16 @@ fn bench_2d_synthetic(n: usize, warm: usize, reps: usize) {
     let x = Array2::from_shape_vec((n, 2), x_flat).unwrap();
     let y = Array1::from_vec(y_vec);
     let terms = vec![
-        TermSpec::Cr { col: 0, k: 10 },
-        TermSpec::Cr { col: 1, k: 10 },
+        TermSpec::Cr {
+            col: 0,
+            k: 10,
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: 10,
+            pc: None,
+        },
     ];
     let run = || {
         fit_with_design(

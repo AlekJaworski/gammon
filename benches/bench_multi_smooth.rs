@@ -52,9 +52,21 @@ fn synth(n: usize, seed: u64) -> (Array2<f64>, Array1<f64>) {
 fn run_one(n: usize) -> (f64, usize) {
     let (x, y) = synth(n, 0x0a11_ce00_1234_5678);
     let terms = vec![
-        TermSpec::Cr { col: 0, k: 10 },
-        TermSpec::Cr { col: 1, k: 10 },
-        TermSpec::Cr { col: 2, k: 10 },
+        TermSpec::Cr {
+            col: 0,
+            k: 10,
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: 10,
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 2,
+            k: 10,
+            pc: None,
+        },
     ];
 
     // Warm-up.

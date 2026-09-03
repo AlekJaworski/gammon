@@ -202,17 +202,25 @@ class CrTerm:
     string column name (resolved against the DataFrame / ``predictors=``
     list at fit time). ``k`` is the spline basis dim (defaults to 10,
     matching mgcv).
+
+    ``pc`` is mgcv's ``s(x, pc=v)`` point constraint: the smooth passes
+    through zero at ``x = v`` instead of being centred over the fit rows,
+    and the intercept takes the level. Fitted values, λ̂ and edf are
+    unchanged — only the intercept-versus-smooth split moves, which is
+    what a caller reading a *partial* curve sees.
     """
     col: Col
     k: int = 10
+    pc: Optional[float] = None
 
 
 @dataclass(frozen=True)
 class CrStableTerm:
     """CR + sum-to-zero + StableReparam rotation term. ``col`` accepts an
-    int index or a string column name."""
+    int index or a string column name. ``pc`` as for :class:`CrTerm`."""
     col: Col
     k: int = 10
+    pc: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -308,15 +316,22 @@ Term = Union[
 ]
 
 
+def pc_or_none(pc: Optional[float]) -> Optional[float]:
+    """Coerce a point-constraint value for the FFI boundary. numpy scalars
+    reach here from DataFrame-driven callers and the native extractor only
+    accepts a Python float or None."""
+    return None if pc is None else float(pc)
+
+
 def _term_to_tuple(term: Term) -> tuple:
     """Convert a typed `Term` to the tuple form `_gamrs_native.fit_additive`
     expects at the FFI boundary. Strings live ONLY here, between the
     Python typed surface and the Rust enum — they never leak in either
     direction."""
     if isinstance(term, CrTerm):
-        return (int(term.col), "cr", int(term.k))
+        return (int(term.col), "cr", int(term.k), pc_or_none(term.pc))
     if isinstance(term, CrStableTerm):
-        return (int(term.col), "cr_stable", int(term.k))
+        return (int(term.col), "cr_stable", int(term.k), pc_or_none(term.pc))
     if isinstance(term, ReTerm):
         return (int(term.col), "re")
     if isinstance(term, ParametricTerm):

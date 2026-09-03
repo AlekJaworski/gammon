@@ -169,6 +169,23 @@ def cap_k_at_distinct_values(n_unique: int, min_k: int, k_cap_offset: int) -> in
     return max(n_unique - k_cap_offset, min_k)
 
 
+def warn_pc_unapplied(name: str, pc: Optional[float], reason: str) -> None:
+    """Say so when a point constraint can't be honoured. `pc` REPLACES a
+    smooth's centering constraint, so a term that carries no such
+    constraint (a parametric/linear or random-effect term) has nothing to
+    replace — and a silently dropped pc looks exactly like a working one.
+    No-op when `pc` is None."""
+    if pc is None:
+        return
+    warnings.warn(
+        f"pc={pc!r} for {name!r} is NOT applied: {reason}. That term's "
+        "partial effect will not be zero at pc. Remove the pc entry, or "
+        "keep the term a CR smooth (k >= 3 over >= 3 distinct values).",
+        UserWarning,
+        stacklevel=4,
+    )
+
+
 def _resolve_col(col: Any, col_names: Sequence[str], term_name: str) -> int:
     """Resolve one column reference (int or string) to an int index.
 
@@ -191,10 +208,14 @@ def _resolve_term_cols(term: Term, col_names: Sequence[str]) -> Term:
     """Rebuild a term with string column references replaced by their int
     indices in ``col_names``. Int-only terms pass through unchanged."""
     if isinstance(term, CrTerm):
-        return CrTerm(col=_resolve_col(term.col, col_names, "CrTerm"), k=term.k)
+        return CrTerm(
+            col=_resolve_col(term.col, col_names, "CrTerm"), k=term.k, pc=term.pc
+        )
     if isinstance(term, CrStableTerm):
         return CrStableTerm(
-            col=_resolve_col(term.col, col_names, "CrStableTerm"), k=term.k
+            col=_resolve_col(term.col, col_names, "CrStableTerm"),
+            k=term.k,
+            pc=term.pc,
         )
     if isinstance(term, ReTerm):
         return ReTerm(col=_resolve_col(term.col, col_names, "ReTerm"))
@@ -408,6 +429,9 @@ class Gam:
             )
 
         self.term_k_mapping: dict[str, int] = dict(term_k_mapping or {})
+        # mgcv's `s(x, pc=v)` per predictor: the smooth passes through zero
+        # at x=v and the intercept absorbs the difference. Only reachable on
+        # the predictors= path; the terms= path carries `pc` on the term.
         self.term_pc_mapping: dict[str, float] = dict(term_pc_mapping or {})
         self.predictor_basis_map: dict[str, str] = dict(predictor_basis_map or {})
         self.consider_categorical = consider_categorical
@@ -624,6 +648,7 @@ class Gam:
                     )
 
         self._effective_predictors = list(cols)
+        self.warn_unused_pc_keys(cols)
         self.X = X_arr
         self.y = y_arr
 
@@ -709,8 +734,15 @@ class Gam:
             for t in term_objs
         ]
         # Single-smooth → fast path (preserves byte-equivalence with
-        # pre-multi-smooth fits + the existing parity tests).
-        if len(term_objs) == 1 and isinstance(term_objs[0], (CrTerm, ReTerm, CrStableTerm)):
+        # pre-multi-smooth fits + the existing parity tests). A point
+        # constraint only travels on the additive term tuples, so a pc'd
+        # smooth takes the additive door — bit-identical either way
+        # (tests/entry_point_equivalence.rs).
+        if (
+            len(term_objs) == 1
+            and isinstance(term_objs[0], (CrTerm, ReTerm, CrStableTerm))
+            and getattr(term_objs[0], "pc", None) is None
+        ):
             t = term_objs[0]
             if isinstance(t, CrTerm):
                 design, k_arg = "cr", t.k
@@ -824,7 +856,7 @@ class Gam:
                     new_k = math.ceil(k_before * self.knots_increase_ratio)
                     capped_k = min(new_k, caps[j])
                     if capped_k > k_before:
-                        current[j] = type(t)(col=t.col, k=int(capped_k))
+                        current[j] = type(t)(col=t.col, k=int(capped_k), pc=t.pc)
                         term_grew = True
                         grew = True
                 if not frozen and t.k < caps[j]:
@@ -904,6 +936,10 @@ class Gam:
                     UserWarning,
                     stacklevel=3,
                 )
+                warn_pc_unapplied(
+                    col_name, t.pc,
+                    f"only {n_unique} distinct value(s), so it is parametric",
+                )
                 out.append(ParametricTerm(col=col_idx))
                 continue
             if t.k < 3:
@@ -916,6 +952,7 @@ class Gam:
                     UserWarning,
                     stacklevel=3,
                 )
+                warn_pc_unapplied(col_name, t.pc, f"k={t.k} < 3, so it is parametric")
                 out.append(ParametricTerm(col=col_idx))
                 continue
             if n_obs < t.k:
@@ -937,6 +974,37 @@ class Gam:
             out.append(t)
         return out
 
+    def warn_unused_pc_keys(self, cols: Sequence[str]) -> None:
+        """Flag `term_pc_mapping` entries that reach no term. A key that
+        matches no predictor — a typo, a column dropped as constant, or the
+        `terms=` path where `pc` belongs on the term object — is a silent
+        no-op, which is the defect the mapping itself used to be."""
+        if not self.term_pc_mapping:
+            return
+        if self.terms is not None:
+            warnings.warn(
+                f"term_pc_mapping={sorted(self.term_pc_mapping)} is ignored "
+                "when terms= is passed: the typed-term path carries the point "
+                "constraint on the term itself, e.g. CrTerm('x', k=8, pc=0.0).",
+                UserWarning,
+                stacklevel=3,
+            )
+            return
+        unused = [name for name in self.term_pc_mapping if name not in cols]
+        if not unused:
+            return
+        dropped = [n for n in unused if n in self.dropped_predictors_]
+        reason = (
+            f" ({dropped} dropped as constant)" if dropped
+            else f" — fitted predictors are {list(cols)!r}"
+        )
+        warnings.warn(
+            f"term_pc_mapping key(s) {unused!r} match no fitted "
+            f"predictor{reason}; those point constraints have no effect.",
+            UserWarning,
+            stacklevel=3,
+        )
+
     def _build_terms_from_columns(
         self, X_arr: np.ndarray, cols: Sequence[str]
     ) -> list[Term]:
@@ -945,11 +1013,16 @@ class Gam:
         """
         out: list[Term] = []
         for col_idx, pname in enumerate(cols):
+            pc = self.term_pc_mapping.get(pname)
             bs_override = self.predictor_basis_map.get(pname)
             if bs_override in ("parametric", "linear"):
+                warn_pc_unapplied(
+                    pname, pc, f"predictor_basis_map made it a {bs_override!r} term"
+                )
                 out.append(ParametricTerm(col=col_idx))
                 continue
             if bs_override == "re":
+                warn_pc_unapplied(pname, pc, "predictor_basis_map made it a 're' term")
                 out.append(ReTerm(col=col_idx))
                 continue
             if bs_override is not None and bs_override not in ("cr",):
@@ -979,6 +1052,10 @@ class Gam:
                     "silence this warning.",
                     UserWarning,
                     stacklevel=3,
+                )
+                warn_pc_unapplied(
+                    pname, pc,
+                    f"only {n_unique} distinct value(s), so it is parametric",
                 )
                 out.append(ParametricTerm(col=col_idx))
                 continue
@@ -1023,6 +1100,9 @@ class Gam:
                     UserWarning,
                     stacklevel=3,
                 )
+                warn_pc_unapplied(
+                    pname, pc, f"k resolved to {k} < 3, so it is parametric"
+                )
                 out.append(ParametricTerm(col=col_idx))
                 continue
             # Sample-size sanity: refuse to fit a basis whose DoF (k)
@@ -1047,7 +1127,7 @@ class Gam:
                     UserWarning,
                     stacklevel=3,
                 )
-            out.append(CrTerm(col=col_idx, k=k))
+            out.append(CrTerm(col=col_idx, k=k, pc=pc))
         return out
 
     def _coerce_predict_X(self, X: ArrayLike) -> np.ndarray:

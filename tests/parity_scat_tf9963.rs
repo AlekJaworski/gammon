@@ -290,6 +290,7 @@ fn scat_criterion_matches_mgcv_on_its_own_sp_ladder() {
         terms: vec![TermSpec::Cr {
             col: 0,
             k: fx.inputs.k,
+            pc: None,
         }],
     }
     .prepare(x.view())
@@ -440,6 +441,7 @@ fn scat_vcov_is_the_fisher_inverse() {
         terms: vec![TermSpec::Cr {
             col: 0,
             k: fx.inputs.k,
+            pc: None,
         }],
     }
     .prepare(x.view())

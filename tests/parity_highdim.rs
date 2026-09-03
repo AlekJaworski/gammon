@@ -72,6 +72,7 @@ fn run_highdim_additive(name: &str, mu_bar: f64) {
         .map(|c| TermSpec::Cr {
             col: c,
             k: fx.inputs.k[c],
+            pc: None,
         })
         .collect();
 

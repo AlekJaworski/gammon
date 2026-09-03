@@ -7,6 +7,37 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+### Added
+
+- **`pc` — mgcv's point constraint — now does something.** `Gam(...,
+  term_pc_mapping={"x": v})` was accepted and dropped on the floor: two fits
+  differing only in it returned bit-identical predictions and the same
+  `edf_total_`. It now fits `s(x, pc=v)`: the smooth passes through zero at
+  `x = v` and the intercept absorbs the level, exactly as
+  `mgcv:::smooth.construct3` does it (the constraint row is the uncentred
+  basis evaluated at the point, absorbed through the same Householder
+  null-space as the centering row).
+
+  Predictions, λ̂ and edf do **not** move — `pc` re-parameterises the same
+  model space, and the CR penalty annihilates constants — so if you were
+  checking `pc` by diffing predictions, that check could never have worked.
+  What moves is the split between the intercept and the smooth, which is
+  what a caller reading a *partial* curve (`gam[["__constant__", term]]`)
+  reads. Measured against `mgcv::gam(y ~ s(gla, bs="cr", k=6) + s(conc,
+  bs="cr", k=3, pc=0))` on 500 rows: the constrained term is zero at the
+  point in both (5e-17 vs 4e-17), intercepts agree to 2.0e-6 relative and
+  the term's curve to 7.6e-5 — the same band as the unconstrained arm of
+  the same fixture (2.2e-12 / 2.3e-6).
+
+  Available on the CR bases: `CrTerm(pc=)`, `CrStableTerm(pc=)`,
+  `TermSpec::Cr { pc }`, `TermSpec::CrStable { pc }`, and
+  `term_pc_mapping=` on the `predictors=` path. A `pc` that reaches a term
+  with no centering constraint to replace — a parametric/linear or
+  random-effect term, including a CR term demoted to parametric for having
+  too few distinct values — is refused with a `UserWarning` rather than
+  dropped quietly, as are `term_pc_mapping` keys that name no fitted
+  predictor.
+
 ## [0.14.0] — 2026-08-28
 
 **`scat` / `t-dist` numerical results change again, and by more than 0.13.0

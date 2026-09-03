@@ -69,10 +69,12 @@ fn additive_2d_gaussian_n500_k10_cr() {
         TermSpec::Cr {
             col: 0,
             k: fx.inputs.k[0],
+            pc: None,
         },
         TermSpec::Cr {
             col: 1,
             k: fx.inputs.k[1],
+            pc: None,
         },
     ];
     let fit = fit_with_design(

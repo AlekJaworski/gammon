@@ -202,7 +202,11 @@ impl PyFittedGam {
         let terms: Vec<TermSpec> = k_per_term
             .iter()
             .enumerate()
-            .map(|(i, &k)| TermSpec::Cr { col: i, k })
+            .map(|(i, &k)| TermSpec::Cr {
+                col: i,
+                k,
+                pc: None,
+            })
             .collect();
         let prep = Additive { terms }.prepare(x_view).map_err(map_err)?;
         let n_terms = prep.s_list.len();
@@ -361,7 +365,11 @@ impl PyFittedGam {
         let terms: Vec<TermSpec> = k_per_term
             .iter()
             .enumerate()
-            .map(|(i, &k)| TermSpec::Cr { col: i, k })
+            .map(|(i, &k)| TermSpec::Cr {
+                col: i,
+                k,
+                pc: None,
+            })
             .collect();
         let prep = Additive { terms }.prepare(x_view).map_err(map_err)?;
         let n_terms = prep.s_list.len();
@@ -493,7 +501,11 @@ impl PyFittedGam {
         let terms: Vec<TermSpec> = k_per_term
             .iter()
             .enumerate()
-            .map(|(i, &k)| TermSpec::Cr { col: i, k })
+            .map(|(i, &k)| TermSpec::Cr {
+                col: i,
+                k,
+                pc: None,
+            })
             .collect();
         let prep = Additive { terms }.prepare(x_view).map_err(map_err)?;
         let n_terms = prep.s_list.len();
@@ -687,7 +699,11 @@ impl PyFittedGam {
         let terms: Vec<TermSpec> = k_per_term
             .iter()
             .enumerate()
-            .map(|(i, &k)| TermSpec::Cr { col: i, k })
+            .map(|(i, &k)| TermSpec::Cr {
+                col: i,
+                k,
+                pc: None,
+            })
             .collect();
         let prep = Additive { terms }.prepare(x_view).map_err(map_err)?;
         let n_terms = prep.s_list.len();
@@ -1240,11 +1256,20 @@ fn fit<'py>(
 // =============================================================================
 // fit_additive — multi-smooth `y ~ s(x_{c_0}) + s(x_{c_1}) + …` entry point.
 //
-// Python boundary: `terms` is a list of `(col, basis_name, k)` tuples
-// (k ignored for `bs="re"`). The string `basis_name` is converted to the
+// Python boundary: `terms` is a list of `(col, basis_name, k, pc)` tuples
+// (k ignored for `bs="re"`; `pc` optional, univariate CR bases only). The string `basis_name` is converted to the
 // typed `TermSpec` enum at this FFI boundary and never leaks into the Rust
 // core — matches the project rule "strings ok at the Python FFI only".
 // =============================================================================
+
+/// mgcv's `s(x, pc=)` value, the optional 4th element of a univariate
+/// term tuple. Absent (or `None`) leaves the smooth centred.
+fn point_constraint(tup: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<Option<f64>> {
+    if tup.len() < 4 {
+        return Ok(None);
+    }
+    tup.get_item(3)?.extract()
+}
 
 fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<TermSpec>> {
     let mut out: Vec<TermSpec> = Vec::with_capacity(terms.len());
@@ -1390,7 +1415,11 @@ fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<Term
                     } else {
                         10
                     };
-                    TermSpec::Cr { col, k }
+                    TermSpec::Cr {
+                        col,
+                        k,
+                        pc: point_constraint(tup)?,
+                    }
                 }
                 "cr_stable" => {
                     let k: usize = if tup.len() >= 3 {
@@ -1398,7 +1427,11 @@ fn build_term_specs(terms: &Bound<'_, pyo3::types::PyList>) -> PyResult<Vec<Term
                     } else {
                         10
                     };
-                    TermSpec::CrStable { col, k }
+                    TermSpec::CrStable {
+                        col,
+                        k,
+                        pc: point_constraint(tup)?,
+                    }
                 }
                 "re" => TermSpec::Re { col },
                 "parametric" | "linear" => TermSpec::Parametric { col },

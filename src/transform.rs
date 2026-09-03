@@ -11,6 +11,12 @@
 //!   built via a Householder reflection. Mirrors `mgcv::nat.param` /
 //!   `mgcv::smoothCon`'s default centering path.
 //!
+//!   The centering row is one *choice* of constraint, not the only one:
+//!   [`SumToZero::from_point_constraint`] swaps it for mgcv's `s(x, pc=v)`
+//!   — the smooth is pinned to zero at `x = v` instead of on average.
+//!   Absorption, dimension (`k-1`) and penalty rotation are identical
+//!   either way, which is why both live on this one type.
+//!
 //! - **`StableReparam<B>`** — mgcv's `Sl.initial.repara` analog. Rotates
 //!   `B` so the inner penalty becomes diagonal (eigenvalue-ordered, range
 //!   space first). `C := V`, the eigenvector matrix of `S_inner`. The
@@ -43,7 +49,31 @@ impl<B: Basis> SumToZero<B> {
     /// *training* column sums (not the basis-vs-uniform integral).
     pub fn from_fit_design(inner: B, x_fit_design: ArrayView2<f64>) -> Self {
         let t = x_fit_design.sum_axis(Axis(0));
-        let c = nullspace_householder(t.view());
+        Self::from_constraint_row(inner, t.view())
+    }
+
+    /// mgcv's point constraint `s(x, pc = point)`: the smooth passes
+    /// through zero at `point`, and the intercept takes the level the
+    /// centering constraint would have taken.
+    ///
+    /// The constraint row is the *uncentred* basis evaluated at the point
+    /// — `mgcv:::smooth.construct3` sets `object$C <- Predict.matrix(object,
+    /// pc)$X` and lets the ordinary absorption path handle the rest, so
+    /// the smooth still spans `k-1` columns. `point` is a single row of
+    /// covariate values, shape `(1, input_dim)`.
+    ///
+    /// Same model space as [`Self::from_fit_design`], so fitted values,
+    /// λ̂ and edf are invariant: the CR penalty annihilates constants, and
+    /// a constraint row only decides how a fitted function splits between
+    /// the intercept and the smooth.
+    pub fn from_point_constraint(inner: B, point: ArrayView2<f64>) -> Self {
+        let t = inner.evaluate(point);
+        Self::from_constraint_row(inner, t.row(0))
+    }
+
+    /// Absorb the single linear constraint `t' · β = 0` into the basis.
+    fn from_constraint_row(inner: B, t: ArrayView1<f64>) -> Self {
+        let c = nullspace_householder(t);
         Self { inner, c }
     }
 }

@@ -48,9 +48,20 @@ pub enum MarginKind {
 #[derive(Clone, Debug)]
 pub enum TermSpec {
     /// CR spline + sum-to-zero centring on `x.column(col)` with `k` knots.
-    Cr { col: usize, k: usize },
+    /// `pc` is mgcv's `s(x, pc=)` point constraint — `Some(v)` replaces the
+    /// centering constraint with "the smooth is zero at `x = v`".
+    Cr {
+        col: usize,
+        k: usize,
+        pc: Option<f64>,
+    },
     /// CR spline + sum-to-zero + StableReparam rotation on `x.column(col)`.
-    CrStable { col: usize, k: usize },
+    /// `pc` as for [`Self::Cr`].
+    CrStable {
+        col: usize,
+        k: usize,
+        pc: Option<f64>,
+    },
     /// Random-effect (`bs="re"`) on `x.column(col)`.
     Re { col: usize },
     /// Anisotropic tensor product `te(x_{col_a}, x_{col_b})` — two
@@ -299,8 +310,8 @@ impl DesignStrategy for Additive {
 
         for t in &self.terms {
             match *t {
-                TermSpec::Cr { col, k } => {
-                    let fit = CrPredictor::fit_centred(x, col, k)?;
+                TermSpec::Cr { col, k, pc } => {
+                    let fit = CrPredictor::fit_centred(x, col, k, pc)?;
                     per_term_dim.push(fit.centred.ncols());
                     per_term_centred.push(fit.centred);
                     per_term_s_smooth.push(vec![fit.s_smooth]);
@@ -310,8 +321,8 @@ impl DesignStrategy for Additive {
                     }));
                     cols_used.push(vec![col]);
                 }
-                TermSpec::CrStable { col, k } => {
-                    let fit = CrStablePredictor::fit_rotated(x, col, k)?;
+                TermSpec::CrStable { col, k, pc } => {
+                    let fit = CrStablePredictor::fit_rotated(x, col, k, pc)?;
                     per_term_dim.push(fit.rotated.ncols());
                     per_term_centred.push(fit.rotated);
                     per_term_s_smooth.push(vec![fit.s_smooth]);
@@ -497,7 +508,18 @@ mod tests {
         }
         let x = Array2::from_shape_vec((n, 2), x_vec).unwrap();
         let strategy = Additive {
-            terms: vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 6 }],
+            terms: vec![
+                TermSpec::Cr {
+                    col: 0,
+                    k: 8,
+                    pc: None,
+                },
+                TermSpec::Cr {
+                    col: 1,
+                    k: 6,
+                    pc: None,
+                },
+            ],
         };
         let prep = strategy.prepare(x.view()).unwrap();
         assert_eq!(prep.s_list.len(), 2, "one penalty block per term");
@@ -540,7 +562,11 @@ mod tests {
 
         let prep_cr = super::super::Cr { k: 6 }.prepare(x1.view()).unwrap();
         let prep_add = Additive {
-            terms: vec![TermSpec::Cr { col: 0, k: 6 }],
+            terms: vec![TermSpec::Cr {
+                col: 0,
+                k: 6,
+                pc: None,
+            }],
         }
         .prepare(x1.view())
         .unwrap();
@@ -579,7 +605,18 @@ mod tests {
         }
         let x = Array2::from_shape_vec((n, 2), x_vec.clone()).unwrap();
         let strategy = Additive {
-            terms: vec![TermSpec::Cr { col: 0, k: 5 }, TermSpec::Cr { col: 1, k: 4 }],
+            terms: vec![
+                TermSpec::Cr {
+                    col: 0,
+                    k: 5,
+                    pc: None,
+                },
+                TermSpec::Cr {
+                    col: 1,
+                    k: 4,
+                    pc: None,
+                },
+            ],
         };
         let prep = strategy.prepare(x.view()).unwrap();
         // Rebuild on the same x — should match the fit-time design.

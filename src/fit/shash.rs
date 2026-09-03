@@ -480,7 +480,11 @@ mod tests {
             y[i] = (2.0 * std::f64::consts::PI * t).sin() + 0.4 * pnormal(u1, u2);
         }
         let fit = fit_shash(
-            vec![TermSpec::Cr { col: 0, k: 6 }],
+            vec![TermSpec::Cr {
+                col: 0,
+                k: 6,
+                pc: None,
+            }],
             vec![],
             vec![],
             vec![],
@@ -535,7 +539,11 @@ mod tests {
             y[i] = mu_true[i] + 0.2 * noise(z1, z2);
         }
         let fit = fit_shash(
-            vec![TermSpec::Cr { col: 0, k: 10 }],
+            vec![TermSpec::Cr {
+                col: 0,
+                k: 10,
+                pc: None,
+            }],
             vec![],
             vec![],
             vec![],
@@ -606,8 +614,16 @@ mod tests {
         // gamrs builds its OWN CR designs: s(x0,k=10) for μ, s(x1,k=10) for τ,
         // intercept-only ε and φ — matching the mgcv formula in the fixture.
         let fit = fit_shash(
-            vec![TermSpec::Cr { col: 0, k: 10 }],
-            vec![TermSpec::Cr { col: 1, k: 10 }],
+            vec![TermSpec::Cr {
+                col: 0,
+                k: 10,
+                pc: None,
+            }],
+            vec![TermSpec::Cr {
+                col: 1,
+                k: 10,
+                pc: None,
+            }],
             vec![],
             vec![],
             x.view(),
