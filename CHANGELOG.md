@@ -7,6 +7,8 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-09-03
+
 ### Added
 
 - **`pc` — mgcv's point constraint — now does something.** `Gam(...,
@@ -37,6 +39,36 @@ is locked. Versions correspond to the published PyPI wheels.
   too few distinct values — is refused with a `UserWarning` rather than
   dropped quietly, as are `term_pc_mapping` keys that name no fitted
   predictor.
+
+### Performance
+
+No regression on the path that passes no `pc`, bounded at **~1%** — measured on
+the new `bench_design_prepare`, which times `Additive::prepare` alone because
+that is the only stage the change touches. 10 interleaved samples per arm,
+separate target dirs, pinned core:
+
+| n | master min | branch min | ratio |
+|---|---|---|---|
+| 500 | 0.414 ms | 0.416 ms | 1.005 |
+| 2000 | 1.655 ms | 1.640 ms | 0.991 |
+| 5000 | 4.093 ms | 4.096 ms | 1.001 |
+
+`pc` itself is not a cost: free through the Python surface (0.28 ms either way
+on a single smooth), and **8–9% cheaper** at design assembly for n ≥ 2000,
+because the constraint replaces an O(n·k) column sum over the raw design with a
+single k-vector basis evaluation.
+
+A note for anyone benchmarking this crate: the noise floor of a whole-fit A/B on
+this hardware is **~8% at n=500**, measured by running one binary against a
+byte-identical copy of itself. Single-sample comparisons at that scale say
+nothing.
+
+### Known, not fixed
+
+`design="cr_stable"` is accepted and ignored in the same way — `self.design` is
+never consulted at fit time, so `coef_` comes back bit-identical to `design="cr"`
+while `bs_` reports `cr_stable`. The only route to the rotated basis from Python
+is `terms=[CrStableTerm(...)]`.
 
 ## [0.14.0] — 2026-08-28
 
@@ -674,7 +706,8 @@ numbers on every platform that already had a wheel.
 - First beta. Multi-smooth additive, tensor products, and the ten-family
   parity battery.
 
-[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.14.1
 [0.14.0]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.14.0
 [0.13.2]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.13.2
 [0.13.1]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.13.1
