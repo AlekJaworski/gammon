@@ -150,6 +150,11 @@ full port story.
   any n-margin.
 - **Thin-plate** — `s(x0, x1, bs="tp")` via `TpsTerm`.
 - **Random effects** — `s(g, bs="re")` via `ReTerm`.
+- **Point constraint** — `s(x, pc=v)` via `CrTerm("x", pc=v)` or
+  `term_pc_mapping={"x": v}`: the smooth passes through zero at `x = v`
+  and the intercept takes the level. Predictions, λ̂ and edf are unchanged
+  — only the intercept-versus-smooth split moves, which is what a caller
+  reading a *partial* curve sees. CR bases (`cr`, `cr_stable`) only.
 - **Parametric (linear)** — unsmoothed raw column via `ParametricTerm` or
   `predictor_basis_map={"x": "parametric"}` (alias `"linear"`). Use for
   0/1 indicators, counts, or anything you want unpenalised. mgcv R's

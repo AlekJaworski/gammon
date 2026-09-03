@@ -71,7 +71,18 @@ fn additive_identity_extrapolates_linearly_along_one_axis() {
     let ys: Vec<f64> = (0..n)
         .map(|i| (2.0 * PI * x0[i]).sin() + 0.5 * (2.0 * PI * x1[i]).cos())
         .collect();
-    let terms = vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 8 }];
+    let terms = vec![
+        TermSpec::Cr {
+            col: 0,
+            k: 8,
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: 8,
+            pc: None,
+        },
+    ];
     let fit = fit_with_design(
         gaussian_identity(),
         Additive { terms },
@@ -99,7 +110,18 @@ fn additive_finite_both_axes_beyond_range() {
     let ys: Vec<f64> = (0..n)
         .map(|i| (2.0 * PI * x0[i]).sin() + 0.5 * (2.0 * PI * x1[i]).cos())
         .collect();
-    let terms = vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 8 }];
+    let terms = vec![
+        TermSpec::Cr {
+            col: 0,
+            k: 8,
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: 8,
+            pc: None,
+        },
+    ];
     let fit = fit_with_design(
         gaussian_identity(),
         Additive { terms },
@@ -133,7 +155,18 @@ fn additive_log_link_positive_mu_beyond_range() {
                 .round()
         })
         .collect();
-    let terms = vec![TermSpec::Cr { col: 0, k: 6 }, TermSpec::Cr { col: 1, k: 6 }];
+    let terms = vec![
+        TermSpec::Cr {
+            col: 0,
+            k: 6,
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: 6,
+            pc: None,
+        },
+    ];
     let fit = fit_with_design(
         poisson_log(),
         Additive { terms },

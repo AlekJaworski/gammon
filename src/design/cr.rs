@@ -18,6 +18,15 @@ use super::{
     DesignStrategy, Predictor, PreparedDesign,
 };
 
+/// Absorb the identifiability constraint into a CR basis: the fit-time
+/// centering row by default, or mgcv's point constraint when `pc` is set.
+fn constrain(cr: CrSpline, raw_design: ArrayView2<f64>, pc: Option<f64>) -> SumToZero<CrSpline> {
+    match pc {
+        Some(v) => SumToZero::from_point_constraint(cr, Array2::from_elem((1, 1), v).view()),
+        None => SumToZero::from_fit_design(cr, raw_design),
+    }
+}
+
 // -----------------------------------------------------------------------------
 // CR predictor — knots + sum-to-zero centring matrix.
 // -----------------------------------------------------------------------------
@@ -46,10 +55,14 @@ impl CrPredictor {
     /// Build the centred design (no intercept column) and centring matrix
     /// for a CR smooth fit on `x_col`. Shared with `Additive`, which
     /// composes the centred designs from multiple terms.
+    ///
+    /// `pc` is mgcv's `s(x, pc=)`: with `Some(v)` the smooth is pinned to
+    /// zero at `x = v` instead of centred over the fit rows.
     pub(crate) fn fit_centred(
         x: ArrayView2<f64>,
         x_col_idx: usize,
         k: usize,
+        pc: Option<f64>,
     ) -> Result<CenteredCrFit> {
         let x_col = x.column(x_col_idx);
         let cr = CrSpline::with_quantile_knots(x_col, k)?;
@@ -67,7 +80,7 @@ impl CrPredictor {
         };
         let s_raw_rescaled = &s_raw * rescale;
 
-        let stz = SumToZero::from_fit_design(cr, raw_design.view());
+        let stz = constrain(cr, raw_design.view(), pc);
         let centring = stz.matrix().to_owned();
         let centred = stz.evaluate(x_view);
         let s_smooth = centring.t().dot(&s_raw_rescaled).dot(&centring);
@@ -98,7 +111,7 @@ pub struct Cr {
 
 impl DesignStrategy for Cr {
     fn prepare(&self, x: ArrayView2<f64>) -> Result<PreparedDesign> {
-        let fit = CrPredictor::fit_centred(x, 0, self.k)?;
+        let fit = CrPredictor::fit_centred(x, 0, self.k, None)?;
         let x_design = prepend_intercept(fit.centred.view());
         let p = x_design.ncols();
         let k_smooth = fit.centred.ncols();
@@ -162,6 +175,7 @@ impl CrStablePredictor {
         x: ArrayView2<f64>,
         x_col_idx: usize,
         k: usize,
+        pc: Option<f64>,
     ) -> Result<RotatedCrFit> {
         let x_col = x.column(x_col_idx);
         let cr = CrSpline::with_quantile_knots(x_col, k)?;
@@ -179,7 +193,7 @@ impl CrStablePredictor {
         };
         let s_raw_rescaled = &s_raw * rescale;
 
-        let stz = SumToZero::from_fit_design(cr, raw_design.view());
+        let stz = constrain(cr, raw_design.view(), pc);
         let centring = stz.matrix().to_owned();
         let s_centred_rescaled = centring.t().dot(&s_raw_rescaled).dot(&centring);
 
@@ -216,7 +230,7 @@ pub struct CrStable {
 
 impl DesignStrategy for CrStable {
     fn prepare(&self, x: ArrayView2<f64>) -> Result<PreparedDesign> {
-        let fit = CrStablePredictor::fit_rotated(x, 0, self.k)?;
+        let fit = CrStablePredictor::fit_rotated(x, 0, self.k, None)?;
         let x_design = prepend_intercept(fit.rotated.view());
         let p = x_design.ncols();
         let k_smooth = fit.rotated.ncols();

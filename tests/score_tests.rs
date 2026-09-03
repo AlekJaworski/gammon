@@ -726,7 +726,18 @@ fn negbin_multismooth_analytic_grad_matches_fd() {
     // Build the same design path the 2-D parity test uses — proper
     // centering + per-term penalty embedding — so PIRLS doesn't blow up
     // on a hand-rolled rank-deficient basis.
-    let terms = vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 8 }];
+    let terms = vec![
+        TermSpec::Cr {
+            col: 0,
+            k: 8,
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: 8,
+            pc: None,
+        },
+    ];
     let prep = Additive { terms }.prepare(x.view()).unwrap();
 
     let family_base = negbin_log(3.0);
@@ -846,7 +857,18 @@ fn nb_hess_microbench() {
     }
     let x = Array2::from_shape_vec((n, 2), x_flat).unwrap();
     let y = Array1::from_vec(ys);
-    let terms = vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 8 }];
+    let terms = vec![
+        TermSpec::Cr {
+            col: 0,
+            k: 8,
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: 8,
+            pc: None,
+        },
+    ];
     let prep = Additive { terms }.prepare(x.view()).unwrap();
 
     let family_base = negbin_log(3.0);
@@ -921,7 +943,11 @@ fn nb_hess_microbench() {
     }
     let x1 = Array2::from_shape_vec((n, 1), x_flat).unwrap();
     let y1 = Array1::from_vec(ys);
-    let terms1 = vec![TermSpec::Cr { col: 0, k: 10 }];
+    let terms1 = vec![TermSpec::Cr {
+        col: 0,
+        k: 10,
+        pc: None,
+    }];
     let prep1 = Additive { terms: terms1 }.prepare(x1.view()).unwrap();
     let score1: gamrs::score::ShapeAwarePirlsScore<_, _, _> = ShapeAwareEnvelopeScore {
         x_design: prep1.x_design.clone(),
@@ -993,7 +1019,18 @@ fn negbin_multismooth_analytic_hess_matches_fd_on_grad() {
     }
     let x = Array2::from_shape_vec((n, 2), x_flat).unwrap();
     let y = Array1::from_vec(ys);
-    let terms = vec![TermSpec::Cr { col: 0, k: 8 }, TermSpec::Cr { col: 1, k: 8 }];
+    let terms = vec![
+        TermSpec::Cr {
+            col: 0,
+            k: 8,
+            pc: None,
+        },
+        TermSpec::Cr {
+            col: 1,
+            k: 8,
+            pc: None,
+        },
+    ];
     let prep = Additive { terms }.prepare(x.view()).unwrap();
 
     let family_base = negbin_log(3.0);
@@ -1105,7 +1142,11 @@ fn tdist_analytic_hess_matches_fd_on_grad() {
     }
     let x = Array2::from_shape_vec((n, 1), x_flat).unwrap();
     let y = Array1::from_vec(ys);
-    let terms = vec![TermSpec::Cr { col: 0, k: 10 }];
+    let terms = vec![TermSpec::Cr {
+        col: 0,
+        k: 10,
+        pc: None,
+    }];
     let prep = Additive { terms }.prepare(x.view()).unwrap();
 
     let family_base = tdist_identity(5.0, 0.1);

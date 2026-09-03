@@ -107,7 +107,11 @@ fn cr_and_additive_entry_points_agree_on_scat() {
     let b = gamrs::fit_with_design(
         init(),
         Additive {
-            terms: vec![TermSpec::Cr { col: 0, k }],
+            terms: vec![TermSpec::Cr {
+                col: 0,
+                k,
+                pc: None,
+            }],
         },
         x.view(),
         y.view(),

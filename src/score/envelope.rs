@@ -935,8 +935,16 @@ mod fd_match_tests {
     fn fd_match_gaussian_additive_2d() {
         let (x, y) = load_xy("2d_gaussian_additive_n500_k10_cr");
         let terms = vec![
-            TermSpec::Cr { col: 0, k: 10 },
-            TermSpec::Cr { col: 1, k: 10 },
+            TermSpec::Cr {
+                col: 0,
+                k: 10,
+                pc: None,
+            },
+            TermSpec::Cr {
+                col: 1,
+                k: 10,
+                pc: None,
+            },
         ];
         let prep = Additive { terms }.prepare(x.view()).unwrap();
         assert_eq!(prep.s_list.len(), 2, "expected d=2 multi-smooth");

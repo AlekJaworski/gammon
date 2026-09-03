@@ -62,10 +62,12 @@ fn additive_2d_nb_n600_k8_cr() {
         TermSpec::Cr {
             col: 0,
             k: fx.inputs.k[0],
+            pc: None,
         },
         TermSpec::Cr {
             col: 1,
             k: fx.inputs.k[1],
+            pc: None,
         },
     ];
     // init θ = 5.0 (mirrors parity_negbin.rs); θ is profiled jointly.

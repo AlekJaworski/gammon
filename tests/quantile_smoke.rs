@@ -201,7 +201,18 @@ fn quantile_multismooth_additive_monotone_and_converged() {
         let fit = gamrs::fit_with_design(
             gamrs::family::elf_identity(tau, /*sigma=*/ 0.0, /*lambda=*/ 0.0),
             Additive {
-                terms: vec![TermSpec::Cr { col: 0, k }, TermSpec::Cr { col: 1, k }],
+                terms: vec![
+                    TermSpec::Cr {
+                        col: 0,
+                        k,
+                        pc: None,
+                    },
+                    TermSpec::Cr {
+                        col: 1,
+                        k,
+                        pc: None,
+                    },
+                ],
             },
             x.view(),
             y.view(),
