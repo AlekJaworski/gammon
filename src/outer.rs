@@ -445,6 +445,40 @@ impl OuterSolver for NewtonWithHalving {
                 }
                 step
             };
+            // Project onto the feasible box BEFORE capping. An axis already at
+            // a bound whose step pushes further out is clamped back to that
+            // bound at every trial point anyway, so the component buys no
+            // movement — but the cap shrink below is a single GLOBAL factor
+            // `min_i(cap_i/|s_i|)`, so leaving it in throttles every LIVE axis
+            // by its magnitude. Standard projected Newton.
+            //
+            // Measured on a scat fit with ν unidentified (n=66, k=12, the
+            // `scat_pinned_shape_axis_does_not_throttle_rho` fixture): the
+            // `log(ν−2)` axis pins at its upper bound 10 with `|H_ii| ~ 2e-6`
+            // and asks for +19.4 every iteration. Cap 1.0 ⇒ shrink 0.0515, so ρ
+            // moved 0.042 per iter instead of 0.83 and `log σ²` 5e-7 instead of
+            // 1e-5 — frozen while carrying a real (FD-confirmed) gradient of
+            // 5.6e-2. 200 iterations of crawl, then `NotConverged` threw the
+            // whole fit away. With the projection: 28 iterations, and a score
+            // 5.5e-5 LOWER than where the crawl ran out of budget.
+            // Kept unprojected for the KKT test in the `!accepted` branch
+            // below, which asks whether the UNCONSTRAINED step wanted to leave
+            // the box.
+            let raw_step = step.clone();
+            let mut step = step;
+            if let Some(ref bnds) = axis_bounds {
+                for (i, &(lo, hi)) in bnds.iter().enumerate() {
+                    if i >= step.len() {
+                        continue;
+                    }
+                    let eps_at_bound = 1e-12 * theta[i].abs().max(1.0);
+                    let at_lo = (theta[i] - lo).abs() <= eps_at_bound;
+                    let at_hi = (hi - theta[i]).abs() <= eps_at_bound;
+                    if (at_hi && step[i] > 0.0) || (at_lo && step[i] < 0.0) {
+                        step[i] = 0.0;
+                    }
+                }
+            }
             // Cap the step — per-axis caps (mgcv-style, set by shape-aware
             // scores per family) if provided; otherwise the global L_∞ cap.
             let scaled_step = if let Some(ref caps) = axis_caps {
@@ -573,10 +607,10 @@ impl OuterSolver for NewtonWithHalving {
                     let mut any_movement = false;
                     let mut all_blocked = true;
                     for (i, &(lo, hi)) in bnds.iter().enumerate() {
-                        if i >= scaled_step.len() {
+                        if i >= raw_step.len() {
                             continue;
                         }
-                        let si = scaled_step[i];
+                        let si = raw_step[i];
                         let eps_at_bound = 1e-12 * (theta[i].abs().max(1.0));
                         let at_lo = (theta[i] - lo).abs() <= eps_at_bound;
                         let at_hi = (hi - theta[i]).abs() <= eps_at_bound;

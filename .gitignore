@@ -24,6 +24,12 @@ venv/
 # tests/parity_scat.rs::scat_downweights_high_outliers_synthetic.
 /data/
 
+# Same rule for the ad-hoc repro scratch dir: `.repro/` holds customer-derived
+# extracts captured out of insights-runner (e.g. the .npz behind the
+# pinned-shape-axis non-convergence). The committable restatement of that one is
+# tests/outer_pinned_shape_axis.rs, which generates its own data.
+/.repro/
+
 # uv dev lockfile — Cargo.lock is the committed lock that matters; uv.lock
 # is a local dev convenience (the wheel/CI build uses pip + maturin).
 uv.lock
