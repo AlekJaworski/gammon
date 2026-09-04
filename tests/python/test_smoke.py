@@ -891,3 +891,46 @@ def test_freml_still_runs_fellner_schall_where_it_was_ported():
     )
     # Different route, same criterion: the smoothing parameters still agree.
     assert np.allclose(fell.get_lambdas(), reml.get_lambdas(), rtol=1e-4)
+
+
+def test_non_convergence_warns_instead_of_being_silent():
+    """A fit the outer optimiser could not fully converge must SAY so.
+
+    The Rust side stopped raising on iteration-budget exhaustion (mgcv warns
+    and returns the estimate — `gam.fit3.r:1656`), so `converged_ = False`
+    became reachable through the normal path. Reachable and silent is worse
+    than the old exception, hence the warning; this pins that it fires.
+
+    Driven through a stub because the real regime is hard to provoke on
+    demand: every draw in `tests/outer_indefinite_axis.rs` now converges, and
+    a test that needs a non-converging fixture would be pinned to whichever
+    seed happens to be pathological this month.
+    """
+    import warnings
+
+    import gamrs
+
+    class NotConverged:
+        converged = False
+        n_iters = 200
+
+    g = gamrs.Gam(predictors=["x"], target="y")
+    g._fitted = NotConverged()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        g._warn_if_not_converged()
+    assert len(caught) == 1, "expected exactly one warning"
+    msg = str(caught[0].message)
+    assert "did not reach its gradient tolerance" in msg
+    assert "200 iterations" in msg
+    assert issubclass(caught[0].category, UserWarning)
+
+    class Converged:
+        converged = True
+        n_iters = 12
+
+    g._fitted = Converged()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        g._warn_if_not_converged()
+    assert caught == [], "a converged fit must stay quiet"

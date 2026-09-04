@@ -11,9 +11,13 @@
 //! structural defence against the closed-form-vs-FD drift bug class.
 
 use ndarray::{Array1, Array2};
-use ndarray_linalg::{Eigh, Solve, UPLO};
+use ndarray_linalg::{Eigh, UPLO};
 
-use crate::error::{GamrsError, Result};
+mod step;
+
+use step::inf_norm;
+
+use crate::error::Result;
 use crate::traits::{OuterFit, OuterSolver, ScoreDerivatives};
 
 pub struct NewtonOpts {
@@ -373,188 +377,172 @@ impl OuterSolver for NewtonWithHalving {
                 });
             }
 
-            // Newton step with mgcv R's `gam.fit3.r:~1380-1643` stack:
-            //   1. Subset Newton: filter axes where either |g_i| or |H_ii|
-            //      is meaningfully above the score-relative tolerance. Run
-            //      the rest of the Newton machinery on the subset only;
-            //      frozen axes get a zero step. Saves work AND keeps an
-            //      effectively-dead axis from polluting the active axes'
-            //      step direction through the joint inverse.
-            //   2. Diagonal preconditioning: D_ii = sqrt(|H_ii|) on the
-            //      active sub-Hessian, normalises the eigenvalue spectrum.
-            //   3. Gill-Murray-Wright eigen-fix on the preconditioned Hess
-            //      (`make_psd_gmw`): ABS negative eigvals + relative floor
-            //      at max(|λ|) · ε^0.7. Safe in preconditioned coords.
-            //   4. Solve in preconditioned coords, back-transform, pad
-            //      frozen dims with zero.
-            let dim = g.len();
-            // Subset filter — mgcv's `uconv.ind` at gam.fit3.r:1643:
-            //   active_i ⇔ |g_i| > dim_tol  OR  |H_ii| > dim_tol
-            // mgcv `gam.fit3.r:1643`: `uconv.ind <- (abs(grad) >
-            // score.scale*conv.tol*.1) | (abs(grad2) > score.scale*conv.tol*.1)`
-            // with `conv.tol = 1e-6` for the scat path (`mgcv.r:2209`), i.e.
-            // `1e-7 · score_scale`. The H_ii OR clause keeps axes active when
-            // curvature is meaningful even if the gradient is small
-            // (saddle-point case).
-            //
-            // NB this was briefly changed to `score_scale * grad_tol * 0.1` on
-            // the belief that the hardcoded 1e-7 was "67× looser than mgcv's".
-            // It was not — 1e-7·score_scale IS mgcv's value; the 67× came from
-            // comparing against `fast.REML.fit`'s `sqrt(eps)`, which drives the
-            // Gaussian fREML path, not scat. Reverted, and it made no
-            // measurable difference either way.
-            let dim_tol = score_scale * 1.0e-7;
-            let active: Vec<usize> = (0..dim)
-                .filter(|&i| g[i].abs() > dim_tol || h[[i, i]].abs() > dim_tol)
-                .collect();
-            // Safeguard (mgcv gam.fit3.r:1432): at least one active axis.
-            let active = if active.is_empty() {
-                let argmax = (0..dim)
-                    .max_by(|&a, &b| g[a].abs().total_cmp(&g[b].abs()))
-                    .unwrap_or(0);
-                vec![argmax]
-            } else {
-                active
-            };
-            let n_active = active.len();
-            // Build the active sub-Hessian + sub-gradient.
-            let mut diag_precond = Array1::<f64>::zeros(n_active);
-            for (ki, &ai) in active.iter().enumerate() {
-                diag_precond[ki] = h[[ai, ai]].abs().sqrt().max(opts.hess_floor.sqrt());
-            }
-            let step = {
-                let mut h_sub_pre = Array2::<f64>::zeros((n_active, n_active));
-                for (ri, &ai) in active.iter().enumerate() {
-                    for (ci, &aj) in active.iter().enumerate() {
-                        h_sub_pre[[ri, ci]] = h[[ai, aj]] / (diag_precond[ri] * diag_precond[ci]);
-                    }
-                }
-                let mut g_sub_pre = Array1::<f64>::zeros(n_active);
-                for (ki, &ai) in active.iter().enumerate() {
-                    g_sub_pre[ki] = g[ai] / diag_precond[ki];
-                }
-                let h_psd = make_psd_gmw(&h_sub_pre, opts.hess_floor);
-                let step_sub_pre = match h_psd.solve(&(-&g_sub_pre)) {
-                    Ok(s) => s,
-                    Err(_) => -&g_sub_pre / opts.hess_floor.max(1.0),
-                };
-                // Back-transform AND pad frozen dims with zero.
-                let mut step = Array1::<f64>::zeros(dim);
-                for (ki, &ai) in active.iter().enumerate() {
-                    step[ai] = step_sub_pre[ki] / diag_precond[ki];
-                }
-                step
-            };
-            // Project onto the feasible box BEFORE capping. An axis already at
-            // a bound whose step pushes further out is clamped back to that
-            // bound at every trial point anyway, so the component buys no
-            // movement — but the cap shrink below is a single GLOBAL factor
-            // `min_i(cap_i/|s_i|)`, so leaving it in throttles every LIVE axis
-            // by its magnitude. Standard projected Newton.
-            //
-            // Measured on a scat fit with ν unidentified (n=66, k=12, the
-            // `scat_pinned_shape_axis_does_not_throttle_rho` fixture): the
-            // `log(ν−2)` axis pins at its upper bound 10 with `|H_ii| ~ 2e-6`
-            // and asks for +19.4 every iteration. Cap 1.0 ⇒ shrink 0.0515, so ρ
-            // moved 0.042 per iter instead of 0.83 and `log σ²` 5e-7 instead of
-            // 1e-5 — frozen while carrying a real (FD-confirmed) gradient of
-            // 5.6e-2. 200 iterations of crawl, then `NotConverged` threw the
-            // whole fit away. With the projection: 28 iterations, and a score
-            // 5.5e-5 LOWER than where the crawl ran out of budget.
-            // Kept unprojected for the KKT test in the `!accepted` branch
-            // below, which asks whether the UNCONSTRAINED step wanted to leave
-            // the box.
-            let raw_step = step.clone();
-            let mut step = step;
-            if let Some(ref bnds) = axis_bounds {
-                for (i, &(lo, hi)) in bnds.iter().enumerate() {
-                    if i >= step.len() {
-                        continue;
-                    }
-                    let eps_at_bound = 1e-12 * theta[i].abs().max(1.0);
-                    let at_lo = (theta[i] - lo).abs() <= eps_at_bound;
-                    let at_hi = (hi - theta[i]).abs() <= eps_at_bound;
-                    if (at_hi && step[i] > 0.0) || (at_lo && step[i] < 0.0) {
-                        step[i] = 0.0;
-                    }
-                }
-            }
-            // Cap the step — per-axis caps (mgcv-style, set by shape-aware
-            // scores per family) if provided; otherwise the global L_∞ cap.
-            let scaled_step = if let Some(ref caps) = axis_caps {
-                debug_assert_eq!(caps.len(), step.len(), "axis_step_caps length mismatch");
-                // Per-axis: scale the whole step by the tightest binding ratio
-                // so direction is preserved (matches mgcv's per-axis-binding
-                // shrink — `smooth.r build_outer_search_vector`).
-                let mut shrink = 1.0_f64;
-                for (i, &si) in step.iter().enumerate() {
-                    if si.abs() > caps[i] && si.abs() > 0.0 {
-                        shrink = shrink.min(caps[i] / si.abs());
-                    }
-                }
-                &step * shrink
-            } else {
-                let step_norm = inf_norm(&step);
-                if step_norm > opts.max_step {
-                    &step * (opts.max_step / step_norm)
-                } else {
-                    step
-                }
-            };
+            // One iteration = build the candidate steps, probe them, accept the
+            // best improvement. Everything that turns (θ, g, H, box) into a
+            // candidate lives in `step.rs` so it can be tested without a score;
+            // the ordering (Newton direction → project onto box → cap) is fixed
+            // here and each stage documents why it sits where it does.
+            let dim_tol = score_scale * step::DIM_TOL_REL;
+            let active = step::active_axes(&g, &h, dim_tol);
+            let raw_step = step::newton_direction(&g, &h, &active, opts.hess_floor);
+            let projected = step::project_onto_box(&raw_step, &theta, axis_bounds.as_ref());
+            let scaled_step = step::cap_step(&projected, axis_caps.as_ref(), opts.max_step);
 
-            // Step-halving until value decreases. Per-axis bounds (if any)
-            // are clamped at each trial point — mgcv-style box-constrained
-            // Newton (smooth.r:~1976 lo/hi clamp).
+            // The trial machinery is mgcv's `newton` (`gam.fit3.r:1426-1600`),
+            // whose header lists four enhancements for coping with an indefinite
+            // Hessian. gamrs had (i), the PSD perturbation, and (ii)/(iii). It did
+            // NOT have the quadratic-model error gate that decides when the Newton
+            // step is to be trusted at all, and it did not have (iv), the
+            // steepest-descent trial — see the note where (iv) is declined below.
+            // Both only matter when the Hessian goes indefinite, which is why 24
+            // positive-definite parity fixtures never noticed; for scat / ocat /
+            // tweedie an indefinite Hessian is the NORMAL state once a shape
+            // parameter saturates.
             //
-            // Line-search probes use `score.value()` only — the grad/Hess
-            // are not needed for accept/reject. After acceptance we refresh
-            // `(g, h)` at the accepted point with ONE `value_grad_hess` call.
-            // For families where `value()` runs a single inner PIRLS solve
-            // and `value_grad_hess()` runs PIRLS + analytic-grad + FD-on-grad
-            // Hessian, this drops per-trial cost from ~(2d+1) PIRLS to 1
-            // (d = θ-dim; mgcv_rust pattern, `gam_optimized.rs:1390-1547`).
-            // mgcv `newton()` uses `maxHalf = 30` unconditionally
-            // (`gam.fit3.r:1230`, default set at `mgcv.r:2212`). There is no
-            // adaptive cap.
-            //
-            // This carried one, ported from mgcv_rust `smooth.rs:2741-2772`,
-            // whose `stalled → 1 halving` branch collapsed the line search to a
-            // SINGLE probe at the full capped Newton step exactly when the REML
-            // change had gone quiet — i.e. on a flat λ ridge, precisely where
-            // more halving is needed rather than less. It also silently
-            // invalidated a diagnostic: sweeping `step_min` from 1e-3 to 1e-10
-            // appeared to change nothing, because `max_half = 1` exits the loop
-            // before `step_min` can ever bind.
+            // `max_half` is 30 unconditionally (`gam.fit3.r:1230`, default set at
+            // `mgcv.r:2212`); the adaptive cap this used to carry — ported from
+            // mgcv_rust `smooth.rs:2741-2772`, `stalled → 1 halving` — collapsed
+            // the line search to a single probe exactly on the flat ridges where
+            // more halving is needed, and silently made `step_min` unreachable.
             let max_half = 30;
-            let mut alpha = 1.0;
-            let mut accepted = false;
-            let mut accepted_trial: Option<Array1<f64>> = None;
-            let mut accepted_v: f64 = v;
-            for _ in 0..max_half {
-                let mut trial = &theta + &(&scaled_step * alpha);
-                if let Some(ref bnds) = axis_bounds {
-                    for (i, &(lo, hi)) in bnds.iter().enumerate() {
-                        if i < trial.len() {
-                            trial[i] = trial[i].clamp(lo, hi);
+            let s_dir = step::steepest_descent_dir(&g);
+            let (accepted, accepted_trial, accepted_v) = {
+                let probe = |t: &Array1<f64>| -> Option<f64> {
+                    if let Some(s) = score.stats() {
+                        s.bump_line_search_trial();
+                    }
+                    match score.value(t) {
+                        Ok(x) if x.is_finite() => Some(x),
+                        _ => None,
+                    }
+                };
+                let improves = |vt: f64| vt < v - 1e-10 * v.abs();
+                let qerr_of = |s: &Array1<f64>, vt: f64| -> f64 {
+                    step::quadratic_model_error(&g, &h, s, vt - v, score_scale, step::MGCV_CONV_TOL)
+                };
+                let mut best: Option<(Array1<f64>, f64)> = None;
+
+                // (0) The concave-axis bound jump, probed first and exempt from
+                // the quadratic-model gate — see `step::concave_bound_jump`.
+                if let Some(jump) = step::concave_bound_jump(
+                    &theta,
+                    &g,
+                    &h,
+                    &scaled_step,
+                    axis_bounds.as_ref(),
+                    dim_tol,
+                ) {
+                    let trial = step::clamp_to_box(&theta + &jump, axis_bounds.as_ref());
+                    if let Some(vt) = probe(&trial) {
+                        if improves(vt) {
+                            best = Some((trial, vt));
                         }
                     }
                 }
-                if let Some(s) = score.stats() {
-                    s.bump_line_search_trial();
-                }
-                if let Ok(v_trial) = score.value(&trial) {
-                    if v_trial.is_finite() && v_trial < v - 1e-10 * v.abs() {
-                        accepted_v = v_trial;
-                        accepted_trial = Some(trial);
-                        accepted = true;
-                        break;
+
+                // An accepted jump is taken as it stands rather than compared
+                // against the plain Newton step: the two differ ONLY on the
+                // concave axes, where the jump is at the constrained optimum and
+                // Newton is a short step toward it, so the comparison would cost a
+                // probe per crawling iteration to confirm what the geometry
+                // already says. Measured: probing both cost ~11% wall time across
+                // the sweep for the same iteration counts.
+                if best.is_none() {
+                    // (1) The full (modified) Newton step. mgcv tests the halving
+                    // loop's condition BEFORE entering it (`gam.fit3.r:1490`), so a
+                    // full step that improved the score and matched the quadratic
+                    // model is never halved away.
+                    let mut trial_step = scaled_step.clone();
+                    let mut trial = step::clamp_to_box(&theta + &trial_step, axis_bounds.as_ref());
+                    let first_ok = match probe(&trial) {
+                        Some(vt)
+                            if improves(vt) && qerr_of(&trial_step, vt) < step::QERROR_THRESH =>
+                        {
+                            best = Some((trial.clone(), vt));
+                            true
+                        }
+                        _ => false,
+                    };
+
+                    if !first_ok {
+                        // (2) mgcv's halving loop (`gam.fit3.r:1490-1552`),
+                        // including its mid-loop switch to steepest descent at the
+                        // fourth failed halving of an early iteration — "Newton
+                        // really not working - switch to SD, but keeping step
+                        // length".
+                        let mut ii = 0usize;
+                        let mut alpha = 1.0_f64;
+                        let mut sd_used = false;
+                        while ii < max_half {
+                            if ii == 3 && iter < 10 && !sd_used {
+                                let len = step::l2_norm(&trial_step).min(step::MAX_S_STEP);
+                                let sn = step::l2_norm(&s_dir);
+                                if sn > 0.0 {
+                                    trial_step = &s_dir * (len / sn);
+                                    sd_used = true;
+                                } else {
+                                    trial_step = &trial_step * 0.5;
+                                    alpha *= 0.5;
+                                }
+                            } else {
+                                trial_step = &trial_step * 0.5;
+                                alpha *= 0.5;
+                            }
+                            trial = step::clamp_to_box(&theta + &trial_step, axis_bounds.as_ref());
+                            if let Some(vt) = probe(&trial) {
+                                // mgcv `gam.fit3.r:1515` stops enforcing the gate
+                                // once halving has failed more than 4 times —
+                                // "don't allow step to fail altogether just
+                                // because of qerror".
+                                let qerr = if ii > 4 {
+                                    0.0
+                                } else {
+                                    qerr_of(&trial_step, vt)
+                                };
+                                if improves(vt) && qerr < step::QERROR_THRESH {
+                                    best = Some((trial, vt));
+                                    break;
+                                }
+                            }
+                            ii += 1;
+                            if !sd_used && alpha < opts.step_min {
+                                break;
+                            }
+                        }
                     }
                 }
-                alpha *= 0.5;
-                if alpha < opts.step_min {
-                    break;
+
+                // NOT ported: mgcv's enhancement (iv), the steepest-descent trial
+                // it runs alongside Newton whenever the Hessian is indefinite
+                // (`gam.fit3.r:1561-1602`). Ported, measured, removed. In gamrs's
+                // setting it cost 5.2x the inner PIRLS calls — 9463 -> 49079 over
+                // the 117-fit `outer_indefinite_axis` sweep — for a 2.7% reduction
+                // in outer iterations and not one failure fixed, because
+                // `Sstep = -grad/max|grad|` is unscaled: its largest component
+                // there is the well-conditioned `log σ²` axis that is ALREADY at
+                // its optimum, while the axis actually crawling (ν, `|H_ii| ~
+                // 1e-3`) carries the smallest gradient. Steepest descent moves the
+                // wrong axis, at up to 40 probes per iteration, on a family whose
+                // Hessian is indefinite in nearly every iteration. mgcv can afford
+                // it because its own gradient bar is 50x looser, so it takes far
+                // fewer indefinite iterations before stopping. The cheap, targeted
+                // replacement is `step::concave_bound_jump` above: one probe, and
+                // it moves the axis that is actually stuck.
+                //
+                // The mid-loop SD switch at (2) IS kept — it costs nothing extra,
+                // reusing a halving probe rather than adding a trial.
+                //
+                // DELIBERATE deviation, also from `gam.fit3.r:1598-1602`: mgcv
+                // accepts the better of its two directions even when neither
+                // improved the score, relying on `ii == maxHalf ⇒ converged` to
+                // stop. gamrs keeps the score monotone and routes "nothing
+                // improved" to the step-failure exit below, which classifies the
+                // standing point instead of moving uphill first.
+                match best {
+                    Some((t, vt)) => (true, Some(t), vt),
+                    None => (false, None, v),
                 }
-            }
+            };
             if let Some(trial) = accepted_trial {
                 // One full eval at the accepted point to refresh (g, h).
                 // If this fails (extremely rare — the value probe just
@@ -576,156 +564,56 @@ impl OuterSolver for NewtonWithHalving {
             }
 
             if !accepted {
-                // Step-halving exhausted — Newton's quadratic approximation
-                // can't find a strictly-decreasing step from this point.
-                // Three distinct convergence cases:
-                //
-                //   (a) Interior minimum: `|grad|_∞` small relative to the
-                //       score scale. Double-precision FD Hessians on flat
-                //       regions can't find a strictly-decreasing trial,
-                //       but the gradient says we're there.
-                //
-                //   (b) KKT at active box constraint (strict): the
-                //       unconstrained Newton step pushed entirely outside
-                //       the box on every axis where the step was
-                //       non-trivial, so all movement got clamped to zero.
-                //
-                //   (c) Projected-gradient KKT (general box-constrained
-                //       case): some axes are at active bounds with their
-                //       gradient pointing outward (blocked by the box),
-                //       and the projected gradient on the remaining
-                //       feasible axes is small. The standard KKT condition
-                //       for box-constrained optimisation — covers ocat's
-                //       saturating-θ ridge where one or more shape axes
-                //       sit against the bound but the ρ axes still need
-                //       to satisfy a (relaxed) gradient tolerance.
-                let kkt_at_boundary = axis_bounds.as_ref().is_some_and(|bnds| {
-                    // For each axis with any unconstrained Newton movement,
-                    // require that movement to point outside the active
-                    // bound. Vacuously true if the raw step is ~0 everywhere
-                    // (then case (a) applies).
-                    let mut any_movement = false;
-                    let mut all_blocked = true;
-                    for (i, &(lo, hi)) in bnds.iter().enumerate() {
-                        if i >= raw_step.len() {
-                            continue;
-                        }
-                        let si = raw_step[i];
-                        let eps_at_bound = 1e-12 * (theta[i].abs().max(1.0));
-                        let at_lo = (theta[i] - lo).abs() <= eps_at_bound;
-                        let at_hi = (hi - theta[i]).abs() <= eps_at_bound;
-                        // Only count "real" movement; tiny si is noise.
-                        let active_step = si.abs() > 1e-12 * (theta[i].abs().max(1.0));
-                        if active_step {
-                            any_movement = true;
-                            let pushes_out = (at_hi && si > 0.0) || (at_lo && si < 0.0);
-                            if !pushes_out {
-                                all_blocked = false;
-                            }
-                        }
-                    }
-                    any_movement && all_blocked
-                });
-                // Case (c): the gradient projected onto the feasible
-                // directions of the box. For each axis at an active
-                // bound with grad pointing OUTWARD (blocked), zero out
-                // that component before measuring the norm.
-                let proj_grad_small = axis_bounds.as_ref().is_some_and(|bnds| {
-                    let mut any_at_bound = false;
-                    let mut proj = 0.0_f64;
-                    for (i, &gi) in g.iter().enumerate() {
-                        let (lo, hi) = bnds
-                            .get(i)
-                            .copied()
-                            .unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
-                        let eps_at_bound = 1e-9 * (theta[i].abs().max(1.0));
-                        let at_lo = (theta[i] - lo).abs() <= eps_at_bound;
-                        let at_hi = (hi - theta[i]).abs() <= eps_at_bound;
-                        let blocked = (at_hi && gi < 0.0) || (at_lo && gi > 0.0);
-                        if at_lo || at_hi {
-                            any_at_bound = true;
-                        }
-                        if !blocked {
-                            proj = proj.max(gi.abs());
-                        }
-                    }
-                    // Only declare convergence via projected-grad when at
-                    // least one axis sits at an active bound — otherwise
-                    // fall back to the unprojected case (a) test below.
-                    // Use a tier looser than the unprojected `1e-3` because
-                    // FD gradients near a box face are noisier than in the
-                    // interior (the active-bound axis acts as a non-smooth
-                    // jump in the FD stencil that bleeds into nearby axes).
-                    any_at_bound && proj < 1e-1 * (v.abs() + 1.0)
-                });
-                // Case (d): rank-deficient Hessian KKT. mgcv R's
-                // `gam.fit5` step 4 ("at convergence test fundamental
-                // rank on balanced version of penalized Hessian. Drop
-                // unidentifiable parameters") — analog at the outer
-                // Newton level. Eigendecompose H, find the working
-                // subspace (eigvals above max(|λ|) · ε^0.7), and check
-                // the gradient projected onto that subspace. If small,
-                // the gradient mass is entirely along the null
-                // direction(s) — which means the score is flat there
-                // (a coordinated-shift ridge, the canonical ocat
-                // failure mode). The optimiser literally can't make
-                // progress in those directions; treat as converged.
-                let rank_def_proj_small = {
-                    let dim = g.len();
-                    // Build the (symmetric) Hessian we're testing. Don't
-                    // bother symmetrising — the FD asymmetry is small
-                    // enough that eigh on the lower triangle is fine.
-                    let eig_result = h.eigh(UPLO::Lower);
-                    match eig_result {
-                        Ok((eigs, vecs)) => {
-                            let max_abs = eigs.iter().fold(0.0_f64, |a, &b| a.max(b.abs()));
-                            let null_thresh = max_abs * f64::EPSILON.powf(0.7); // ~1.5e-11 of max
-                                                                                // Project g onto the working subspace
-                                                                                // (eigenvectors with |λ| > null_thresh).
-                                                                                // |proj_g|_∞ = max_k |u_k^T g| where the max
-                                                                                // runs only over working-subspace eigvecs.
-                            let mut proj_max = 0.0_f64;
-                            for k in 0..dim {
-                                if eigs[k].abs() <= null_thresh {
-                                    continue;
-                                }
-                                let uk = vecs.column(k);
-                                let utg: f64 = uk.iter().zip(g.iter()).map(|(a, b)| a * b).sum();
-                                if utg.abs() > proj_max {
-                                    proj_max = utg.abs();
-                                }
-                            }
-                            // Only fire when the Hessian is ACTUALLY
-                            // rank-deficient (otherwise case (a) covers it).
-                            // Use the same tier-looser threshold as case (c).
-                            let has_null = eigs.iter().any(|&e| e.abs() <= null_thresh);
-                            has_null && proj_max < 1e-1 * (v.abs() + 1.0)
-                        }
-                        Err(_) => false,
-                    }
-                };
+                // No trial step improved the score. Whether that means "arrived"
+                // or "stuck" is `step::step_failure_is_convergence`'s call — the
+                // same classifier the iteration-budget exit below uses, so one
+                // standing point cannot be called converged by one exit and not
+                // by the other.
+                let converged = step::step_failure_is_convergence(
+                    &theta,
+                    &g,
+                    &h,
+                    &raw_step,
+                    axis_bounds.as_ref(),
+                    v,
+                    grad_norm,
+                );
                 return Ok(OuterFit {
                     theta,
                     value: v,
                     grad_norm,
                     iterations: iter + 1,
-                    converged: kkt_at_boundary
-                        || proj_grad_small
-                        || rank_def_proj_small
-                        || grad_norm < 1e-3 * (v.abs() + 1.0),
+                    converged,
                 });
             }
         }
 
-        Err(GamrsError::NotConverged {
-            iters: opts.max_iters,
+        // Iteration budget exhausted. mgcv `gam.fit3.r:1653-1658` warns here —
+        // `"Iteration limit reached without full convergence - check carefully"` —
+        // and RETURNS the estimate; it does not fail. gamrs used to raise
+        // `NotConverged` and discard the fit, which made this exit the only one in
+        // the file that throws: the step-failure exit above returns `Ok` with a
+        // classified flag, and `fellner_schall_minimize` returns
+        // `Ok(converged: false)` at its own cap. Same standing point, three
+        // different outcomes depending on which exit happened to fire first.
+        //
+        // What was being discarded, measured on `outer_indefinite_axis` seed 21:
+        // at the cap the score has plateaued to 3e-8 per iteration and the fit is
+        // edf 2.7660 against 2.7660 for the same fit given 20000 iterations — the
+        // remaining descent is 1.3e-8 REML units and $19 on a $550k curve, spent
+        // marching ν from 1369 to 21963 on data that identifies neither. Raising
+        // the budget is the wrong lever; returning what mgcv would return is the
+        // right one. Callers that must distinguish "converged inside the budget"
+        // from "hit the cap" compare `iterations` against `max_iters`, and the
+        // Python wrapper warns whenever `converged` comes back false.
+        Ok(OuterFit {
+            theta,
+            value: v,
             grad_norm: inf_norm(&g),
+            iterations: opts.max_iters,
+            converged: step::relaxed_grad_converged(inf_norm(&g), v),
         })
     }
-}
-
-fn inf_norm(v: &Array1<f64>) -> f64 {
-    v.iter().fold(0.0_f64, |a, &b| a.max(b.abs()))
 }
 
 /// Wood & Fasiolo (2017) Fellner-Schall update.
@@ -918,76 +806,6 @@ pub(crate) fn make_psd(h: &Array2<f64>, floor: f64) -> Array2<f64> {
     let mut floored = Array2::<f64>::zeros((d, d));
     for k in 0..d {
         let lam = eigs[k].max(floor);
-        let v = vecs.column(k);
-        for i in 0..d {
-            for j in 0..d {
-                floored[[i, j]] += lam * v[i] * v[j];
-            }
-        }
-    }
-    floored
-}
-
-/// Gill-Murray-Wright modified Hessian — Practical Optimization (1981)
-/// p.107-8, mgcv R `gam.fit3.r:1397-1417`, mgcv_rust `smooth.rs:2686-2712`.
-///
-/// ```text
-///   H = U diag(λ_i) U'                       (eigendecomposition)
-///   d_i ← |λ_i|                              (ABS for indefinite spectra)
-///   d_i ← max(d_i, max(|λ|) · ε^0.7)         (relative floor for tiny)
-///   H_psd = U diag(d_i) U'
-/// ```
-///
-/// The ABS step is what unsticks Newton on indefinite spectra: instead
-/// of flooring `−λ_i` to a tiny positive (giving a tiny step), GMW
-/// preserves `|λ_i|` magnitude (giving a descent step of the right size).
-///
-/// **Stability caveat**: GMW takes larger steps in formerly-indefinite
-/// directions, which only makes sense AFTER the Hessian has been
-/// diagonally preconditioned (so the eigenvalue spectrum is uniform
-/// across coordinates). Calling GMW on a raw Hessian with wildly
-/// different coordinate scales (e.g. ρ and θ axes for scat) over-steps
-/// in the high-curvature directions and breaks convergence. Pair with
-/// the preconditioning step in the Newton driver.
-///
-/// Used by the joint Newton in `outer.rs` (preconditioned) and the
-/// ρ-only Newton in `profile_shape.rs` (1-D, so preconditioning is
-/// trivial / vacuous).
-#[allow(dead_code)]
-pub(crate) fn make_psd_gmw(h: &Array2<f64>, floor: f64) -> Array2<f64> {
-    let d = h.nrows();
-    if d == 0 {
-        return h.clone();
-    }
-    if d == 1 {
-        let mut out = h.clone();
-        out[[0, 0]] = out[[0, 0]].abs().max(floor);
-        return out;
-    }
-    let mut sym = h.clone();
-    for i in 0..d {
-        for j in i + 1..d {
-            let avg = 0.5 * (sym[[i, j]] + sym[[j, i]]);
-            sym[[i, j]] = avg;
-            sym[[j, i]] = avg;
-        }
-    }
-    let (eigs, vecs) = match sym.eigh(UPLO::Lower) {
-        Ok(p) => p,
-        Err(_) => {
-            let mut out = sym;
-            for i in 0..d {
-                out[[i, i]] = out[[i, i]].abs().max(floor);
-            }
-            return out;
-        }
-    };
-    let abs_eigs: Vec<f64> = eigs.iter().map(|e| e.abs()).collect();
-    let max_abs = abs_eigs.iter().cloned().fold(0.0_f64, f64::max);
-    let low_d = (max_abs * f64::EPSILON.powf(0.7)).max(floor);
-    let mut floored = Array2::<f64>::zeros((d, d));
-    for k in 0..d {
-        let lam = abs_eigs[k].max(low_d);
         let v = vecs.column(k);
         for i in 0..d {
             for j in 0..d {

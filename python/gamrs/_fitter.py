@@ -718,7 +718,32 @@ class Gam:
             self._auto_k_iterations = 0
             self._auto_k_trace = []
             self._single_fit(x_2d, y_arr, term_objs)
+        self._warn_if_not_converged()
         return self
+
+    def _warn_if_not_converged(self) -> None:
+        """Say so when the outer optimiser did not reach its gradient
+        tolerance, instead of leaving it on an attribute nobody reads.
+
+        The outer Newton used to raise on exhausting its iteration budget,
+        which discarded a fit that was usually converged for every practical
+        purpose. It now returns the estimate, as mgcv does — `gam.fit3.r:1656`
+        warns "Iteration limit reached without full convergence - check
+        carefully" and carries on. This is that warning: the same information,
+        on the same terms, without throwing away the work.
+        """
+        fitted = self._fitted
+        if fitted is None or getattr(fitted, "converged", True):
+            return
+        warnings.warn(
+            "the outer optimiser did not reach its gradient tolerance after "
+            f"{getattr(fitted, 'n_iters', 'the maximum')} iterations; the fit is "
+            "returned as it stands (mgcv warns in the same situation rather than "
+            "failing). Check `converged_` and `n_iters_`, and treat lambda_ / edf "
+            "on any near-flat term as a stopping point rather than an estimate.",
+            UserWarning,
+            stacklevel=3,
+        )
 
     # ---- single-fit + auto-k helpers --------------------------------- #
 
