@@ -50,15 +50,30 @@ is locked. Versions correspond to the published PyPI wheels.
   Inner PIRLS calls rise 9463 → 11105 on that sweep (+17%, ~9% wall) because
   the bound jump is probed on draws where it does not win.
 
-  **No fitted values change on any family whose Hessian stays positive
-  definite.** Checked directly against the released 0.14.1 rather than inferred
-  from the test bars: eight fixtures — Gaussian smooth / near-linear / wiggly,
-  Poisson, Gamma, Bernoulli, inverse Gaussian, and the well-behaved
-  `1d_scat_unweighted_n300_k10` — come back **bit-identical**, same outer
-  iteration counts and the same edf, REML and predictions to 12 significant
-  digits. (`near_linear` is the flat-ridge Gaussian that 0.14.0 moved, and it
-  does not move again here.) What DOES move is a `scat` or `ocat` fit whose
-  shape parameter saturates, and it moves toward convergence.
+  **What moves and what does not**, checked against the released 0.14.1
+  directly rather than inferred from the test bars:
+
+  - **Bit-identical**: eight fixtures — Gaussian smooth / near-linear /
+    wiggly, Poisson, Gamma, Bernoulli, inverse Gaussian, and the well-behaved
+    `1d_scat_unweighted_n300_k10` — same outer iteration counts and the same
+    edf, REML and predictions to 12 significant digits. (`near_linear` is the
+    flat-ridge Gaussian that 0.14.0 moved; it does not move again here.)
+  - **Moves, and toward convergence**: any fit whose Hessian goes indefinite,
+    which is not only `scat`. It happens wherever a curvature diagonal turns
+    negative, so a Gaussian fit can reach it too — measured on the 2-D
+    thin-plate smoke fixture, ρ̂ moves 2.1e-7 relative (−11.48289205 →
+    −11.48289446) and the fitted values 1.1e-8, at the same 10 outer
+    iterations. The new arm lands at the **lower** REML of the two, so the
+    movement is toward the criterion's optimum, not away from it. A `scat` or
+    `ocat` fit whose shape parameter saturates moves by much more, and that
+    is the point of the release.
+
+  Note for anyone reading a λ̂ at the edge of its box: the bound jump can
+  propose exactly that (the thin-plate fit above is offered ρ = −30 on its
+  first iteration) but it is a probe, accepted only on a score improvement,
+  and the optimiser walks back off the clamp — that fit converges at
+  ρ̂ = −11.48. A λ̂ pinned to ±30/±50 at convergence still means what it
+  always meant: the ridge ran out of the box.
 
 ### Performance
 
