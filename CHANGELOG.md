@@ -7,6 +7,8 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-09-04
+
 ### Fixed
 
 - **`scat` fits that a saturating shape parameter used to make unfittable.**
@@ -786,7 +788,8 @@ numbers on every platform that already had a wheel.
 - First beta. Multi-smooth additive, tensor products, and the ten-family
   parity battery.
 
-[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/AlekJaworski/gamrs/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.14.2
 [0.14.1]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.14.1
 [0.14.0]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.14.0
 [0.13.2]: https://github.com/AlekJaworski/gamrs/releases/tag/v0.13.2
