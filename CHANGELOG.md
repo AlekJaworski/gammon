@@ -7,6 +7,71 @@ is locked. Versions correspond to the published PyPI wheels.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`scat` fits that a saturating shape parameter used to make unfittable.**
+  A single-smooth `family="t-dist"` fit (k=12, n=66) that 0.13.1 fits raised
+  `RuntimeError: solver did not converge after 200 iterations (last grad norm
+  = 5.646e-2)`. Three separate defects in the shared outer Newton, each only
+  reachable once a shape axis saturates — which for scat / ocat / tweedie is
+  the normal state on data the shape parameter cannot be identified from, and
+  is why 24 positive-definite parity fixtures never caught them.
+
+  1. **A shape axis pinned at its bound throttled every axis that could still
+     move.** The per-axis step cap was applied as one global shrink
+     `min_i(cap_i/|s_i|)` measured over the unprojected step, so an axis
+     sitting on its bound and asking for +19.4 against a cap of 1.0 shrank the
+     whole step by 20x — even though that component is clamped away at every
+     trial point. ρ crawled up its ridge at 0.042 per iteration instead of
+     0.83, and `log σ²` moved 5e-7 while carrying a real (FD-confirmed)
+     gradient of 5.6e-2. The step is now projected onto the feasible box
+     before the cap is measured. On the reported fit: 200 iterations and an
+     error → 29 iterations, converged, at a REML score 5.5e-5 *lower* than
+     where the crawl ran out of budget — and 29 is iteration parity with
+     0.13.1's 27.
+  2. **A concave axis crawled to its bound.** Where curvature is negative the
+     score has no interior optimum in that direction, so over the box its
+     minimum is a face — a point available in closed form. Newton instead
+     proposed `-g/|H|`, measured at 0.02 per iteration against a distance of
+     2.0. That point is now probed directly.
+  3. **Exhausting the iteration budget discarded the fit.** mgcv warns at its
+     own cap (`gam.fit3.r:1656`) and returns the estimate; gamrs raised, which
+     made this the only exit in the outer loop that threw — the step-failure
+     exit beside it already returned a fit with a classified `converged` flag.
+     Both exits now share one classifier, and `Gam.fit` emits a `UserWarning`
+     when `converged_` is false so the returned-not-raised case is not silent.
+     Raising the budget instead would have been the wrong lever: on the worst
+     draw, iterations 89 → 220 bought 1.3e-8 REML units and $19 on a $550k
+     curve, chasing ν from 1369 to 21963 on data that identifies neither.
+
+  Measured over 117 fits of the regime (39 draws x 3 signal shapes, scat n=66
+  k=12 — `tests/outer_indefinite_axis.rs`): hard failures 6 → 0, outer
+  iterations 5471 → 3866 (−29%), fits needing more than 40 iterations 28 → 19.
+  Inner PIRLS calls rise 9463 → 11105 on that sweep (+17%, ~9% wall) because
+  the bound jump is probed on draws where it does not win.
+
+  **No fitted values change on any family whose Hessian stays positive
+  definite.** Checked directly against the released 0.14.1 rather than inferred
+  from the test bars: eight fixtures — Gaussian smooth / near-linear / wiggly,
+  Poisson, Gamma, Bernoulli, inverse Gaussian, and the well-behaved
+  `1d_scat_unweighted_n300_k10` — come back **bit-identical**, same outer
+  iteration counts and the same edf, REML and predictions to 12 significant
+  digits. (`near_linear` is the flat-ridge Gaussian that 0.14.0 moved, and it
+  does not move again here.) What DOES move is a `scat` or `ocat` fit whose
+  shape parameter saturates, and it moves toward convergence.
+
+### Performance
+
+`bench_scat_profile`: outer iterations 15.0 → 10.0 per fit (−33%) at unchanged
+wall time (11.31 s vs 11.33 s, min of 3). `bench_nb` and `bench_multi_smooth`
+neutral to slightly better. mgcv's steepest-descent trial for indefinite
+problems (`gam.fit3.r:1561-1602`, enhancement (iv) of its own header) was
+ported, measured at **5.2x the inner PIRLS calls** for a 2.7% iteration
+reduction and no failures fixed, and declined — `Sstep = -grad/max|grad|` is
+unscaled, so its largest component is whichever axis is already at its optimum.
+The reasoning is recorded in `src/outer/step.rs` next to the cheap replacement.
+
+
 ## [0.14.1] — 2026-09-03
 
 ### Added
