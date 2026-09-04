@@ -405,7 +405,6 @@ impl OuterSolver for NewtonWithHalving {
             // the line search to a single probe exactly on the flat ridges where
             // more halving is needed, and silently made `step_min` unreachable.
             let max_half = 30;
-            let s_dir = step::steepest_descent_dir(&g);
             let (accepted, accepted_trial, accepted_v) = {
                 let probe = |t: &Array1<f64>| -> Option<f64> {
                     if let Some(s) = score.stats() {
@@ -475,6 +474,10 @@ impl OuterSolver for NewtonWithHalving {
                         let mut sd_used = false;
                         while ii < max_half {
                             if ii == 3 && iter < 10 && !sd_used {
+                                // Built here, not per iteration: this branch is the
+                                // only reader, and it needs three consecutive
+                                // halvings to have already failed.
+                                let s_dir = step::steepest_descent_dir(&g);
                                 let len = step::l2_norm(&trial_step).min(step::MAX_S_STEP);
                                 let sn = step::l2_norm(&s_dir);
                                 if sn > 0.0 {
